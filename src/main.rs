@@ -355,7 +355,7 @@ impl Browser {
         self.toggle_mute(self.tabs[self.active].id, cx);
     }
     fn volume_controls(&mut self, _: &VolumeControls, window: &mut Window, cx: &mut Context<Self>) {
-        volume::toggle(cx.weak_entity(), None, window, cx);
+        open_volume(cx.weak_entity(), None, window, cx);
     }
     fn activate_tab_id(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
@@ -519,7 +519,7 @@ impl Browser {
             .hover(move |s| s.bg(rgb(p.elevated)).text_color(rgb(p.text)))
             .on_click(cx.listener(|_, event: &ClickEvent, window, cx| {
                 let anchor = (!event.is_keyboard()).then(|| event.position().x);
-                volume::toggle(cx.weak_entity(), anchor, window, cx);
+                open_volume(cx.weak_entity(), anchor, window, cx);
             }))
             .child(
                 brand::icon(volume::speaker_icon(audio))
@@ -938,6 +938,19 @@ impl Render for Browser {
             )
     }
 }
+/// The popover draws as soon as its window opens and reads the browser while doing so, so it
+/// must not be opened from inside one of the browser's own updates (click or action handlers).
+fn open_volume(
+    browser: WeakEntity<Browser>,
+    anchor: Option<Pixels>,
+    window: &mut Window,
+    cx: &mut Context<Browser>,
+) {
+    window.defer(cx, move |window, cx| {
+        volume::toggle(browser, anchor, window, cx)
+    });
+}
+
 fn main() {
     Application::new()
         .with_assets(brand::BrandAssets)
