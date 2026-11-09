@@ -139,6 +139,28 @@ impl History {
     pub fn suggest(&self, query: &str, now: u64, limit: usize) -> Vec<Suggestion> {
         suggest(&self.entries, query, now, limit)
     }
+
+    /// The most frecent pages, for an empty address bar.
+    pub fn recent(&self, now: u64, limit: usize) -> Vec<Suggestion> {
+        let mut entries: Vec<&Entry> = self.entries.iter().collect();
+        entries.sort_by(|a, b| {
+            frecency(b, now)
+                .total_cmp(&frecency(a, now))
+                .then_with(|| b.last_visit.cmp(&a.last_visit))
+        });
+        entries
+            .into_iter()
+            .take(limit)
+            .map(|entry| Suggestion {
+                url: entry.url.clone(),
+                display_url: display_url(&entry.url).to_owned(),
+                title: entry.title.clone(),
+                url_ranges: Vec::new(),
+                title_ranges: Vec::new(),
+                score: frecency(entry, now),
+            })
+            .collect()
+    }
 }
 
 fn recordable(url: &str) -> bool {
@@ -566,6 +588,22 @@ mod tests {
                 "https://a.example/"
             ]
         );
+    }
+
+    #[test]
+    fn recent_pages_are_ordered_by_frecency() {
+        let mut history = History::load(None);
+        history.record("https://old.example/", "Old", NOW - 200 * DAY);
+        history.record("https://busy.example/", "Busy", NOW - 100 * DAY);
+        history.record("https://busy.example/", "Busy", NOW - 100 * DAY);
+        history.record("https://busy.example/", "Busy", NOW - 100 * DAY);
+        history.record("https://fresh.example/", "Fresh", NOW);
+        let recent = history.recent(NOW, 2);
+        assert_eq!(
+            urls(&recent),
+            ["https://fresh.example/", "https://busy.example/"]
+        );
+        assert!(recent[0].url_ranges.is_empty() && recent[0].title_ranges.is_empty());
     }
 
     #[test]

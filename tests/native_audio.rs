@@ -7,6 +7,9 @@
 #[allow(dead_code, unused_imports)]
 #[path = "../src/audio.rs"]
 mod audio;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/icons.rs"]
+mod icons;
 #[allow(dead_code)]
 #[path = "../src/webview.rs"]
 mod webview;

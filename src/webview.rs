@@ -18,6 +18,8 @@ pub enum Event {
     OpenInBackground(String),
     Hover(Option<String>),
     Audio(AudioReport),
+    /// The site's icon as a small validated PNG.
+    Icon(Vec<u8>),
 }
 
 /// One persistent native child view per tab; hiding it does not discard its history or document.
@@ -39,14 +41,17 @@ impl NativePage {
         let webview = WebViewBuilder::new()
             .with_initialization_script_for_main_only(include_str!("link_interactions.js"), false)
             .with_initialization_script_for_main_only(include_str!("audio_control.js"), false)
+            .with_initialization_script_for_main_only(include_str!("page_icon.js"), true)
             .with_ipc_handler(move |request| {
                 let body = request.body();
-                let event = parse_link_event(body).or_else(|| {
-                    (body.len() <= 64)
-                        .then(|| parse_report(body))
-                        .flatten()
-                        .map(Event::Audio)
-                });
+                let event = parse_link_event(body)
+                    .or_else(|| parse_icon_event(body))
+                    .or_else(|| {
+                        (body.len() <= 64)
+                            .then(|| parse_report(body))
+                            .flatten()
+                            .map(Event::Audio)
+                    });
                 if let Some(event) = event {
                     let _ = link_sender.send(event);
                 }
@@ -212,6 +217,11 @@ fn parse_link_event(message: &str) -> Option<Event> {
     }
 }
 
+/// Icons arrive as `data:image/png;base64,…`; anything but a small PNG is dropped.
+fn parse_icon_event(message: &str) -> Option<Event> {
+    crate::icons::png_from_data_url(message.strip_prefix("felifox-icon:")?).map(Event::Icon)
+}
+
 fn allowed_url(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {
         scheme.eq_ignore_ascii_case("http")
@@ -262,6 +272,23 @@ mod tests {
             )),
             None
         );
+    }
+
+    #[test]
+    fn icon_bridge_accepts_only_small_pngs() {
+        use super::{Event, parse_icon_event};
+        let pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        assert!(matches!(
+            parse_icon_event(&format!("felifox-icon:{pixel}")),
+            Some(Event::Icon(bytes)) if bytes.len() == 70
+        ));
+        for message in [
+            "felifox-icon:data:image/svg+xml;base64,PHN2Zz4=",
+            "felifox-icon:https://example.com/favicon.ico",
+            "felifox-link:hover:https://example.com",
+        ] {
+            assert_eq!(parse_icon_event(message), None, "{message}");
+        }
     }
 
     #[test]

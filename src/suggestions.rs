@@ -3,8 +3,8 @@
 //! focus: typing and the ↑/↓/Enter/Esc keys stay in the address input, which owns the state.
 
 use gpui::{
-    AnyWindowHandle, App, Bounds, Context, Entity, FontWeight, Global, HighlightStyle, Pixels,
-    StyledText, Subscription, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds,
+    AnyElement, AnyWindowHandle, App, Bounds, Context, Entity, FontWeight, Global, HighlightStyle,
+    Pixels, StyledText, Subscription, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds,
     WindowHandle, WindowKind, WindowOptions, div, point, prelude::*, px, rgb, size,
 };
 
@@ -141,12 +141,19 @@ fn highlighted(text: &str, ranges: &[std::ops::Range<usize>], color: u32) -> Sty
 impl Render for SuggestionList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::palette(cx);
-        let (rows, selected): (Vec<Suggestion>, Option<usize>) = self
+        let (rows, selected, icons): (Vec<Suggestion>, Option<usize>, Vec<AnyElement>) = self
             .browser
             .upgrade()
             .map(|browser| {
                 let browser = browser.read(cx);
-                (browser.suggestions.clone(), browser.selected)
+                let icons = browser
+                    .suggestions
+                    .iter()
+                    .map(|row| {
+                        browser.site_icon(&crate::host(&row.url).unwrap_or_default(), 20., p)
+                    })
+                    .collect();
+                (browser.suggestions.clone(), browser.selected, icons)
             })
             .unwrap_or_default();
         div()
@@ -162,36 +169,53 @@ impl Render for SuggestionList {
             .font_family(".AppleSystemUIFont")
             .text_size(px(13.))
             .text_color(rgb(p.text))
-            .children(rows.iter().enumerate().map(|(index, row)| {
-                let active = selected == Some(index);
-                div()
-                    .id(("suggestion", index))
-                    .h(px(ROW))
-                    .flex_shrink_0()
-                    .px_3()
-                    .rounded_lg()
-                    .cursor_pointer()
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .gap(px(2.))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .bg(rgb(if active { p.elevated } else { p.surface }))
-                    .hover(move |style| style.bg(rgb(p.elevated)))
-                    .on_click(cx.listener(move |this, _, _, cx| this.choose(index, cx)))
-                    .child(div().text_ellipsis().child(highlighted(
-                        &row.title,
-                        &row.title_ranges,
-                        p.primary,
-                    )))
-                    .child(
+            .children(
+                rows.iter()
+                    .zip(icons)
+                    .enumerate()
+                    .map(|(index, (row, icon))| {
+                        let active = selected == Some(index);
                         div()
-                            .text_size(px(11.))
-                            .text_color(rgb(p.muted))
-                            .text_ellipsis()
-                            .child(highlighted(&row.display_url, &row.url_ranges, p.primary)),
-                    )
-            }))
+                            .id(("suggestion", index))
+                            .h(px(ROW))
+                            .flex_shrink_0()
+                            .px_3()
+                            .rounded_lg()
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .bg(rgb(if active { p.elevated } else { p.surface }))
+                            .hover(move |style| style.bg(rgb(p.elevated)))
+                            .on_click(cx.listener(move |this, _, _, cx| this.choose(index, cx)))
+                            .child(div().flex_shrink_0().child(icon))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .child(div().text_ellipsis().child(highlighted(
+                                        &row.title,
+                                        &row.title_ranges,
+                                        p.primary,
+                                    )))
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(rgb(p.muted))
+                                            .text_ellipsis()
+                                            .child(highlighted(
+                                                &row.display_url,
+                                                &row.url_ranges,
+                                                p.primary,
+                                            )),
+                                    ),
+                            )
+                    }),
+            )
     }
 }

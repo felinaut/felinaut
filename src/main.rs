@@ -5,6 +5,7 @@ mod audio;
 mod brand;
 mod engine;
 mod history;
+mod icons;
 mod input;
 mod suggestions;
 mod theme;
@@ -16,13 +17,25 @@ use gpui::{prelude::*, *};
 use history::{History, Suggestion};
 use input::{AddressEvent, AddressInput, Submit};
 use std::{
+    cell::RefCell,
+    collections::HashMap,
+    fs,
+    path::PathBuf,
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use theme::{Palette, ThemeSettings};
 use webview::{Event, NativePage};
 
 const HOME: &str = "felifox://newtab";
+
+/// The host of a web URL, which keys site icons and labels the title chip.
+pub fn host(url: &str) -> Option<String> {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+}
 pub const DISPLAY_VERSION: &str = "0.1 beta";
 
 actions!(
@@ -134,9 +147,14 @@ struct Browser {
     /// What the user typed, restored when stepping off the last suggestion or pressing Esc.
     typed: String,
     _address_events: Subscription,
+    _address_focus: Subscription,
     _address_blur: Subscription,
     _activation_observer: Subscription,
     _bounds_observer: Subscription,
+    /// `history/icons/`, beside the visits file.
+    icon_dir: Option<PathBuf>,
+    /// Site icons by host; `None` records a host without one so disk is read once.
+    icons: RefCell<HashMap<String, Option<Arc<Image>>>>,
 }
 impl Browser {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -186,6 +204,14 @@ impl Browser {
         let address_focus = address.read(cx).focus_handle(cx);
         let address_blur = cx.on_blur(&address_focus, window, |this, window, cx| {
             this.close_suggestions(false, window, cx);
+            cx.notify();
+        });
+        // An empty address bar offers recent pages as soon as it is focused.
+        let address_focus_observer = cx.on_focus(&address_focus, window, |this, window, cx| {
+            if this.address.read(cx).text().is_empty() {
+                this.update_suggestions(window, cx);
+            }
+            cx.notify();
         });
         // The dropdown floats above other apps, so it must go when the window loses focus;
         // clicking a suggestion also deactivates us briefly, hence the short grace period.
@@ -251,10 +277,118 @@ impl Browser {
             selected: None,
             typed: String::new(),
             _address_events: address_events,
+            _address_focus: address_focus_observer,
             _address_blur: address_blur,
             _activation_observer: activation_observer,
             _bounds_observer: bounds_observer,
+            icon_dir: history::default_path()
+                .and_then(|path| path.parent().map(|dir| dir.join("icons"))),
+            icons: RefCell::new(HashMap::new()),
         }
+    }
+    fn icon_for(&self, host: &str) -> Option<Arc<Image>> {
+        let mut icons = self.icons.borrow_mut();
+        if let Some(icon) = icons.get(host) {
+            return icon.clone();
+        }
+        // One small read per host per session; misses are remembered too.
+        let icon = self
+            .icon_dir
+            .as_ref()
+            .and_then(|dir| fs::read(icons::path(dir, host)).ok())
+            .filter(|bytes| icons::valid_png(bytes))
+            .map(|bytes| Arc::new(Image::from_bytes(ImageFormat::Png, bytes)));
+        icons.insert(host.to_owned(), icon.clone());
+        icon
+    }
+    /// The site's icon, or a themed monogram of its host.
+    fn site_icon(&self, host: &str, size: f32, p: Palette) -> AnyElement {
+        if let Some(image) = self.icon_for(host) {
+            return img(image).size(px(size)).rounded_sm().into_any_element();
+        }
+        let (letter, slot) = icons::monogram(host);
+        let color = [p.primary, p.secondary, p.accent, p.highlight][slot];
+        div()
+            .size(px(size))
+            .flex_shrink_0()
+            .rounded_md()
+            .bg(rgb(color))
+            .text_color(rgb(p.background))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(size * 0.6))
+            .font_weight(FontWeight::BOLD)
+            .child(letter.to_string())
+            .into_any_element()
+    }
+    fn store_icon(&mut self, url: &str, png: Vec<u8>, cx: &mut Context<Self>) {
+        let Some(host) = host(url) else {
+            return;
+        };
+        let image = Arc::new(Image::from_bytes(ImageFormat::Png, png.clone()));
+        let unchanged = self.icons.borrow().get(&host).is_some_and(|cached| {
+            cached
+                .as_ref()
+                .is_some_and(|cached| cached.id() == image.id())
+        });
+        if unchanged {
+            return;
+        }
+        if let Some(dir) = &self.icon_dir {
+            let path = icons::path(dir, &host);
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(error) = icons::write(&path, &png) {
+                        eprintln!("Could not save site icon: {error}");
+                    }
+                })
+                .detach();
+        }
+        self.icons.borrow_mut().insert(host, Some(image));
+        cx.notify();
+    }
+    /// The idle address field: icon, page title and domain instead of the raw URL.
+    fn title_chip(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let tab = &self.tabs[self.active];
+        let host = host(&tab.url).unwrap_or_default();
+        div()
+            .id("title-chip")
+            .h(px(42.))
+            .w_full()
+            .min_w_0()
+            .rounded_lg()
+            .bg(rgb(p.input))
+            .border_1()
+            .border_color(rgb(p.border))
+            .px_3()
+            .flex()
+            .items_center()
+            .gap_2()
+            .cursor_text()
+            .hover(move |s| s.border_color(rgb(p.primary)))
+            .on_click(
+                cx.listener(|this, _, window, cx| this.focus_address(&FocusAddress, window, cx)),
+            )
+            .child(self.site_icon(&host, 16., p))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_size(px(14.))
+                    .child(tab.display_title()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(12.))
+                    .text_color(rgb(p.muted))
+                    .child(host),
+            )
+            .into_any_element()
     }
     fn submit(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.close_suggestions(false, window, cx);
@@ -273,9 +407,12 @@ impl Browser {
         self.typed = input.text().to_owned();
         let anchor = input.bounds();
         self.selected = None;
-        self.suggestions = self
-            .history
-            .suggest(&self.typed, history::now(), suggestions::MAX_ROWS);
+        self.suggestions = if self.typed.trim().is_empty() {
+            self.history.recent(history::now(), suggestions::MAX_ROWS)
+        } else {
+            self.history
+                .suggest(&self.typed, history::now(), suggestions::MAX_ROWS)
+        };
         match anchor {
             Some(anchor) if !self.suggestions.is_empty() => {
                 let browser = cx.weak_entity();
@@ -358,6 +495,7 @@ impl Browser {
         let mut changed = false;
         let mut address_changed = false;
         let mut open = Vec::new();
+        let mut icons = Vec::new();
         for (index, tab) in self.tabs.iter_mut().enumerate() {
             let Some(page) = &tab.page else {
                 continue;
@@ -394,6 +532,7 @@ impl Browser {
                         }
                         address_changed |= index == self.active;
                     }
+                    Event::Icon(png) => icons.push((tab.url.clone(), png)),
                     Event::Open(url) => open.push((url, true)),
                     Event::OpenInBackground(url) => open.push((url, false)),
                     Event::Hover(url) => tab.hovered_link = url,
@@ -416,6 +555,9 @@ impl Browser {
         }
         for (url, activate) in open {
             self.open_link_tab(&url, activate, window, cx);
+        }
+        for (url, png) in icons {
+            self.store_icon(&url, png, cx);
         }
         self.flush_history(cx);
         if changed {
@@ -894,9 +1036,11 @@ impl Browser {
 }
 
 impl Render for Browser {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::palette(cx);
+        let address_focused = self.address.read(cx).focus_handle(cx).is_focused(window);
         let tab = &self.tabs[self.active];
+        let show_chip = !tab.home && !address_focused;
         let back_enabled = tab.can_go_back();
         let forward_enabled = tab.can_go_forward();
         let status = tab
@@ -959,6 +1103,10 @@ impl Render for Browser {
                                     .text_color(rgb(if selected { p.primary } else { p.muted }))
                                     .child(if tab.loading && !tab.home {
                                         div().child("◌").into_any_element()
+                                    } else if let Some(host) =
+                                        (!tab.home).then(|| host(&tab.url)).flatten()
+                                    {
+                                        self.site_icon(&host, 16., p)
                                     } else {
                                         brand::symbol().size(px(18.)).into_any_element()
                                     }),
@@ -1046,7 +1194,11 @@ impl Render for Browser {
                             cx.listener(|this, _, window, cx| this.home(&Home, window, cx)),
                         ),
                     )
-                    .child(div().flex_1().min_w_0().child(self.address.clone()))
+                    .child(div().flex_1().min_w_0().child(if show_chip {
+                        self.title_chip(p, cx)
+                    } else {
+                        self.address.clone().into_any_element()
+                    }))
                     .child(self.volume_button(p, cx))
                     .child(
                         self.button("appearance", "◈ Theme ▾", p)

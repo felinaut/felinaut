@@ -72,7 +72,8 @@ hdiutil verify dist/Felifox-0.1-beta-macos-arm64.dmg
 ## Controls
 
 - Native address input with Unicode, IME, selection and clipboard.
-- **History suggestions** while you type: a dropdown of previously visited pages matched fuzzily against both title and URL (see below).
+- **Title-first address bar**: while you are not editing it, the address field shows the site's icon, the page title and the domain instead of the raw URL. Click it or press `⌘L` to get the full URL, selected for editing.
+- **History suggestions** while you type: a dropdown of previously visited pages, each with its icon, matched fuzzily against both title and URL; an empty address bar lists your most frecent pages (see below).
 - Tabs retain their own live webview and native navigation history when switched.
 - Back, forward, reload and home; native page titles and URLs update the chrome.
 - Hovering web links displays their destination in the status bar; leaving clears it.
@@ -93,15 +94,19 @@ hdiutil verify dist/Felifox-0.1-beta-macos-arm64.dmg
 | `⌘⇧M`       | Mute / unmute active tab     |
 | `⌘Q`        | Quit                         |
 
-### History suggestions
+### Title-first address bar and history suggestions
 
-Every completed HTTP(S) page load is remembered with its title, visit count and last visit. Typing in the address bar shows up to eight matching pages beneath it, like Chrome, Firefox or Safari:
+The idle address field reads like Arc's or Safari's: **icon · page title · domain**. The domain stays visible on purpose, since hiding it is what drew the criticism when Chrome trialled a domain-only bar, and the full URL is one click or `⌘L` away. Tabs show the same icon.
+
+Icons come from the page itself: a document-start script reads the site's `<link rel="icon">` (or `/favicon.ico`), draws it onto a 32 × 32 canvas and hands the native side a small PNG. Only same-origin or CORS-readable icons can be read, and strict `img-src` policies are handled by decoding the blob directly. Native code validates the PNG (signature, dimensions, 64 KB cap) before it is drawn, and keeps it as `history/icons/<host>.png`. Sites without a readable icon get a themed monogram of their host instead.
+
+Every completed HTTP(S) page load is remembered with its title, visit count and last visit. Focusing an empty address bar lists up to eight of your most frecent pages; typing shows up to eight matching pages beneath it, like Chrome, Firefox or Safari:
 
 - Matching is case-insensitive and fuzzy: contiguous text ranks highest, with a bonus for starting the host (`rust` → **rust**-lang.org) or a word; scattered subsequences (`hkrn` → **H**ac**k**e**r** **N**ews) still match. Every space-separated word must match the title or the URL. Equal matches are ordered by frecency: more visits and more recent visits first.
 - Each row shows the title and the URL with the matched characters highlighted.
 - `↓` / `↑` move through the rows and put the selected URL into the address bar; stepping past the end restores what you typed. `Enter` opens the selected row, or, with nothing selected, resolves the typed text as usual (URL, host, or DuckDuckGo search). `Esc` closes the list and restores the typed text; clicking a row opens it.
 
-History lives in `~/Library/Application Support/Felifox/history/visits.tsv`, one tab-separated line per URL (last visit as unix seconds, visit count, URL, title), newest first. Delete the folder to clear it. The GPUI Home page, `about:` pages and failed loads are not recorded; the file is capped at 10 000 pages, dropping the least recently visited.
+History lives in `~/Library/Application Support/Felifox/history/visits.tsv`, one tab-separated line per URL (last visit as unix seconds, visit count, URL, title), newest first, with site icons beside it in `history/icons/`. Delete the folder to clear both. The GPUI Home page, `about:` pages and failed loads are not recorded; the file is capped at 10 000 pages, dropping the least recently visited.
 
 Home is a GPUI page outside WebKit's history. Going back from the first web page shows Home; Forward restores the retained web page. Closing a tab destroys its webview. Opening a new tab does not allocate a webview until you navigate.
 
@@ -143,7 +148,7 @@ GPUI: tabs, address bar, controls, new-tab page
          macOS WebKit + JavaScriptCore
 ```
 
-Two small document-start scripts run in every frame: one for links, one for tab audio. The link script supplies hover destinations, modifier-click requests and the link menu, including inside frames. Its narrowly scoped native message handler accepts only bounded HTTP(S) URLs; it exposes no filesystem or general native-command API. The link menu uses an isolated shadow root within the page because a GPUI overlay would be covered by WebKit's native view. Web pages remain untrusted and can interfere with document-local UI.
+Two small document-start scripts run in every frame: one for links, one for tab audio. A third runs in the main frame only and reports the site icon as a bounded PNG data URL. The link script supplies hover destinations, modifier-click requests and the link menu, including inside frames. Its narrowly scoped native message handler accepts only bounded HTTP(S) URLs; it exposes no filesystem or general native-command API. The link menu uses an isolated shadow root within the page because a GPUI overlay would be covered by WebKit's native view. Web pages remain untrusted and can interfere with document-local UI.
 
 A GPUI canvas supplies the webview's window-relative logical bounds so it stays below the toolbar and above the status bar during resizing. Hidden tabs keep their documents and JavaScript state. Native callbacks enqueue events, which the UI drains every 100 ms; they never re-enter GPUI while it is rendering. That drain also records finished loads and same-document URL changes in the in-memory history; the file is rewritten atomically (temporary file, then rename) on a background thread at most once a second and once more when the window closes, so the UI thread never waits on disk.
 
@@ -151,7 +156,7 @@ The previous WebRender/SWGL pipeline, HTML extraction, custom HTTP loader and `-
 
 ## Scope and limitations
 
-Keep it small: no bookmarks manager, extensions, download UI, permission UI, session restoration, or private-mode promise. Browsing history is the one thing Felifox itself persists, in `~/Library/Application Support/Felifox/history/`; delete that folder to clear it. Tabs, theme and volume choices still last for the session only. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
+Keep it small: no bookmarks manager, extensions, download UI, permission UI, session restoration, or private-mode promise. Browsing history and site icons are the one thing Felifox itself persists, in `~/Library/Application Support/Felifox/history/`; delete that folder to clear them. Tabs, theme and volume choices still last for the session only. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
 
 - Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
@@ -184,6 +189,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/engine.rs`: address-to-URL/search resolution only.
 - `src/history.rs`: on-disk visit store, fuzzy matcher and frecency ranking.
 - `src/suggestions.rs`: the native, non-focusing history dropdown under the address bar.
+- `src/icons.rs`, `src/page_icon.js`: site icons handed over by the page as validated PNGs, stored per host, with monogram fallback.
 - `src/webview.rs`: Wry child views, native callbacks, history, bounds and focus.
 - `src/theme.rs`: shared palettes, contrast checks and native Reduce Motion support.
 - `src/art.rs` and `src/art/`: theme dispatch and five independent procedural scenes; no textures or animation framework.
