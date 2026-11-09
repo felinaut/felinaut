@@ -258,6 +258,8 @@ impl Browser {
         .detach();
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
+            // Otherwise the dropdown outlives us and the app never quits.
+            suggestions::close(cx);
             let _ = weak.update(cx, |this, _| {
                 for tab in &mut this.tabs {
                     tab.page.take();
@@ -430,23 +432,26 @@ impl Browser {
             let _ = page.focus();
         }
     }
-    /// The user edited the address: refresh the rows and, when typing forward, complete the
-    /// first row whose URL continues the text (`ru` → `rust-lang.org`, completion selected).
+    /// The user edited the address: refresh the rows and, with the caret at the end, complete
+    /// the first row whose URL contains the text (`le` → `goog·le·.com`, dimmed around it).
     fn update_suggestions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = self.address.read(cx);
         let text = input.text().to_owned();
-        let extends =
-            text.len() > self.typed.len() && text.starts_with(&self.typed) && input.caret_at_end();
+        let at_end = input.caret_at_end();
         self.typed = text;
         self.refresh_suggestions(window, cx);
-        if extends && let Some(index) = history::completion(&self.typed, &self.suggestions) {
+        if at_end && let Some((index, start)) = history::completion(&self.typed, &self.suggestions)
+        {
             let row = self.suggestions.remove(index);
-            let full = row.display_url.clone();
             self.suggestions.insert(0, row);
             self.selected = Some(0);
-            let typed = self.typed.len();
+            let display = &self.suggestions[0].display_url;
+            let ghost = (
+                display[..start].to_owned(),
+                display[start + self.typed.len()..].to_owned(),
+            );
             self.address
-                .update(cx, |input, cx| input.complete(full, typed, cx));
+                .update(cx, |input, cx| input.set_completion(Some(ghost), cx));
         }
     }
     /// Recomputes the rows for the typed text and opens or closes the dropdown accordingly.
@@ -497,8 +502,8 @@ impl Browser {
             self.address
                 .update(cx, |input, cx| input.set_text(typed, cx));
         }
-        // Forgotten so the next edit, however short, counts as typing forward.
-        self.typed.clear();
+        self.address
+            .update(cx, |input, cx| input.set_completion(None, cx));
         if self.suggestions.is_empty() && self.selected.is_none() {
             return;
         }

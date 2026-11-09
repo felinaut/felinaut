@@ -395,16 +395,23 @@ pub fn suggest(entries: &[Entry], query: &str, now: u64, limit: usize) -> Vec<Su
     out
 }
 
-/// The row whose shown URL continues what was typed, for inline autocomplete: `ru` completes
-/// to `rust-lang.org`. Case-insensitive, and never when the typed text already covers it.
-pub fn completion(typed: &str, suggestions: &[Suggestion]) -> Option<usize> {
-    if typed.is_empty() {
+/// The first row whose shown URL contains the typed text, for inline autocomplete: `le`
+/// completes to `goog·le·.com` and `lang.org` to `rust-·lang.org·`. Returns the row and the
+/// byte offset of the typed text in its URL. ASCII case-insensitive, and never when the typed
+/// text already is the whole URL.
+pub fn completion(typed: &str, suggestions: &[Suggestion]) -> Option<(usize, usize)> {
+    if typed.is_empty() || typed.contains(char::is_whitespace) {
         return None;
     }
-    suggestions.iter().position(|row| {
-        row.display_url.len() > typed.len()
-            && row.display_url.is_char_boundary(typed.len())
-            && row.display_url[..typed.len()].eq_ignore_ascii_case(typed)
+    let needle = typed.to_ascii_lowercase();
+    suggestions.iter().enumerate().find_map(|(index, row)| {
+        if row.display_url.len() == typed.len() {
+            return None;
+        }
+        row.display_url
+            .to_ascii_lowercase()
+            .find(&needle)
+            .map(|start| (index, start))
     })
 }
 
@@ -504,10 +511,11 @@ mod tests {
     }
 
     #[test]
-    fn completes_the_first_row_whose_url_continues_the_typed_text() {
+    fn completes_the_first_row_whose_url_contains_the_typed_text() {
         let entries = [
             entry("https://github.com/rust-lang/rust", "The Rust repo", 9, NOW),
             entry("https://www.rust-lang.org/", "Rust", 1, NOW),
+            entry("https://www.google.com/", "Google", 1, NOW),
         ];
         let rows = suggest(&entries, "ru", NOW, 8);
         assert_eq!(
@@ -517,19 +525,35 @@ mod tests {
                 "https://www.rust-lang.org/"
             ]
         );
+        assert_eq!(completion("ru", &rows), Some((0, 11)), "first row wins");
+        let rows = suggest(&entries, "lang.org", NOW, 8);
+        assert_eq!(completion("lang.org", &rows), Some((0, 5)), "mid-URL match");
         assert_eq!(
-            completion("ru", &rows),
-            Some(1),
-            "a title match is not completed"
+            completion("LANG.ORG", &rows),
+            Some((0, 5)),
+            "case-insensitive"
         );
-        assert_eq!(completion("RU", &rows), Some(1), "case-insensitive");
+        let rows = suggest(&entries, "le", NOW, 8);
+        assert_eq!(urls(&rows), ["https://www.google.com/"]);
+        assert_eq!(completion("le", &rows), Some((0, 4)));
+        let rows = suggest(&entries, "rust-lang.org", NOW, 8);
         assert_eq!(
             completion("rust-lang.org", &rows),
             None,
             "nothing left to add"
         );
+        assert_eq!(
+            completion("rust lang", &rows),
+            None,
+            "words are not completed"
+        );
         assert_eq!(completion("", &rows), None);
-        assert_eq!(completion("x", &rows), None);
+        let rows = suggest(&entries, "repo", NOW, 8);
+        assert_eq!(
+            completion("repo", &rows),
+            None,
+            "title-only matches are not"
+        );
     }
 
     #[test]

@@ -79,6 +79,8 @@ pub struct AddressInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
+    /// Inline autocomplete drawn dimmed around the typed text: `goog·le·.com` for `le`.
+    ghost: Option<(String, String)>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
@@ -97,6 +99,7 @@ impl AddressInput {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
+            ghost: None,
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
@@ -111,6 +114,7 @@ impl AddressInput {
         self.selected_range = end..end;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.ghost = None;
         self.last_layout = None;
         self.last_bounds = None;
         self.is_selecting = false;
@@ -127,14 +131,21 @@ impl AddressInput {
         self.selected_range.end == self.content.len() && self.marked_range.is_none()
     }
 
-    /// Inline autocomplete: show `text` with everything past the first `typed` bytes selected, so
-    /// the next keystroke replaces the completion and Backspace removes just it.
-    pub fn complete(&mut self, text: String, typed: usize, cx: &mut Context<Self>) {
-        self.selected_range = typed.min(text.len())..text.len();
-        self.content = text.into();
-        self.selection_reversed = false;
-        self.marked_range = None;
-        cx.notify();
+    /// Inline autocomplete: `prefix` and `suffix` are drawn dimmed around the typed text and are
+    /// not part of it, so editing keeps working on what was typed. `→` at the end accepts them.
+    pub fn set_completion(&mut self, ghost: Option<(String, String)>, cx: &mut Context<Self>) {
+        if self.ghost != ghost {
+            self.ghost = ghost;
+            cx.notify();
+        }
+    }
+
+    /// Bytes of ghost text drawn before the content, to map between content and layout indices.
+    fn ghost_offset(&self) -> usize {
+        match &self.ghost {
+            Some((prefix, _)) if !self.content.is_empty() => prefix.len(),
+            _ => 0,
+        }
     }
 
     /// Window-relative bounds of the text line from the last paint, for anchoring popups.
@@ -172,8 +183,14 @@ impl AddressInput {
         }
     }
 
-    fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
+    fn right(&mut self, _: &Right, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() && self.caret_at_end() && self.ghost.is_some() {
+            // Accept the completion.
+            let (prefix, suffix) = self.ghost.take().unwrap();
+            let full = format!("{prefix}{}{suffix}", self.content);
+            self.selected_range = 0..self.content.len();
+            self.replace_text_in_range(None, &full, window, cx);
+        } else if self.selected_range.is_empty() {
             self.move_to(self.next_boundary(self.selected_range.end), cx);
         } else {
             self.move_to(self.selected_range.end, cx)
@@ -301,6 +318,8 @@ impl AddressInput {
             return self.content.len();
         }
         line.closest_index_for_x(position.x - bounds.left())
+            .saturating_sub(self.ghost_offset())
+            .min(self.content.len())
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -428,6 +447,7 @@ impl EntityInputHandler for AddressInput {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.selection_reversed = false;
         self.marked_range.take();
+        self.ghost = None;
         cx.emit(AddressEvent::Changed);
         cx.notify();
     }
@@ -475,6 +495,7 @@ impl EntityInputHandler for AddressInput {
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
 
         self.selection_reversed = false;
+        self.ghost = None;
         cx.emit(AddressEvent::Changed);
         cx.notify();
     }
@@ -487,14 +508,15 @@ impl EntityInputHandler for AddressInput {
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
+        let offset = self.ghost_offset();
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
             point(
-                bounds.left() + last_layout.x_for_index(range.start),
+                bounds.left() + last_layout.x_for_index(range.start + offset),
                 bounds.top(),
             ),
             point(
-                bounds.left() + last_layout.x_for_index(range.end),
+                bounds.left() + last_layout.x_for_index(range.end + offset),
                 bounds.bottom(),
             ),
         ))
@@ -512,7 +534,10 @@ impl EntityInputHandler for AddressInput {
             return Some(0);
         }
         let last_layout = self.last_layout.as_ref()?;
-        let utf8_index = last_layout.index_for_x(line_point.x)?;
+        let utf8_index = last_layout
+            .index_for_x(line_point.x)?
+            .saturating_sub(self.ghost_offset())
+            .min(self.content.len());
         Some(self.offset_to_utf16(utf8_index))
     }
 }
@@ -571,15 +596,19 @@ impl Element for TextElement {
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
         let content = input.content.clone();
-        let selected_range = input.selected_range.clone();
-        let cursor = input.cursor_offset();
+        let offset = input.ghost_offset();
+        let selected_range = input.selected_range.start + offset..input.selected_range.end + offset;
+        let cursor = input.cursor_offset() + offset;
         let style = window.text_style();
         let p = theme::palette(cx);
 
+        let ghost = input.ghost.clone().filter(|_| !content.is_empty());
         let (display_text, text_color) = if content.is_empty() {
             (input.placeholder.clone(), rgb(p.muted).into())
+        } else if let Some((prefix, suffix)) = &ghost {
+            (format!("{prefix}{content}{suffix}").into(), style.color)
         } else {
-            (content, style.color)
+            (content.clone(), style.color)
         };
 
         let run = TextRun {
@@ -590,7 +619,28 @@ impl Element for TextElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = if let Some(marked_range) = input.marked_range.as_ref() {
+        let runs = if let Some((prefix, suffix)) = &ghost {
+            let dim = rgb(p.muted).into();
+            vec![
+                TextRun {
+                    len: prefix.len(),
+                    color: dim,
+                    ..run.clone()
+                },
+                TextRun {
+                    len: content.len(),
+                    ..run.clone()
+                },
+                TextRun {
+                    len: suffix.len(),
+                    color: dim,
+                    ..run
+                },
+            ]
+            .into_iter()
+            .filter(|run| run.len > 0)
+            .collect()
+        } else if let Some(marked_range) = input.marked_range.as_ref() {
             vec![
                 TextRun {
                     len: marked_range.start,
