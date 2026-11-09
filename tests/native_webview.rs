@@ -21,6 +21,7 @@ use webview::{Event, NativePage};
 struct TestWindow {
     page: Rc<NativePage>,
     _second_tab: NativePage,
+    _failed_tab: Rc<NativePage>,
 }
 impl Render for TestWindow {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -90,6 +91,10 @@ fn main() {
                 let page = Rc::new(NativePage::new(window, &first_url).expect("create native page"));
                 let second_tab = NativePage::new(window, "about:blank").expect("create inactive tab");
                 second_tab.set_visible(false).unwrap();
+                // A first load whose host never resolves (.invalid is reserved) leaves WKWebView
+                // without a URL; polling such a tab must not abort the app.
+                let failed_tab = Rc::new(NativePage::new(window, "http://felifox.invalid/").expect("create failing tab"));
+                let failed_page = failed_tab.clone();
                 page.focus().unwrap();
                 page.focus_parent().unwrap();
                 let second_page = page.clone();
@@ -104,6 +109,7 @@ fn main() {
                         let mut foreground_open = false;
                         loop {
                             Timer::after(Duration::from_millis(50)).await;
+                            let _ = failed_page.drain_events();
                             let mut finished = false;
                             for event in second_page.drain_events() {
                                 match event {
@@ -167,7 +173,7 @@ fn main() {
                                     assert!(hover_seen && hover_cleared, "link hover status must set and clear");
                                     assert_eq!(background_opens, 3, "Cmd-click, middle-click and context-menu item must each open one background tab");
                                     assert!(foreground_open, "Cmd-Shift-click opens a foreground tab");
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, hover status, Cmd-click, middle-click and right-click menu bridge");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load URL polling, hover status, Cmd-click, middle-click and right-click menu bridge");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;
@@ -177,7 +183,7 @@ fn main() {
                             stage += 1;
                         }
                     }).detach();
-                    TestWindow { page, _second_tab: second_tab }
+                    TestWindow { page, _second_tab: second_tab, _failed_tab: failed_tab }
                 })
             },
         ).expect("native test window");

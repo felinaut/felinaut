@@ -165,7 +165,7 @@ impl NativePage {
         let mut events: Vec<_> = self.events.try_iter().collect();
         // Poll the committed native URL: the navigation-policy callback also sees
         // subframes and attempted navigations, and misses history.pushState changes.
-        if let Ok(url) = self.webview.url() {
+        if let Some(url) = self.current_url() {
             let mut last_url = self.last_url.borrow_mut();
             if !url.is_empty() && *last_url != url {
                 last_url.clone_from(&url);
@@ -173,6 +173,17 @@ impl NativePage {
             }
         }
         events
+    }
+
+    /// WKWebView has no URL before its first commit and after a failed first load; Wry's
+    /// `WebView::url` unwraps it and aborts the app, so read it here.
+    fn current_url(&self) -> Option<String> {
+        use wry::WebViewExtMacOS;
+        let webview = self.webview.webview();
+        // SAFETY: plain property reads on a live WKWebView owned by this page, on the main thread.
+        let url = unsafe { webview.URL() }?;
+        let absolute = url.absoluteString()?;
+        Some(absolute.to_string())
     }
 }
 
