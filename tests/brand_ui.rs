@@ -56,7 +56,7 @@ fn main() {
     let passed = Rc::new(Cell::new(false));
     let result = passed.clone();
     Application::new().with_assets(brand::BrandAssets).run(move |cx| {
-        cx.set_global(ThemeSettings { theme: Theme::default(), animate: true });
+        cx.set_global(ThemeSettings { theme: Theme::default(), animate: true, ..Default::default() });
         let parent = cx.open_window(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None, size(px(800.), px(600.)), cx,

@@ -6,7 +6,7 @@ use gpui::{
     div, point, prelude::*, px, rgb, size,
 };
 
-use crate::theme::{self, Theme, ThemeSettings};
+use crate::theme::{self, AddressDisplay, Theme, ThemeSettings};
 
 actions!(appearance, [CloseAppearance]);
 
@@ -34,7 +34,7 @@ pub fn open(parent: &mut Window, cx: &mut App) {
 
     let parent_handle = parent.window_handle();
     let parent_bounds = parent.bounds();
-    let dimensions = size(px(280.), px(390.));
+    let dimensions = size(px(280.), px(540.));
     let mut origin = parent_bounds.origin + point(parent_bounds.size.width - px(290.), px(116.));
     let display = parent.display(cx);
     if let Some(display) = &display {
@@ -123,13 +123,24 @@ impl Appearance {
     }
 
     fn choose_theme(&mut self, theme: Theme, window: &mut Window, cx: &mut Context<Self>) {
-        cx.update_global::<ThemeSettings, _>(|settings, _| settings.theme = theme);
+        cx.update_global::<ThemeSettings, _>(|settings, _| {
+            settings.theme = theme;
+            settings.save();
+        });
         self.close(window, cx, true);
     }
 
     fn toggle_motion(&mut self, cx: &mut Context<Self>) {
         cx.update_global::<ThemeSettings, _>(|settings, _| {
             settings.animate = !settings.animate;
+            settings.save();
+        });
+    }
+
+    fn choose_address(&mut self, display: AddressDisplay, cx: &mut Context<Self>) {
+        cx.update_global::<ThemeSettings, _>(|settings, _| {
+            settings.address = display;
+            settings.save();
         });
     }
 
@@ -159,6 +170,7 @@ impl Render for Appearance {
         let settings = cx.global::<ThemeSettings>();
         let selected = settings.theme;
         let animate = settings.animate;
+        let address = settings.address;
         div()
             .id("appearance")
             .key_context("FelifoxAppearance")
@@ -220,6 +232,58 @@ impl Render for Appearance {
                             .child(if active { "✓" } else { "" }),
                     )
             }))
+            .child(
+                div()
+                    .mt_2()
+                    .pt_3()
+                    .border_t_1()
+                    .border_color(rgb(p.border))
+                    .child(
+                        div()
+                            .h(px(26.))
+                            .px_2()
+                            .text_size(px(11.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(rgb(p.muted))
+                            .child("ADDRESS BAR SHOWS"),
+                    )
+                    .children(AddressDisplay::ALL.into_iter().enumerate().map(
+                        |(index, display)| {
+                            let active = display == address;
+                            div()
+                                .id(("address-display", index))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .px_2()
+                                .h(px(30.))
+                                .rounded_lg()
+                                .cursor_pointer()
+                                .hover(move |style| style.bg(rgb(p.elevated)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.choose_address(display, cx)
+                                }))
+                                .child(
+                                    div()
+                                        .size(px(16.))
+                                        .rounded_full()
+                                        .border_1()
+                                        .border_color(rgb(p.primary))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            div().size(px(8.)).rounded_full().bg(rgb(if active {
+                                                p.primary
+                                            } else {
+                                                p.surface
+                                            })),
+                                        ),
+                                )
+                                .child(display.name())
+                        },
+                    )),
+            )
             .child(
                 div()
                     .mt_2()

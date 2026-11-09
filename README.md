@@ -72,7 +72,7 @@ hdiutil verify dist/Felifox-0.1-beta-macos-arm64.dmg
 ## Controls
 
 - Native address input with Unicode, IME, selection and clipboard.
-- **Title-first address bar**: while you are not editing it, the address field shows the site's icon, the page title and the domain instead of the raw URL. Click it or press `⌘L` to get the full URL, selected for editing.
+- **Title-first address bar**: while you are not editing it, the address field shows the site's icon, the page title and the domain instead of the raw URL. Click it or press `⌘L` to get the full URL, selected for editing. **Theme ▾ → Address bar shows** switches between *Page title*, *Domain only* and *Full address*.
 - **History suggestions** while you type: a dropdown of previously visited pages, each with its icon, matched fuzzily against both title and URL; an empty address bar lists your most frecent pages (see below).
 - Tabs retain their own live webview and native navigation history when switched.
 - Back, forward, reload and home; native page titles and URLs update the chrome.
@@ -96,7 +96,7 @@ hdiutil verify dist/Felifox-0.1-beta-macos-arm64.dmg
 
 ### Title-first address bar and history suggestions
 
-The idle address field reads like Arc's or Safari's: **icon · page title · domain**. The domain stays visible on purpose, since hiding it is what drew the criticism when Chrome trialled a domain-only bar, and the full URL is one click or `⌘L` away. Tabs show the same icon.
+The idle address field reads like Arc's or Safari's: **icon · page title · domain**. The domain stays visible on purpose, since hiding it is what drew the criticism when Chrome trialled a domain-only bar, and the full URL is one click or `⌘L` away. Tabs show the same icon. Prefer something else? The Theme ▾ dropdown's **Address bar shows** setting offers *Page title* (default), *Domain only* (Safari-style) or *Full address* (the editable URL at all times, Chrome-style); the choice is saved with the theme.
 
 Icons come from the page itself: a document-start script reads the site's `<link rel="icon">` (or `/favicon.ico`), draws it onto a 32 × 32 canvas and hands the native side a small PNG. Only same-origin or CORS-readable icons can be read, and strict `img-src` policies are handled by decoding the blob directly. Native code validates the PNG (signature, dimensions, 64 KB cap) before it is drawn, and keeps it as `history/icons/<host>.png`. Sites without a readable icon get a themed monogram of their host instead.
 
@@ -128,7 +128,7 @@ Limitation: media served from another origin without CORS would go silent in Web
 
 ## Artwork and appearance
 
-The toolbar's **Theme ▾** button opens five curated palettes: Midnight Party (default), Confetti Sunset, Neon Wool, Alpine Pop, and Forest Carnival. Themes recolor Felifox's chrome, address field, New Tab page and About window—not websites. Theme and animation choices currently last for the session only.
+The toolbar's **Theme ▾** button opens five curated palettes: Midnight Party (default), Confetti Sunset, Neon Wool, Alpine Pop, and Forest Carnival. Themes recolor Felifox's chrome, address field, New Tab page and About window—not websites. Theme, animation and address-bar choices are saved to `~/Library/Application Support/Felifox/settings` (three `key=value` lines) and restored on launch.
 
 - **Original embedded SVG artwork:** a mischievous midnight-purple cat playing with a flaming wool ball, plus a simplified flaming-yarn symbol. No fox emoji, external assets or large background bitmaps.
 - **Five distinct procedural scenes:** Midnight Party has tumbling confetti, streamers, golden stars and neon ribbons; Confetti Sunset has a golden sun, peach/coral hills and falling confetti; Alpine Pop has snowcapped ice mountains, glacier facets, drifting snow and ridge glints; Neon Wool has rolling yarn balls and flowing loose threads; Forest Carnival has swaying foliage, citrus, cherries, flowers and fluttering petals.
@@ -156,7 +156,7 @@ The previous WebRender/SWGL pipeline, HTML extraction, custom HTTP loader and `-
 
 ## Scope and limitations
 
-Keep it small: no bookmarks manager, extensions, download UI, permission UI, session restoration, or private-mode promise. Browsing history and site icons are the one thing Felifox itself persists, in `~/Library/Application Support/Felifox/history/`; delete that folder to clear them. Tabs, theme and volume choices still last for the session only. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
+Keep it small: no bookmarks manager, extensions, download UI, permission UI, session restoration, or private-mode promise. Felifox itself persists only browsing history and site icons (`~/Library/Application Support/Felifox/history/`, delete it to clear them) and the Appearance choices (`…/Felifox/settings`). Tabs and volume choices still last for the session only. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
 
 - Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
@@ -191,7 +191,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/suggestions.rs`: the native, non-focusing history dropdown under the address bar.
 - `src/icons.rs`, `src/page_icon.js`: site icons handed over by the page as validated PNGs, stored per host, with monogram fallback.
 - `src/webview.rs`: Wry child views, native callbacks, history, bounds and focus.
-- `src/theme.rs`: shared palettes, contrast checks and native Reduce Motion support.
+- `src/theme.rs`: shared palettes, contrast checks, native Reduce Motion support and the saved Appearance settings.
 - `src/art.rs` and `src/art/`: theme dispatch and five independent procedural scenes; no textures or animation framework.
 - `src/link_interactions.js`: document-level link status, modifier-click and accessible context-menu handling.
 - `src/audio.rs`, `src/audio_control.js`: per-tab volume model, slider mapping, the audio bridge and Web Audio routing.

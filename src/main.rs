@@ -25,7 +25,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use theme::{Palette, ThemeSettings};
+use theme::{AddressDisplay, Palette, ThemeSettings};
 use webview::{Event, NativePage};
 
 const HOME: &str = "felifox://newtab";
@@ -348,10 +348,20 @@ impl Browser {
         self.icons.borrow_mut().insert(host, Some(image));
         cx.notify();
     }
-    /// The idle address field: icon, page title and domain instead of the raw URL.
-    fn title_chip(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    /// The idle address field: icon plus page title and domain, or the domain alone.
+    fn title_chip(
+        &self,
+        display: AddressDisplay,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let tab = &self.tabs[self.active];
         let host = host(&tab.url).unwrap_or_default();
+        let (label, detail) = if display == AddressDisplay::Domain {
+            (host.clone(), None)
+        } else {
+            (tab.display_title(), Some(host.clone()))
+        };
         div()
             .id("title-chip")
             .h(px(42.))
@@ -379,15 +389,17 @@ impl Browser {
                     .text_ellipsis()
                     .whitespace_nowrap()
                     .text_size(px(14.))
-                    .child(tab.display_title()),
+                    .child(label),
             )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(12.))
-                    .text_color(rgb(p.muted))
-                    .child(host),
-            )
+            .when_some(detail, |chip, detail| {
+                chip.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(12.))
+                        .text_color(rgb(p.muted))
+                        .child(detail),
+                )
+            })
             .into_any_element()
     }
     fn submit(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1039,8 +1051,9 @@ impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::palette(cx);
         let address_focused = self.address.read(cx).focus_handle(cx).is_focused(window);
+        let display = cx.global::<ThemeSettings>().address;
         let tab = &self.tabs[self.active];
-        let show_chip = !tab.home && !address_focused;
+        let show_chip = !tab.home && !address_focused && display != AddressDisplay::Url;
         let back_enabled = tab.can_go_back();
         let forward_enabled = tab.can_go_forward();
         let status = tab
@@ -1195,7 +1208,7 @@ impl Render for Browser {
                         ),
                     )
                     .child(div().flex_1().min_w_0().child(if show_chip {
-                        self.title_chip(p, cx)
+                        self.title_chip(display, p, cx)
                     } else {
                         self.address.clone().into_any_element()
                     }))
@@ -1267,10 +1280,7 @@ fn main() {
     Application::new()
         .with_assets(brand::BrandAssets)
         .run(|cx: &mut App| {
-            cx.set_global(ThemeSettings {
-                theme: theme::Theme::default(),
-                animate: true,
-            });
+            cx.set_global(ThemeSettings::load());
             input::init(cx);
             cx.bind_keys([
                 KeyBinding::new("cmd-t", NewTab, None),

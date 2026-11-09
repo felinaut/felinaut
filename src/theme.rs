@@ -1,5 +1,7 @@
 //! Shared color tokens: themes change browser chrome, never website styling.
 
+use std::path::{Path, PathBuf};
+
 use gpui::{App, Global};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -129,13 +131,130 @@ impl Theme {
     }
 }
 
-#[derive(Default)]
+/// What the address field shows while it is not being edited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AddressDisplay {
+    /// Site icon, page title and the domain.
+    #[default]
+    Title,
+    /// Site icon and the domain only, like Safari.
+    Domain,
+    /// The full URL in the editable field, like Chrome.
+    Url,
+}
+
+impl AddressDisplay {
+    pub const ALL: [Self; 3] = [Self::Title, Self::Domain, Self::Url];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Title => "Page title",
+            Self::Domain => "Domain only",
+            Self::Url => "Full address",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Domain => "domain",
+            Self::Url => "url",
+        }
+    }
+}
+
+impl Theme {
+    fn key(self) -> String {
+        self.name().to_lowercase().replace(' ', "-")
+    }
+}
+
+/// The Appearance dropdown's choices, kept in `~/Library/Application Support/Felifox/settings`
+/// as `key=value` lines.
 pub struct ThemeSettings {
     pub theme: Theme,
-    /// Session preference, additionally constrained by macOS Reduce Motion.
+    /// Preference, additionally constrained by macOS Reduce Motion.
     pub animate: bool,
+    pub address: AddressDisplay,
 }
 impl Global for ThemeSettings {}
+
+impl Default for ThemeSettings {
+    fn default() -> Self {
+        Self {
+            theme: Theme::default(),
+            animate: true,
+            address: AddressDisplay::default(),
+        }
+    }
+}
+
+pub fn settings_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(Path::new(&home).join("Library/Application Support/Felifox/settings"))
+}
+
+impl ThemeSettings {
+    /// Unknown keys and values keep their defaults, so an edited file never breaks startup.
+    pub fn parse(text: &str) -> Self {
+        let mut settings = Self::default();
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            match (key.trim(), value.trim()) {
+                ("theme", value) => {
+                    if let Some(theme) = Theme::ALL.into_iter().find(|t| t.key() == value) {
+                        settings.theme = theme;
+                    }
+                }
+                ("animate", value) => settings.animate = value != "false",
+                ("address", value) => {
+                    if let Some(display) =
+                        AddressDisplay::ALL.into_iter().find(|d| d.key() == value)
+                    {
+                        settings.address = display;
+                    }
+                }
+                _ => {}
+            }
+        }
+        settings
+    }
+
+    pub fn serialize(&self) -> String {
+        format!(
+            "theme={}\nanimate={}\naddress={}\n",
+            self.theme.key(),
+            self.animate,
+            self.address.key()
+        )
+    }
+
+    pub fn load() -> Self {
+        settings_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map_or_else(Self::default, |text| Self::parse(&text))
+    }
+
+    /// Three short lines, written when the user changes a choice.
+    pub fn save(&self) {
+        // The native UI tests drive these handlers; they must not touch the user's file.
+        if cfg!(test) {
+            return;
+        }
+        let Some(path) = settings_path() else {
+            return;
+        };
+        let result = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&path, self.serialize()));
+        if let Err(error) = result {
+            eprintln!("Could not save settings: {error}");
+        }
+    }
+}
 
 pub fn palette(cx: &App) -> Palette {
     cx.global::<ThemeSettings>().theme.palette()
@@ -175,6 +294,32 @@ mod tests {
         let b = luminance(b);
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
     }
+    #[test]
+    fn settings_round_trip_and_tolerate_edits() {
+        let settings = ThemeSettings {
+            theme: Theme::AlpinePop,
+            animate: false,
+            address: AddressDisplay::Domain,
+        };
+        let text = settings.serialize();
+        assert_eq!(text, "theme=alpine-pop\nanimate=false\naddress=domain\n");
+        let parsed = ThemeSettings::parse(&text);
+        assert_eq!(parsed.theme, Theme::AlpinePop);
+        assert!(!parsed.animate);
+        assert_eq!(parsed.address, AddressDisplay::Domain);
+
+        let sloppy = ThemeSettings::parse("junk\ntheme = Neon Wool\naddress=url\nanimate=yes\n");
+        assert_eq!(
+            sloppy.theme,
+            Theme::default(),
+            "unknown theme keeps the default"
+        );
+        assert_eq!(sloppy.address, AddressDisplay::Url);
+        assert!(sloppy.animate);
+        let empty = ThemeSettings::parse("");
+        assert!(empty.animate && empty.address == AddressDisplay::Title);
+    }
+
     #[test]
     fn mountain_theme_is_named_alpine_pop() {
         assert_eq!(Theme::AlpinePop.name(), "Alpine Pop");
