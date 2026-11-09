@@ -1,6 +1,9 @@
 //! Opt-in native integration test. WKWebView requires macOS's main thread.
 //! Run: FELIFOX_NATIVE_TEST=1 cargo test --test native_webview
 
+#[allow(dead_code, unused_imports)]
+#[path = "../src/audio.rs"]
+mod audio;
 #[allow(dead_code)]
 #[path = "../src/webview.rs"]
 mod webview;

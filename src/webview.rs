@@ -6,6 +6,8 @@ use std::sync::mpsc::{self, Receiver};
 use gpui::{Bounds, Pixels};
 use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
+use crate::audio::{AudioReport, TabAudio, parse_report};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Started(String),
@@ -15,6 +17,7 @@ pub enum Event {
     Open(String),
     OpenInBackground(String),
     Hover(Option<String>),
+    Audio(AudioReport),
 }
 
 /// One persistent native child view per tab; hiding it does not discard its history or document.
@@ -35,8 +38,16 @@ impl NativePage {
         let link_sender = sender.clone();
         let webview = WebViewBuilder::new()
             .with_initialization_script_for_main_only(include_str!("link_interactions.js"), false)
+            .with_initialization_script_for_main_only(include_str!("audio_control.js"), false)
             .with_ipc_handler(move |request| {
-                if let Some(event) = parse_link_event(request.body()) {
+                let body = request.body();
+                let event = parse_link_event(body).or_else(|| {
+                    (body.len() <= 64)
+                        .then(|| parse_report(body))
+                        .flatten()
+                        .map(Event::Audio)
+                });
+                if let Some(event) = event {
                     let _ = link_sender.send(event);
                 }
             })
@@ -78,6 +89,13 @@ impl NativePage {
     pub fn evaluate_for_test(&self, script: &str) -> Result<(), String> {
         self.webview
             .evaluate_script(script)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Applies a tab's volume, mute and EQ to the current document and all its frames.
+    pub fn apply_audio(&self, audio: TabAudio) -> Result<(), String> {
+        self.webview
+            .evaluate_script(&audio.script())
             .map_err(|error| error.to_string())
     }
 

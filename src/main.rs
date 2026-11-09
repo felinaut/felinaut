@@ -1,12 +1,15 @@
 mod about;
 mod appearance;
 mod art;
+mod audio;
 mod brand;
 mod engine;
 mod input;
 mod theme;
+mod volume;
 mod webview;
 
+use audio::{AudioReport, PageSound, TabAudio};
 use gpui::{prelude::*, *};
 use input::{AddressInput, Submit};
 use std::{
@@ -30,7 +33,9 @@ actions!(
         Reload,
         Home,
         Quit,
-        AboutFelifox
+        AboutFelifox,
+        VolumeControls,
+        MuteTab
     ]
 );
 
@@ -43,6 +48,10 @@ struct Tab {
     error: Option<String>,
     hovered_link: Option<String>,
     page: Option<Rc<NativePage>>,
+    /// The user's settings for this tab; they persist across its navigations.
+    audio: TabAudio,
+    /// What the current document reports about its playback.
+    sound: PageSound,
 }
 impl Tab {
     fn new(id: u64) -> Self {
@@ -55,6 +64,32 @@ impl Tab {
             error: None,
             hovered_link: None,
             page: None,
+            audio: TabAudio::default(),
+            sound: PageSound::default(),
+        }
+    }
+    fn display_title(&self) -> String {
+        if self.home {
+            "New Tab".into()
+        } else {
+            self.title.clone()
+        }
+    }
+    fn sound(&self, active: bool) -> volume::TabSound {
+        volume::TabSound {
+            id: self.id,
+            title: self.display_title().into(),
+            audio: self.audio,
+            audible: self.sound.audible(),
+            limited: self.sound.limited(),
+            active,
+        }
+    }
+    fn apply_audio(&self) {
+        if let Some(page) = &self.page
+            && let Err(error) = page.apply_audio(self.audio)
+        {
+            eprintln!("Could not apply tab audio: {error}");
         }
     }
     fn url(&self) -> &str {
@@ -180,6 +215,7 @@ impl Browser {
                 changed = true;
                 match event {
                     Event::Started(url) => {
+                        tab.sound.clear();
                         tab.hovered_link = None;
                         tab.loading = true;
                         tab.error = None;
@@ -188,6 +224,9 @@ impl Browser {
                     Event::Finished(url) => {
                         tab.loading = false;
                         tab.url = url;
+                        if !tab.audio.is_default() {
+                            tab.apply_audio();
+                        }
                     }
                     Event::Title(title) => {
                         tab.title = title;
@@ -199,6 +238,17 @@ impl Browser {
                     Event::Open(url) => open.push((url, true)),
                     Event::OpenInBackground(url) => open.push((url, false)),
                     Event::Hover(url) => tab.hovered_link = url,
+                    // A new document asks for the tab's settings; default ones need no script.
+                    Event::Audio(AudioReport::Hello) => {
+                        if !tab.audio.is_default() {
+                            tab.apply_audio();
+                        }
+                    }
+                    Event::Audio(AudioReport::Frame {
+                        id,
+                        audible,
+                        limited,
+                    }) => tab.sound.report(&id, audible, limited),
                 }
             }
         }
@@ -281,6 +331,50 @@ impl Browser {
             Err(error) => self.tabs[self.active].error = Some(error),
         }
         cx.notify();
+    }
+    /// Called by the volume popover and the tab strip.
+    fn set_audio(&mut self, id: u64, audio: TabAudio, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id)
+            && tab.audio != audio
+        {
+            tab.audio = audio;
+            tab.apply_audio();
+            cx.notify();
+        }
+    }
+    fn toggle_mute(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) {
+            let audio = TabAudio {
+                muted: !tab.audio.muted,
+                ..tab.audio
+            };
+            self.set_audio(id, audio, cx);
+        }
+    }
+    fn mute_tab(&mut self, _: &MuteTab, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_mute(self.tabs[self.active].id, cx);
+    }
+    fn volume_controls(&mut self, _: &VolumeControls, window: &mut Window, cx: &mut Context<Self>) {
+        volume::toggle(cx.weak_entity(), None, window, cx);
+    }
+    fn activate_tab_id(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
+            self.select_tab(index, window, cx);
+        }
+    }
+    fn sound_overview(&self) -> volume::Overview {
+        let mut tabs: Vec<_> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| tab.sound.audible() || !tab.audio.is_default())
+            .map(|(index, tab)| tab.sound(index == self.active))
+            .collect();
+        tabs.sort_by_key(|tab| (!tab.audible, !tab.active));
+        volume::Overview {
+            current: self.tabs[self.active].sound(true),
+            tabs,
+        }
     }
     fn select_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.tabs[self.active].hovered_link = None;
@@ -396,6 +490,43 @@ impl Browser {
             .cursor_pointer()
             .hover(move |s| s.bg(rgb(p.elevated)).text_color(rgb(p.text)))
             .child(label)
+    }
+    fn volume_button(&self, p: Palette, cx: &mut Context<Self>) -> Stateful<Div> {
+        let tab = &self.tabs[self.active];
+        let audio = tab.audio;
+        let color = if audio.muted {
+            p.muted
+        } else if audio.boosted() || tab.sound.audible() {
+            p.primary
+        } else {
+            p.muted
+        };
+        div()
+            .id("volume")
+            .h(px(34.))
+            .min_w(px(34.))
+            .px_2()
+            .gap_1()
+            .rounded_lg()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(rgb(color))
+            .text_size(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .cursor_pointer()
+            .when(!audio.is_default(), |button| button.bg(rgb(p.elevated)))
+            .hover(move |s| s.bg(rgb(p.elevated)).text_color(rgb(p.text)))
+            .on_click(cx.listener(|_, event: &ClickEvent, window, cx| {
+                let anchor = (!event.is_keyboard()).then(|| event.position().x);
+                volume::toggle(cx.weak_entity(), anchor, window, cx);
+            }))
+            .child(
+                brand::icon(volume::speaker_icon(audio))
+                    .size(px(18.))
+                    .text_color(rgb(color)),
+            )
+            .when_some(audio.badge(), |button, badge| button.child(badge))
     }
     fn home_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = theme::palette(cx);
@@ -634,6 +765,8 @@ impl Render for Browser {
             .on_action(cx.listener(Self::forward))
             .on_action(cx.listener(Self::reload))
             .on_action(cx.listener(Self::home))
+            .on_action(cx.listener(Self::mute_tab))
+            .on_action(cx.listener(Self::volume_controls))
             .child(
                 div()
                     .h(px(52.))
@@ -676,12 +809,32 @@ impl Render for Browser {
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .text_sm()
-                                    .child(if tab.home {
-                                        "New Tab".into()
-                                    } else {
-                                        tab.title.clone()
-                                    }),
+                                    .child(tab.display_title()),
                             )
+                            .when(tab.sound.audible() || tab.audio.muted, |row| {
+                                let id = tab.id;
+                                let muted = tab.audio.muted;
+                                row.child(
+                                    div()
+                                        .id(("tab-sound", id))
+                                        .p_1()
+                                        .rounded_md()
+                                        .hover(move |s| s.bg(rgb(p.elevated)))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.toggle_mute(id, cx);
+                                        }))
+                                        .child(
+                                            brand::icon(volume::speaker_icon(tab.audio))
+                                                .size(px(14.))
+                                                .text_color(rgb(if muted {
+                                                    p.muted
+                                                } else {
+                                                    p.primary
+                                                })),
+                                        ),
+                                )
+                            })
                             .child(
                                 div()
                                     .id(("close", tab.id))
@@ -734,6 +887,7 @@ impl Render for Browser {
                         ),
                     )
                     .child(div().flex_1().min_w_0().child(self.address.clone()))
+                    .child(self.volume_button(p, cx))
                     .child(
                         self.button("appearance", "◈ Theme ▾", p)
                             .text_size(px(12.))
@@ -802,6 +956,7 @@ fn main() {
                 KeyBinding::new("cmd-]", Forward, None),
                 KeyBinding::new("cmd-shift-h", Home, None),
                 KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("cmd-shift-m", MuteTab, None),
             ]);
             // Native menu equivalents remain available while WKWebView owns keyboard focus.
             cx.set_menus(vec![
@@ -837,6 +992,13 @@ fn main() {
                         MenuItem::action("Forward", Forward),
                         MenuItem::action("Reload", Reload),
                         MenuItem::action("Home", Home),
+                    ],
+                },
+                Menu {
+                    name: "Sound".into(),
+                    items: vec![
+                        MenuItem::action("Volume Controls…", VolumeControls),
+                        MenuItem::action("Mute / Unmute Tab", MuteTab),
                     ],
                 },
             ]);

@@ -28,6 +28,10 @@ harness = false
 name = "brand_ui"
 harness = false
 
+[[test]]
+name = "native_audio"
+harness = false
+
 [profile.dev]
 debug = 0
 

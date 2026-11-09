@@ -4,11 +4,25 @@ A simple Rust desktop browser: **GPUI for the interface, Wry / WKWebView for the
 
 ## Run
 
-Currently targets **macOS**. Install a recent Rust toolchain (Rust 1.94 or later recommended) and Xcode command-line tools. GPUI's Metal shader build may require full Xcode with its Metal toolchain installed.
+Currently targets **macOS**. Requirements:
+
+| Requirement | Why | Install |
+| --- | --- | --- |
+| Rust 1.94+ (edition 2024) | Compiles Felifox | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| Xcode (full app, with its Metal toolchain) | GPUI compiles its Metal shaders at build time via `xcrun metal` | App Store, then `sudo xcode-select -s /Applications/Xcode.app` and `xcodebuild -downloadComponent MetalToolchain` |
+| Python 3.11+ | `cargo dist` packaging only | `brew install python@3.13` |
 
 ```sh
 cargo run
 ```
+
+With only the Xcode Command Line Tools (no `metal` compiler), you can still build and test for local development by letting GPUI compile its shaders at runtime instead:
+
+```sh
+cargo run -F gpui/runtime_shaders
+```
+
+This flag changes nothing in `Cargo.toml`; use full Xcode for release and `cargo dist` builds.
 
 For an optimized executable:
 
@@ -65,6 +79,7 @@ hdiutil verify dist/Felifox-0.1-beta-macos-arm64.dmg
 - Right-click a web link for **Open Link in New Tab** (background). The document-local menu supports Enter, Escape, and outside-click dismissal; non-link right clicks keep WebKit's normal menu.
 - New-window links open as tabs instead of unmanaged native windows.
 - Native menus keep browser shortcuts available while the webview has focus.
+- **Per-tab volume** from 0 % to 600 %, with mute and sound presets (see below).
 
 | Shortcut    | Action                       |
 | ----------- | ---------------------------- |
@@ -74,9 +89,26 @@ hdiutil verify dist/Felifox-0.1-beta-macos-arm64.dmg
 | `⌘R`        | Reload                       |
 | `⌘[` / `⌘]` | Back / forward               |
 | `⌘⇧H`       | Home                         |
+| `⌘⇧M`       | Mute / unmute active tab     |
 | `⌘Q`        | Quit                         |
 
 Home is a GPUI page outside WebKit's history. Going back from the first web page shows Home; Forward restores the retained web page. Closing a tab destroys its webview. Opening a new tab does not allocate a webview until you navigate.
+
+## Tab volume
+
+Every tab has its own volume, built in rather than added by an extension. Click the speaker button left of **Theme ▾** (or **Sound → Volume Controls…**) to open the popover:
+
+- **Slider from 0 % to 600 %.** The left half covers 0–100 % for fine control; the right "flame" half is the boost range. It snaps to the page's natural 100 %, and the knob is the flaming-yarn mark. Drag, click, scroll, or use the **−/+** and **200 %/400 %** chips.
+- **Mute / Unmute**, and **Reset** back to the untouched default.
+- **Sound presets:** *Natural* (as the site made it), *Voice* (clearer dialogue) and *Bass* (warmer low end).
+- **Tabs with sound** lists every tab that is playing or has custom settings; click a row to switch to it, or its speaker to mute it.
+- Keyboard while the popover is open: `←`/`→` (or `↓`/`↑`) adjust in 5 % steps below 100 % and 25 % steps above, `M` mutes, `0` resets, `Esc` closes.
+
+Tabs that are playing sound or muted show a speaker in the tab strip; clicking it toggles mute. The toolbar button shows the active tab's level or "Muted". Settings belong to the tab, survive navigation within it, and last for the session only.
+
+How it works: a document-start script (`src/audio_control.js`) runs in every frame. While a tab uses the default settings, it never touches page media. Once you change volume or sound, playing media is routed through Web Audio (EQ shelves, gain, and a limiter when boosting), and page-created `AudioContext`s feed the same chain. Native code only sends a validated gain and preset name, and pages report two booleans back, so the bridge exposes no new native capability.
+
+Limitation: media served from another origin without CORS would go silent in Web Audio, so it is only lowered or muted through its `volume` (no boost or EQ). The popover says so when this applies. Audio from plugins, WebRTC streams and offline rendering is not boosted.
 
 ## Artwork and appearance
 
@@ -100,7 +132,7 @@ GPUI: tabs, address bar, controls, new-tab page
          macOS WebKit + JavaScriptCore
 ```
 
-A small document-start script supplies hover destinations, modifier-click requests and the link menu, including inside frames. Its narrowly scoped native message handler accepts only bounded HTTP(S) URLs; it exposes no filesystem or general native-command API. The link menu uses an isolated shadow root within the page because a GPUI overlay would be covered by WebKit's native view. Web pages remain untrusted and can interfere with document-local UI.
+Two small document-start scripts run in every frame: one for links, one for tab audio. The link script supplies hover destinations, modifier-click requests and the link menu, including inside frames. Its narrowly scoped native message handler accepts only bounded HTTP(S) URLs; it exposes no filesystem or general native-command API. The link menu uses an isolated shadow root within the page because a GPUI overlay would be covered by WebKit's native view. Web pages remain untrusted and can interfere with document-local UI.
 
 A GPUI canvas supplies the webview's window-relative logical bounds so it stays below the toolbar and above the status bar during resizing. Hidden tabs keep their documents and JavaScript state. Native callbacks enqueue events, which the UI drains every 100 ms; they never re-enter GPUI while it is rendering.
 
@@ -126,7 +158,11 @@ cargo test
 FELIFOX_NATIVE_TEST=1 cargo test --test native_webview
 # Native artwork, theme-handler and About-window checks:
 FELIFOX_NATIVE_TEST=1 cargo test --test brand_ui
+# Per-tab audio in real WebKit (plays a quiet tone from two loopback origins):
+FELIFOX_NATIVE_TEST=1 cargo test --test native_audio
 ```
+
+Add `-F gpui/runtime_shaders` to these commands on machines without full Xcode.
 
 The native webview test verifies actual WebKit JavaScript execution, DOM title changes, localStorage, native history, and injected DOM-event handling for hover, Cmd-click, middle-click and the right-click menu. The brand UI test also verifies that the actual artwork timer advances when enabled and stops when disabled (or when macOS Reduce Motion applies). Geometry tests cover distinct scenes, tessellation and changes over time for all five themes. Native tests use programmatically dispatched DOM events or shared UI handlers, not physical mouse automation. It is skipped by default because WebKit needs a macOS desktop session and main-thread event loop.
 
@@ -139,10 +175,13 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/theme.rs`: shared palettes, contrast checks and native Reduce Motion support.
 - `src/art.rs` and `src/art/`: theme dispatch and five independent procedural scenes; no textures or animation framework.
 - `src/link_interactions.js`: document-level link status, modifier-click and accessible context-menu handling.
-- `src/brand.rs` and `assets/`: embedded original SVG mascot and symbol.
+- `src/audio.rs`, `src/audio_control.js`: per-tab volume model, slider mapping, the audio bridge and Web Audio routing.
+- `src/volume.rs`: the native volume popover.
+- `src/brand.rs` and `assets/`: embedded original SVG mascot, symbol and monochrome UI icons.
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`: themed About window showing 0.1 beta.
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.
+- `tests/native_audio.rs`: opt-in WebKit check of audio routing, cross-origin fallback and reset.
 
 Felifox source is MIT licensed. Dependencies retain their own licenses, including GPUI (Apache-2.0) and Wry (Apache-2.0 OR MIT).

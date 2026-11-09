@@ -11,7 +11,27 @@ use std::borrow::Cow;
 pub const MASCOT: &str = "brand/mascot.svg";
 pub const SYMBOL: &str = "brand/symbol.svg";
 
-/// A zero-I/O asset source containing only the two Felifox illustrations.
+/// Monochrome 24 × 24 UI icons, tinted with the element's text color via `gpui::svg()`.
+pub mod icon {
+    pub const SPEAKER_MUTED: &str = "icons/speaker-muted.svg";
+    pub const SPEAKER_LOW: &str = "icons/speaker-low.svg";
+    pub const SPEAKER: &str = "icons/speaker.svg";
+    pub const SPEAKER_BOOST: &str = "icons/speaker-boost.svg";
+    pub const VOICE: &str = "icons/voice.svg";
+    pub const BASS: &str = "icons/bass.svg";
+    pub const NATURAL: &str = "icons/natural.svg";
+    pub const ALL: [&str; 7] = [
+        SPEAKER_MUTED,
+        SPEAKER_LOW,
+        SPEAKER,
+        SPEAKER_BOOST,
+        VOICE,
+        BASS,
+        NATURAL,
+    ];
+}
+
+/// A zero-I/O asset source containing the Felifox illustrations and UI icons.
 pub struct BrandAssets;
 
 impl gpui::AssetSource for BrandAssets {
@@ -19,6 +39,13 @@ impl gpui::AssetSource for BrandAssets {
         let bytes: &'static [u8] = match path {
             MASCOT => include_bytes!("../assets/felifox-mascot.svg"),
             SYMBOL => include_bytes!("../assets/felifox-symbol.svg"),
+            icon::SPEAKER_MUTED => include_bytes!("../assets/icons/speaker-muted.svg"),
+            icon::SPEAKER_LOW => include_bytes!("../assets/icons/speaker-low.svg"),
+            icon::SPEAKER => include_bytes!("../assets/icons/speaker.svg"),
+            icon::SPEAKER_BOOST => include_bytes!("../assets/icons/speaker-boost.svg"),
+            icon::VOICE => include_bytes!("../assets/icons/voice.svg"),
+            icon::BASS => include_bytes!("../assets/icons/bass.svg"),
+            icon::NATURAL => include_bytes!("../assets/icons/natural.svg"),
             _ => return Ok(None),
         };
         Ok(Some(Cow::Borrowed(bytes)))
@@ -27,7 +54,13 @@ impl gpui::AssetSource for BrandAssets {
     fn list(&self, path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
         // Match directory boundaries rather than arbitrary string prefixes.
         Ok(match path {
-            "" | "/" | "brand" | "brand/" => vec![MASCOT.into(), SYMBOL.into()],
+            "" | "/" => [MASCOT, SYMBOL]
+                .into_iter()
+                .chain(icon::ALL)
+                .map(Into::into)
+                .collect(),
+            "brand" | "brand/" => vec![MASCOT.into(), SYMBOL.into()],
+            "icons" | "icons/" => icon::ALL.into_iter().map(Into::into).collect(),
             _ => Vec::new(),
         })
     }
@@ -38,6 +71,11 @@ pub fn mascot() -> gpui::Img {
     gpui::img(gpui::ImageSource::Resource(gpui::Resource::Embedded(
         MASCOT.into(),
     )))
+}
+
+/// A monochrome UI icon from [`icon`]; size it and set `text_color` to tint it.
+pub fn icon(path: &'static str) -> gpui::Svg {
+    gpui::svg().path(path)
 }
 
 /// The transparent 64 × 64 flaming-yarn mark, designed for small UI sizes.
@@ -54,7 +92,7 @@ mod tests {
 
     #[test]
     fn embedded_assets_are_borrowed_svg_bytes() {
-        for path in [MASCOT, SYMBOL] {
+        for path in [MASCOT, SYMBOL].into_iter().chain(icon::ALL) {
             let bytes = BrandAssets.load(path).unwrap().unwrap();
             assert!(matches!(bytes, Cow::Borrowed(_)));
             let svg = std::str::from_utf8(&bytes).unwrap();
@@ -65,14 +103,20 @@ mod tests {
 
     #[test]
     fn lists_only_known_directories() {
-        for directory in ["", "/", "brand", "brand/"] {
+        for directory in ["brand", "brand/"] {
             let paths = BrandAssets.list(directory).unwrap();
             assert_eq!(paths, vec![gpui::SharedString::from(MASCOT), SYMBOL.into()]);
-            for path in paths {
+        }
+        for directory in ["icons", "icons/"] {
+            assert_eq!(BrandAssets.list(directory).unwrap().len(), icon::ALL.len());
+        }
+        for directory in ["", "/", "brand", "icons"] {
+            for path in BrandAssets.list(directory).unwrap() {
                 assert!(BrandAssets.load(path.as_ref()).unwrap().is_some());
             }
         }
-        for path in ["bran", "brands", "brand/missing", MASCOT] {
+        assert_eq!(BrandAssets.list("").unwrap().len(), 2 + icon::ALL.len());
+        for path in ["bran", "brands", "brand/missing", "icon", MASCOT] {
             assert!(BrandAssets.list(path).unwrap().is_empty());
         }
     }
