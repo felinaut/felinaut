@@ -4,6 +4,7 @@ mod art;
 mod audio;
 mod brand;
 mod engine;
+mod history;
 mod input;
 mod theme;
 mod volume;
