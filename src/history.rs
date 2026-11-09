@@ -126,6 +126,15 @@ impl History {
         }
     }
 
+    /// Forgets a page, as the dropdown's × button does.
+    pub fn remove(&mut self, url: &str) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|entry| entry.url != url);
+        let removed = self.entries.len() != before;
+        self.dirty |= removed;
+        removed
+    }
+
     /// The path and contents to write if anything changed since the last snapshot.
     /// Serializing is in-memory work; the caller writes off the UI thread.
     pub fn take_snapshot(&mut self) -> Option<(PathBuf, String)> {
@@ -386,6 +395,19 @@ pub fn suggest(entries: &[Entry], query: &str, now: u64, limit: usize) -> Vec<Su
     out
 }
 
+/// The row whose shown URL continues what was typed, for inline autocomplete: `ru` completes
+/// to `rust-lang.org`. Case-insensitive, and never when the typed text already covers it.
+pub fn completion(typed: &str, suggestions: &[Suggestion]) -> Option<usize> {
+    if typed.is_empty() {
+        return None;
+    }
+    suggestions.iter().position(|row| {
+        row.display_url.len() > typed.len()
+            && row.display_url.is_char_boundary(typed.len())
+            && row.display_url[..typed.len()].eq_ignore_ascii_case(typed)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,6 +481,55 @@ mod tests {
         expected.sort_by_key(|entry| std::cmp::Reverse(entry.last_visit));
         assert_eq!(reloaded.entries(), expected.as_slice());
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn removing_a_page_forgets_it_on_disk_too() {
+        let path = temp_file("remove.tsv");
+        let mut history = History::load(Some(path.clone()));
+        history.record("https://a.example/", "A", NOW);
+        history.record("https://b.example/", "B", NOW);
+        history.take_snapshot();
+
+        assert!(!history.remove("https://missing.example/"));
+        assert!(history.take_snapshot().is_none(), "nothing changed");
+        assert!(history.remove("https://a.example/"));
+        let (_, contents) = history.take_snapshot().expect("removal is saved");
+        write(&path, &contents).unwrap();
+        assert_eq!(
+            urls(&History::load(Some(path.clone())).recent(NOW, 8)),
+            ["https://b.example/"]
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn completes_the_first_row_whose_url_continues_the_typed_text() {
+        let entries = [
+            entry("https://github.com/rust-lang/rust", "The Rust repo", 9, NOW),
+            entry("https://www.rust-lang.org/", "Rust", 1, NOW),
+        ];
+        let rows = suggest(&entries, "ru", NOW, 8);
+        assert_eq!(
+            urls(&rows),
+            [
+                "https://github.com/rust-lang/rust",
+                "https://www.rust-lang.org/"
+            ]
+        );
+        assert_eq!(
+            completion("ru", &rows),
+            Some(1),
+            "a title match is not completed"
+        );
+        assert_eq!(completion("RU", &rows), Some(1), "case-insensitive");
+        assert_eq!(
+            completion("rust-lang.org", &rows),
+            None,
+            "nothing left to add"
+        );
+        assert_eq!(completion("", &rows), None);
+        assert_eq!(completion("x", &rows), None);
     }
 
     #[test]

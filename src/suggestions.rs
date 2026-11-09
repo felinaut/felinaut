@@ -127,6 +127,19 @@ impl SuggestionList {
             });
         });
     }
+
+    fn remove(&mut self, index: usize, cx: &mut Context<Self>) {
+        let browser = self.browser.clone();
+        let parent = self.parent;
+        cx.defer(move |cx| {
+            let _ = parent.update(cx, |_, window, cx| {
+                window.activate_window();
+                let _ = browser.update(cx, |browser, cx| {
+                    browser.remove_suggestion(index, window, cx)
+                });
+            });
+        });
+    }
 }
 
 fn highlighted(text: &str, ranges: &[std::ops::Range<usize>], color: u32) -> StyledText {
@@ -177,6 +190,7 @@ impl Render for SuggestionList {
                         let active = selected == Some(index);
                         div()
                             .id(("suggestion", index))
+                            .group("suggestion")
                             .h(px(ROW))
                             .flex_shrink_0()
                             .px_3()
@@ -214,6 +228,28 @@ impl Render for SuggestionList {
                                                 p.primary,
                                             )),
                                     ),
+                            )
+                            .child(
+                                div()
+                                    .id(("forget", index))
+                                    .flex_shrink_0()
+                                    .size(px(22.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .text_size(px(15.))
+                                    .text_color(rgb(p.muted))
+                                    .opacity(0.)
+                                    .group_hover("suggestion", |style| style.opacity(1.))
+                                    .hover(move |style| {
+                                        style.bg(rgb(p.surface)).text_color(rgb(p.text))
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.remove(index, cx);
+                                    }))
+                                    .child("×"),
                             )
                     }),
             )

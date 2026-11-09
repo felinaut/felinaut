@@ -121,6 +121,22 @@ impl AddressInput {
         &self.content
     }
 
+    /// Whether the caret sits at the end of the text with no composition in progress, the only
+    /// place inline autocomplete makes sense.
+    pub fn caret_at_end(&self) -> bool {
+        self.selected_range.end == self.content.len() && self.marked_range.is_none()
+    }
+
+    /// Inline autocomplete: show `text` with everything past the first `typed` bytes selected, so
+    /// the next keystroke replaces the completion and Backspace removes just it.
+    pub fn complete(&mut self, text: String, typed: usize, cx: &mut Context<Self>) {
+        self.selected_range = typed.min(text.len())..text.len();
+        self.content = text.into();
+        self.selection_reversed = false;
+        self.marked_range = None;
+        cx.notify();
+    }
+
     /// Window-relative bounds of the text line from the last paint, for anchoring popups.
     pub fn bounds(&self) -> Option<Bounds<Pixels>> {
         self.last_bounds

@@ -203,7 +203,11 @@ impl Browser {
         );
         let address_focus = address.read(cx).focus_handle(cx);
         let address_blur = cx.on_blur(&address_focus, window, |this, window, cx| {
-            this.close_suggestions(false, window, cx);
+            // GPUI also blurs when the window deactivates, as it does while a row or its × is
+            // clicked in the dropdown; the activation observer below handles that case.
+            if window.is_window_active() {
+                this.close_suggestions(false, window, cx);
+            }
             cx.notify();
         });
         // An empty address bar offers recent pages as soon as it is focused.
@@ -229,8 +233,15 @@ impl Browser {
             })
             .detach();
         });
-        let bounds_observer = cx.observe_window_bounds(window, |this, window, cx| {
-            this.close_suggestions(false, window, cx);
+        // GPUI also reports bounds on activation changes (clicking a row makes the dropdown
+        // key); only a real move or resize should close the list.
+        let mut last_bounds = window.bounds();
+        let bounds_observer = cx.observe_window_bounds(window, move |this, window, cx| {
+            let bounds = window.bounds();
+            if bounds != last_bounds {
+                last_bounds = bounds;
+                this.close_suggestions(false, window, cx);
+            }
         });
         // Native callbacks enqueue events, avoiding reentrant updates while GPUI renders.
         cx.spawn_in(window, async move |this, cx| {
@@ -403,8 +414,13 @@ impl Browser {
             .into_any_element()
     }
     fn submit(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A selected or autocompleted row navigates to its exact URL, not the shown text.
+        let target = self
+            .selected
+            .and_then(|index| self.suggestions.get(index))
+            .map_or_else(|| text.to_owned(), |row| row.url.clone());
         self.close_suggestions(false, window, cx);
-        self.navigate(text, window, cx);
+        self.navigate(&target, window, cx);
         let tab = &self.tabs[self.active];
         if !tab.home
             && tab.error.is_none()
@@ -414,10 +430,28 @@ impl Browser {
             let _ = page.focus();
         }
     }
+    /// The user edited the address: refresh the rows and, when typing forward, complete the
+    /// first row whose URL continues the text (`ru` → `rust-lang.org`, completion selected).
     fn update_suggestions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = self.address.read(cx);
-        self.typed = input.text().to_owned();
-        let anchor = input.bounds();
+        let text = input.text().to_owned();
+        let extends =
+            text.len() > self.typed.len() && text.starts_with(&self.typed) && input.caret_at_end();
+        self.typed = text;
+        self.refresh_suggestions(window, cx);
+        if extends && let Some(index) = history::completion(&self.typed, &self.suggestions) {
+            let row = self.suggestions.remove(index);
+            let full = row.display_url.clone();
+            self.suggestions.insert(0, row);
+            self.selected = Some(0);
+            let typed = self.typed.len();
+            self.address
+                .update(cx, |input, cx| input.complete(full, typed, cx));
+        }
+    }
+    /// Recomputes the rows for the typed text and opens or closes the dropdown accordingly.
+    fn refresh_suggestions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let anchor = self.address.read(cx).bounds();
         self.selected = None;
         self.suggestions = if self.typed.trim().is_empty() {
             self.history.recent(history::now(), suggestions::MAX_ROWS)
@@ -463,6 +497,8 @@ impl Browser {
             self.address
                 .update(cx, |input, cx| input.set_text(typed, cx));
         }
+        // Forgotten so the next edit, however short, counts as typing forward.
+        self.typed.clear();
         if self.suggestions.is_empty() && self.selected.is_none() {
             return;
         }
@@ -474,8 +510,21 @@ impl Browser {
     /// Called by the dropdown when a row is clicked.
     fn open_suggestion(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(url) = self.suggestions.get(index).map(|s| s.url.clone()) {
+            self.selected = Some(index);
             self.submit(&url, window, cx);
         }
+    }
+    /// Called by a row's × button: forgets the page and refills the list from the typed text.
+    fn remove_suggestion(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(url) = self.suggestions.get(index).map(|s| s.url.clone()) else {
+            return;
+        };
+        self.history.remove(&url);
+        // Refresh first: `set_text` drops the painted bounds the dropdown is anchored to.
+        self.refresh_suggestions(window, cx);
+        let typed = self.typed.clone();
+        self.address
+            .update(cx, |input, cx| input.set_text(typed, cx));
     }
     /// Writes history at most once a second, off the UI thread.
     fn flush_history(&mut self, cx: &mut Context<Self>) {

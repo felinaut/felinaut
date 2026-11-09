@@ -73,7 +73,7 @@ hdiutil verify dist/Felifox-0.1-beta-macos-arm64.dmg
 
 - Native address input with Unicode, IME, selection and clipboard.
 - **Title-first address bar**: while you are not editing it, the address field shows the site's icon, the page title and the domain instead of the raw URL. Click it or press `⌘L` to get the full URL, selected for editing; clicking into the page ends the edit. **Theme ▾ → Address bar shows** switches between *Page title*, *Domain only* and *Full address*.
-- **History suggestions** while you type: a dropdown of previously visited pages, each with its icon, matched fuzzily against both title and URL; an empty address bar lists your most frecent pages (see below).
+- **History suggestions** while you type: a dropdown of previously visited pages, each with its icon, matched fuzzily against both title and URL; the first address that continues your text is completed inline, and each row's × forgets that page. An empty address bar lists your most frecent pages (see below).
 - Tabs retain their own live webview and native navigation history when switched.
 - Back, forward, reload and home; native page titles and URLs update the chrome.
 - Hovering web links displays their destination in the status bar; leaving clears it.
@@ -104,7 +104,9 @@ Every completed HTTP(S) page load is remembered with its title, visit count and 
 
 - Matching is case-insensitive and fuzzy: contiguous text ranks highest, with a bonus for starting the host (`rust` → **rust**-lang.org) or a word; scattered subsequences (`hkrn` → **H**ac**k**e**r** **N**ews) still match. Every space-separated word must match the title or the URL. Equal matches are ordered by frecency: more visits and more recent visits first.
 - Each row shows the title and the URL with the matched characters highlighted.
+- Typing forward completes the first row whose address continues what you typed, inline and selected (`ru` → `ru|st-lang.org`), so `Enter` opens it, the next character replaces the completion and Backspace removes just the completion. Rows that only match by title are never completed, and nothing is completed while you delete or edit mid-text.
 - `↓` / `↑` move through the rows and put the selected URL into the address bar; stepping past the end restores what you typed. `Enter` opens the selected row, or, with nothing selected, resolves the typed text as usual (URL, host, or DuckDuckGo search). `Esc` closes the list and restores the typed text; clicking a row opens it.
+- Hovering a row reveals an **×** at its right edge that forgets the page: it leaves history on disk as well, and the list refills from what you typed.
 
 History lives in `~/Library/Application Support/Felifox/history/visits.tsv`, one tab-separated line per URL (last visit as unix seconds, visit count, URL, title), newest first, with site icons beside it in `history/icons/`. Delete the folder to clear both. The GPUI Home page, `about:` pages and failed loads are not recorded; the file is capped at 10 000 pages, dropping the least recently visited.
 
