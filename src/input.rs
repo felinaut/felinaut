@@ -31,11 +31,23 @@ actions!(
         Cut,
         Copy,
         SubmitAddress,
+        Up,
+        Down,
+        Escape,
     ]
 );
 
 /// A submitted address or search query. Navigation is handled by the subscriber.
 pub struct Submit(pub String);
+
+/// Typing and suggestion-list keys; the browser owns the suggestions themselves.
+pub enum AddressEvent {
+    /// The user edited the text (not a programmatic `set_text`).
+    Changed,
+    Up,
+    Down,
+    Escape,
+}
 
 /// Register editing shortcuts scoped to the address input's key context.
 pub fn init(cx: &mut App) {
@@ -54,6 +66,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("end", End, Some("AddressInput")),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some("AddressInput")),
         KeyBinding::new("enter", SubmitAddress, Some("AddressInput")),
+        KeyBinding::new("up", Up, Some("AddressInput")),
+        KeyBinding::new("down", Down, Some("AddressInput")),
+        KeyBinding::new("escape", Escape, Some("AddressInput")),
     ]);
 }
 
@@ -71,6 +86,7 @@ pub struct AddressInput {
 }
 
 impl EventEmitter<Submit> for AddressInput {}
+impl EventEmitter<AddressEvent> for AddressInput {}
 
 impl AddressInput {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -101,6 +117,15 @@ impl AddressInput {
         cx.notify();
     }
 
+    pub fn text(&self) -> &str {
+        &self.content
+    }
+
+    /// Window-relative bounds of the text line from the last paint, for anchoring popups.
+    pub fn bounds(&self) -> Option<Bounds<Pixels>> {
+        self.last_bounds
+    }
+
     pub fn select_all_text(&mut self, cx: &mut Context<Self>) {
         self.selected_range = 0..self.content.len();
         self.selection_reversed = false;
@@ -109,6 +134,18 @@ impl AddressInput {
 
     fn submit(&mut self, _: &SubmitAddress, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(Submit(self.content.to_string()));
+    }
+
+    fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(AddressEvent::Up);
+    }
+
+    fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(AddressEvent::Down);
+    }
+
+    fn escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(AddressEvent::Escape);
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -375,6 +412,7 @@ impl EntityInputHandler for AddressInput {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.selection_reversed = false;
         self.marked_range.take();
+        cx.emit(AddressEvent::Changed);
         cx.notify();
     }
 
@@ -421,6 +459,7 @@ impl EntityInputHandler for AddressInput {
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
 
         self.selection_reversed = false;
+        cx.emit(AddressEvent::Changed);
         cx.notify();
     }
 
@@ -662,6 +701,9 @@ impl Render for AddressInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::up))
+            .on_action(cx.listener(Self::down))
+            .on_action(cx.listener(Self::escape))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))

@@ -83,6 +83,7 @@ impl History {
         }
     }
 
+    #[cfg(test)]
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
@@ -261,7 +262,7 @@ fn match_text(needle: &[char], hay: &str) -> Option<(f32, Vec<Range<usize>>)> {
             0.
         };
         let end = hay[start + needle.len() - 1].1;
-        return Some((100. + bonus, vec![hay[start].0..end]));
+        return Some((100. + bonus, std::iter::once(hay[start].0..end).collect()));
     }
     // ponytail: greedy left-to-right subsequence; upgrade to an optimal alignment if ranking feels off.
     let mut ranges: Vec<Range<usize>> = Vec::new();
@@ -414,12 +415,19 @@ mod tests {
         let example = &history.entries()[0];
         assert_eq!((example.visits, example.last_visit), (2, NOW + 2));
         assert_eq!(example.title, "Example Domain");
-        assert_eq!(history.entries()[1].title, "www.rust-lang.org", "host stands in for a title");
+        assert_eq!(
+            history.entries()[1].title,
+            "www.rust-lang.org",
+            "host stands in for a title"
+        );
 
         history.set_title("https://www.rust-lang.org/", "Rust");
         let (snapshot_path, contents) = history.take_snapshot().unwrap();
         assert_eq!(snapshot_path, path);
-        assert!(history.take_snapshot().is_none(), "snapshot clears the dirty flag");
+        assert!(
+            history.take_snapshot().is_none(),
+            "snapshot clears the dirty flag"
+        );
         write(&snapshot_path, &contents).unwrap();
         assert!(contents.starts_with("# Felifox history"));
         assert!(contents.contains("\t2\thttps://example.com/\tExample Domain\n"));
@@ -454,20 +462,31 @@ mod tests {
         }
         assert_eq!(history.entries().len(), MAX_ENTRIES);
         assert!(!history.entries().iter().any(|e| e.url.ends_with("/0")));
-        assert!(history.take_snapshot().is_none(), "no path means nothing to write");
+        assert!(
+            history.take_snapshot().is_none(),
+            "no path means nothing to write"
+        );
     }
 
     #[test]
     fn strips_scheme_www_and_lone_slash_for_display() {
         assert_eq!(display_url("https://www.example.com/"), "example.com");
         assert_eq!(display_url("http://example.com/a/"), "example.com/a/");
-        assert_eq!(display_url("https://example.com/a?b=c"), "example.com/a?b=c");
+        assert_eq!(
+            display_url("https://example.com/a?b=c"),
+            "example.com/a?b=c"
+        );
     }
 
     #[test]
     fn substring_and_host_prefix_matches_outrank_scattered_ones() {
         let entries = [
-            entry("https://rust-lang.org/", "Rust Programming Language", 1, NOW),
+            entry(
+                "https://rust-lang.org/",
+                "Rust Programming Language",
+                1,
+                NOW,
+            ),
             entry("https://example.com/trust", "Trust me", 1, NOW),
             entry("https://news.ycombinator.com/", "Hacker News", 1, NOW),
             entry("https://docs.rs/", "Docs.rs: Rust crates", 1, NOW),
@@ -494,7 +513,12 @@ mod tests {
 
     #[test]
     fn matching_is_case_insensitive_and_unicode_safe() {
-        let entries = [entry("https://café.example/Ünïcode", "Grüße aus Köln", 1, NOW)];
+        let entries = [entry(
+            "https://café.example/Ünïcode",
+            "Grüße aus Köln",
+            1,
+            NOW,
+        )];
         let found = suggest(&entries, "ÜNÏ köln", NOW, 10);
         assert_eq!(found.len(), 1);
         let s = &found[0];
@@ -505,7 +529,12 @@ mod tests {
     #[test]
     fn every_word_must_match_and_schemes_in_the_query_are_ignored() {
         let entries = [
-            entry("https://github.com/zed-industries/zed", "GitHub - zed", 1, NOW),
+            entry(
+                "https://github.com/zed-industries/zed",
+                "GitHub - zed",
+                1,
+                NOW,
+            ),
             entry("https://github.com/rust-lang/rust", "GitHub - rust", 1, NOW),
         ];
         assert_eq!(
@@ -515,7 +544,11 @@ mod tests {
         assert!(suggest(&entries, "github nothing", NOW, 10).is_empty());
         assert_eq!(suggest(&entries, "https://git", NOW, 10).len(), 2);
         assert!(suggest(&entries, "   ", NOW, 10).is_empty());
-        assert_eq!(suggest(&entries, "github", NOW, 1).len(), 1, "limit applies");
+        assert_eq!(
+            suggest(&entries, "github", NOW, 1).len(),
+            1,
+            "limit applies"
+        );
     }
 
     #[test]
@@ -527,7 +560,11 @@ mod tests {
         ];
         assert_eq!(
             urls(&suggest(&entries, "page", NOW, 10)),
-            ["https://c.example/", "https://b.example/", "https://a.example/"]
+            [
+                "https://c.example/",
+                "https://b.example/",
+                "https://a.example/"
+            ]
         );
     }
 

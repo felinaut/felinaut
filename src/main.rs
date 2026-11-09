@@ -6,13 +6,15 @@ mod brand;
 mod engine;
 mod history;
 mod input;
+mod suggestions;
 mod theme;
 mod volume;
 mod webview;
 
 use audio::{AudioReport, PageSound, TabAudio};
 use gpui::{prelude::*, *};
-use input::{AddressInput, Submit};
+use history::{History, Suggestion};
+use input::{AddressEvent, AddressInput, Submit};
 use std::{
     rc::Rc,
     time::{Duration, Instant},
@@ -53,6 +55,8 @@ struct Tab {
     audio: TabAudio,
     /// What the current document reports about its playback.
     sound: PageSound,
+    /// The last URL this tab added to history, so reloads and the URL poll don't count twice.
+    recorded: String,
 }
 impl Tab {
     fn new(id: u64) -> Self {
@@ -67,6 +71,13 @@ impl Tab {
             page: None,
             audio: TabAudio::default(),
             sound: PageSound::default(),
+            recorded: String::new(),
+        }
+    }
+    /// Adds the current page to history once per URL per tab.
+    fn record_visit(&mut self, history: &mut History) {
+        if self.recorded != self.url && history.record(&self.url, &self.title, history::now()) {
+            self.recorded.clone_from(&self.url);
         }
     }
     fn display_title(&self) -> String {
@@ -115,6 +126,17 @@ struct Browser {
     _submit: Subscription,
     _theme_observer: Subscription,
     art_phase: f32,
+    history: History,
+    last_save: Instant,
+    /// History rows matching the address text, shown by `suggestions` while typing.
+    suggestions: Vec<Suggestion>,
+    selected: Option<usize>,
+    /// What the user typed, restored when stepping off the last suggestion or pressing Esc.
+    typed: String,
+    _address_events: Subscription,
+    _address_blur: Subscription,
+    _activation_observer: Subscription,
+    _bounds_observer: Subscription,
 }
 impl Browser {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -149,16 +171,41 @@ impl Browser {
         .detach();
         let subscription =
             cx.subscribe_in(&address, window, |this, _, event: &Submit, window, cx| {
-                this.navigate(&event.0, window, cx);
-                let tab = &this.tabs[this.active];
-                if !tab.home
-                    && tab.error.is_none()
-                    && let Some(page) = &tab.page
-                {
-                    window.focus(&this.focus);
-                    let _ = page.focus();
-                }
+                this.submit(&event.0, window, cx);
             });
+        let address_events = cx.subscribe_in(
+            &address,
+            window,
+            |this, _, event: &AddressEvent, window, cx| match event {
+                AddressEvent::Changed => this.update_suggestions(window, cx),
+                AddressEvent::Up => this.move_selection(false, cx),
+                AddressEvent::Down => this.move_selection(true, cx),
+                AddressEvent::Escape => this.close_suggestions(true, window, cx),
+            },
+        );
+        let address_focus = address.read(cx).focus_handle(cx);
+        let address_blur = cx.on_blur(&address_focus, window, |this, window, cx| {
+            this.close_suggestions(false, window, cx);
+        });
+        // The dropdown floats above other apps, so it must go when the window loses focus;
+        // clicking a suggestion also deactivates us briefly, hence the short grace period.
+        let activation_observer = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() || this.suggestions.is_empty() {
+                return;
+            }
+            cx.spawn_in(window, async move |this, cx| {
+                Timer::after(Duration::from_millis(80)).await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if !window.is_window_active() && !suggestions::is_active(cx) {
+                        this.close_suggestions(false, window, cx);
+                    }
+                });
+            })
+            .detach();
+        });
+        let bounds_observer = cx.observe_window_bounds(window, |this, window, cx| {
+            this.close_suggestions(false, window, cx);
+        });
         // Native callbacks enqueue events, avoiding reentrant updates while GPUI renders.
         cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -178,6 +225,12 @@ impl Browser {
                 for tab in &mut this.tabs {
                     tab.page.take();
                 }
+                // The debounced save may still be pending; this is the last chance to write.
+                if let Some((path, contents)) = this.history.take_snapshot()
+                    && let Err(error) = history::write(&path, &contents)
+                {
+                    eprintln!("Could not save browsing history: {error}");
+                }
             });
             true
         });
@@ -192,6 +245,103 @@ impl Browser {
             _submit: subscription,
             _theme_observer: theme_observer,
             art_phase: 0.,
+            history: History::load(history::default_path()),
+            last_save: Instant::now(),
+            suggestions: Vec::new(),
+            selected: None,
+            typed: String::new(),
+            _address_events: address_events,
+            _address_blur: address_blur,
+            _activation_observer: activation_observer,
+            _bounds_observer: bounds_observer,
+        }
+    }
+    fn submit(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_suggestions(false, window, cx);
+        self.navigate(text, window, cx);
+        let tab = &self.tabs[self.active];
+        if !tab.home
+            && tab.error.is_none()
+            && let Some(page) = &tab.page
+        {
+            window.focus(&self.focus);
+            let _ = page.focus();
+        }
+    }
+    fn update_suggestions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.address.read(cx);
+        self.typed = input.text().to_owned();
+        let anchor = input.bounds();
+        self.selected = None;
+        self.suggestions = self
+            .history
+            .suggest(&self.typed, history::now(), suggestions::MAX_ROWS);
+        match anchor {
+            Some(anchor) if !self.suggestions.is_empty() => {
+                let browser = cx.weak_entity();
+                // Opening a window from inside this update would re-enter it; see `open_volume`.
+                window.defer(cx, move |window, cx| {
+                    suggestions::open(browser, anchor, window, cx)
+                });
+            }
+            _ => window.defer(cx, |_, cx| suggestions::close(cx)),
+        }
+        cx.notify();
+    }
+    /// ↓ walks from the typed text through the rows and back; ↑ the other way round.
+    fn move_selection(&mut self, down: bool, cx: &mut Context<Self>) {
+        let count = self.suggestions.len();
+        if count == 0 {
+            return;
+        }
+        self.selected = match (self.selected, down) {
+            (None, true) => Some(0),
+            (None, false) => Some(count - 1),
+            (Some(index), true) => (index + 1 < count).then_some(index + 1),
+            (Some(index), false) => index.checked_sub(1),
+        };
+        let text = match self.selected {
+            Some(index) => self.suggestions[index].url.clone(),
+            None => self.typed.clone(),
+        };
+        self.address
+            .update(cx, |input, cx| input.set_text(text, cx));
+        cx.notify();
+    }
+    fn close_suggestions(&mut self, restore: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if restore && self.selected.is_some() {
+            let typed = self.typed.clone();
+            self.address
+                .update(cx, |input, cx| input.set_text(typed, cx));
+        }
+        if self.suggestions.is_empty() && self.selected.is_none() {
+            return;
+        }
+        self.suggestions.clear();
+        self.selected = None;
+        window.defer(cx, |_, cx| suggestions::close(cx));
+        cx.notify();
+    }
+    /// Called by the dropdown when a row is clicked.
+    fn open_suggestion(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(url) = self.suggestions.get(index).map(|s| s.url.clone()) {
+            self.submit(&url, window, cx);
+        }
+    }
+    /// Writes history at most once a second, off the UI thread.
+    fn flush_history(&mut self, cx: &mut Context<Self>) {
+        if self.last_save.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        if let Some((path, contents)) = self.history.take_snapshot() {
+            self.last_save = Instant::now();
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(error) = history::write(&path, &contents) {
+                        eprintln!("Could not save browsing history: {error}");
+                    }
+                })
+                .detach();
         }
     }
     fn sync_address(&self, cx: &mut Context<Self>) {
@@ -225,15 +375,23 @@ impl Browser {
                     Event::Finished(url) => {
                         tab.loading = false;
                         tab.url = url;
+                        tab.record_visit(&mut self.history);
                         if !tab.audio.is_default() {
                             tab.apply_audio();
                         }
                     }
                     Event::Title(title) => {
                         tab.title = title;
+                        if !tab.loading && tab.recorded == tab.url {
+                            self.history.set_title(&tab.url, &tab.title);
+                        }
                     }
                     Event::Url(url) => {
                         tab.url = url;
+                        // Same-document navigations (pushState) never finish a load.
+                        if !tab.loading {
+                            tab.record_visit(&mut self.history);
+                        }
                         address_changed |= index == self.active;
                     }
                     Event::Open(url) => open.push((url, true)),
@@ -259,6 +417,7 @@ impl Browser {
         for (url, activate) in open {
             self.open_link_tab(&url, activate, window, cx);
         }
+        self.flush_history(cx);
         if changed {
             cx.notify();
         }
