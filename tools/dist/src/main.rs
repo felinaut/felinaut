@@ -31,7 +31,7 @@ fn dist() -> Result<(), String> {
         .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
     {
         println!(
-            "cargo dist [--app-only]\n\nBuild the current release, then package dist/Felifox.app and the illustrated DMG.\nPrevious artifacts are replaced. The DMG uses a local ad-hoc signature, not notarization."
+            "cargo dist [--app-only]\n\nBuild the current release, then package dist/Felifox.app and the illustrated DMG.\nPrevious artifacts are replaced. Ad-hoc signed unless FELIFOX_SIGN_IDENTITY (Developer ID)\nand FELIFOX_NOTARY_PROFILE (notarytool keychain profile) are set; see README."
         );
         return Ok(());
     }

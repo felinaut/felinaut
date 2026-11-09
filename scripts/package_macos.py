@@ -2,7 +2,9 @@
 """Build a native Felifox .app and a Finder-configured, drag-to-Applications DMG.
 
 Requires macOS, Python 3.11+, Rust, and Xcode command-line tools. No pip packages.
-Artifacts use an ad-hoc code signature; this is NOT Developer ID notarization.
+By default artifacts use an ad-hoc code signature. For other Macs, set
+FELIFOX_SIGN_IDENTITY to a "Developer ID Application: …" identity, and
+FELIFOX_NOTARY_PROFILE to an `xcrun notarytool store-credentials` profile.
 """
 
 from __future__ import annotations
@@ -26,6 +28,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BUNDLE_ID = "io.github.casaroli.felifox"
 MINIMUM_MACOS = "12.0"
+SIGN_IDENTITY = os.environ.get("FELIFOX_SIGN_IDENTITY", "")
+NOTARY_PROFILE = os.environ.get("FELIFOX_NOTARY_PROFILE", "")
+
+
+def codesign_args(identity: str) -> list[str]:
+    if not identity:
+        return ["--force", "--sign", "-"]
+    # Notarization requires the hardened runtime and a secure timestamp.
+    return ["--force", "--options", "runtime", "--timestamp", "--sign", identity]
 
 
 def run(*args: str | Path, capture: bool = False, timeout: int = 120, env=None):
@@ -150,7 +161,7 @@ def make_app(binary: Path, icon: Path, destination: Path, version: str, display:
     (contents / "PkgInfo").write_bytes(b"APPL????")
     run("plutil", "-lint", contents / "Info.plist")
     run("strip", "-x", executable)
-    run("codesign", "--force", "--sign", "-", destination)
+    run("codesign", *codesign_args(SIGN_IDENTITY), destination)
     run("codesign", "--verify", "--deep", "--strict", "--verbose=2", destination)
 
 
@@ -308,7 +319,24 @@ def make_dmg(app: Path, art: Path, icon: Path, work: Path, name: str) -> Path:
         output,
     )
     run("hdiutil", "verify", output)
+    if SIGN_IDENTITY:
+        run("codesign", "--force", "--timestamp", "--sign", SIGN_IDENTITY, output)
+        run("codesign", "--verify", "--strict", "--verbose=2", output)
     return output
+
+
+def notarize(dmg: Path, app: Path):
+    # Apple scans the DMG and the app inside it; stapling lets Gatekeeper pass offline.
+    run(
+        "xcrun", "notarytool", "submit", dmg,
+        "--keychain-profile", NOTARY_PROFILE, "--wait",
+        timeout=3600,
+    )
+    for artifact in (dmg, app):
+        run("xcrun", "stapler", "staple", artifact)
+        run("xcrun", "stapler", "validate", artifact)
+    run("spctl", "--assess", "--type", "execute", "--verbose=2", app)
+    run("spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=2", dmg)
 
 
 def main():
@@ -331,6 +359,10 @@ def main():
     args = parser.parse_args()
     if platform.system() != "Darwin":
         parser.error("macOS packaging requires macOS")
+    if NOTARY_PROFILE and not SIGN_IDENTITY:
+        parser.error("FELIFOX_NOTARY_PROFILE requires FELIFOX_SIGN_IDENTITY")
+    if NOTARY_PROFILE and args.app_only:
+        parser.error("Notarization needs the DMG; drop --app-only")
     tools = [
         "cargo",
         "rustc",
@@ -420,11 +452,19 @@ def main():
         if not args.app_only:
             dmg = make_dmg(app, art, icon, work, dmg_name)
             os.replace(dmg, dmg_output)
+            if NOTARY_PROFILE:
+                notarize(dmg_output, app_output)
+            # Checksum last: stapling modifies the DMG.
             with dmg_output.open("rb") as disk_image:
                 checksum = hashlib.file_digest(disk_image, "sha256").hexdigest()
             (output / "SHA256SUMS").write_text(f"{checksum}  {dmg_name}\n")
             print(f"Installer: {dmg_output}", flush=True)
-    print("Local ad-hoc signature only. Not Developer ID signed or Apple-notarized.")
+    if NOTARY_PROFILE:
+        print(f"Signed with {SIGN_IDENTITY}, notarized and stapled.")
+    elif SIGN_IDENTITY:
+        print(f"Signed with {SIGN_IDENTITY}. Not notarized: other Macs will still block it.")
+    else:
+        print("Local ad-hoc signature only. Not Developer ID signed or Apple-notarized.")
 
 
 if __name__ == "__main__":

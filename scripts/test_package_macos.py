@@ -24,6 +24,13 @@ class PackagingTests(unittest.TestCase):
         )
         self.assertNotIn("NSAllowsArbitraryLoads", info["NSAppTransportSecurity"])
 
+    def test_developer_id_signing_uses_hardened_runtime_and_timestamp(self):
+        self.assertEqual(package.codesign_args(""), ["--force", "--sign", "-"])
+        args = package.codesign_args("Developer ID Application: X (T)")
+        self.assertEqual(args[args.index("--options") + 1], "runtime")
+        self.assertIn("--timestamp", args)
+        self.assertEqual(args[-1], "Developer ID Application: X (T)")
+
     def test_dist_command_rebuilds_and_replaces_previous_artifacts(self):
         makefile = (package.ROOT / "Makefile").read_text()
         self.assertIn(".PHONY: dist", makefile)

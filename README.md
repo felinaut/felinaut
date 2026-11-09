@@ -57,7 +57,14 @@ Double-click the DMG, then **drag Felifox onto Applications**. The installer inc
 
 `cargo dist` uses a tiny dependency-free Rust launcher to run the locked release build **before** invoking the Python packager. Packaging is skipped if the build fails, and the packager reuses that freshly built executable rather than compiling twice. `make dist` delegates to the same command. Use `cargo dist --app-only` to produce just the app. For artwork-only packaging iterations, the lower-level script also accepts `--skip-build`, but that intentionally reuses an older executable and should not be used when distributing code changes.
 
-**Signing:** packages have a verified **local ad-hoc signature**, not a Developer ID signature or Apple notarization. Gatekeeper can warn or block when these are downloaded onto another Mac. Public distribution still requires an Apple Developer identity and notarization; the script does not disable macOS security settings. Packaging targets the host architecture, not a universal binary. A macOS 12.0 minimum deployment target is configured, but compatibility has only been verified on the build Mac.
+**Signing:** by default packages have a verified **local ad-hoc signature**, which Gatekeeper blocks when downloaded onto another Mac. To produce a DMG that opens anywhere, sign with a **Developer ID Application** certificate and notarize:
+
+```sh
+xcrun notarytool store-credentials felifox-notary --apple-id <apple-id> --team-id <team-id>   # once; prompts for an app-specific password
+FELIFOX_SIGN_IDENTITY="Developer ID Application: <name> (<team-id>)" FELIFOX_NOTARY_PROFILE=felifox-notary cargo dist
+```
+
+This signs the app (hardened runtime, secure timestamp) and the DMG, submits the DMG to Apple, staples the tickets, and checks both with `spctl`. Packaging targets the host architecture, not a universal binary. A macOS 12.0 minimum deployment target is configured, but compatibility has only been verified on the build Mac.
 
 The build preserves Cargo's procedural-macro metadata (`CARGO_PROFILE_RELEASE_STRIP=none`) to avoid a stripping issue on the current toolchain, then strips only the finished copied executable before signing. This leaves the normal Cargo profile unchanged. Embedded SVGs and Metal shaders require no separate runtime asset downloads.
 
