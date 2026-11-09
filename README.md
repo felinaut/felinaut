@@ -72,6 +72,7 @@ hdiutil verify dist/Felifox-0.1-beta-macos-arm64.dmg
 ## Controls
 
 - Native address input with Unicode, IME, selection and clipboard.
+- **History suggestions** while you type: a dropdown of previously visited pages matched fuzzily against both title and URL (see below).
 - Tabs retain their own live webview and native navigation history when switched.
 - Back, forward, reload and home; native page titles and URLs update the chrome.
 - Hovering web links displays their destination in the status bar; leaving clears it.
@@ -91,6 +92,16 @@ hdiutil verify dist/Felifox-0.1-beta-macos-arm64.dmg
 | `⌘⇧H`       | Home                         |
 | `⌘⇧M`       | Mute / unmute active tab     |
 | `⌘Q`        | Quit                         |
+
+### History suggestions
+
+Every completed HTTP(S) page load is remembered with its title, visit count and last visit. Typing in the address bar shows up to eight matching pages beneath it, like Chrome, Firefox or Safari:
+
+- Matching is case-insensitive and fuzzy: contiguous text ranks highest, with a bonus for starting the host (`rust` → **rust**-lang.org) or a word; scattered subsequences (`hkrn` → **H**ac**k**e**r** **N**ews) still match. Every space-separated word must match the title or the URL. Equal matches are ordered by frecency: more visits and more recent visits first.
+- Each row shows the title and the URL with the matched characters highlighted.
+- `↓` / `↑` move through the rows and put the selected URL into the address bar; stepping past the end restores what you typed. `Enter` opens the selected row, or, with nothing selected, resolves the typed text as usual (URL, host, or DuckDuckGo search). `Esc` closes the list and restores the typed text; clicking a row opens it.
+
+History lives in `~/Library/Application Support/Felifox/history/visits.tsv`, one tab-separated line per URL (last visit as unix seconds, visit count, URL, title), newest first. Delete the folder to clear it. The GPUI Home page, `about:` pages and failed loads are not recorded; the file is capped at 10 000 pages, dropping the least recently visited.
 
 Home is a GPUI page outside WebKit's history. Going back from the first web page shows Home; Forward restores the retained web page. Closing a tab destroys its webview. Opening a new tab does not allocate a webview until you navigate.
 
@@ -120,7 +131,7 @@ The toolbar's **Theme ▾** button opens five curated palettes: Midnight Party (
 - **Motion:** the dropdown includes an Animate artwork checkbox. Animation stops while the window is inactive or web content replaces New Tab, and follows the live macOS Reduce Motion setting. Active animation is limited to about 30 fps; pausing does not affect website animation.
 - **About:** open **Felifox → About Felifox**, click the toolbar's **ⓘ**, or use the About link on New Tab. The independently closable window displays **0.1 beta**, the mascot, and Rust / GPUI / WebKit credits. Escape or Cmd-W closes About, not the browser.
 
-The theme chooser is a small native popup, so it appears correctly above the embedded WebKit view without hiding or reloading the page. The artwork is original vector work inspired by the supplied design direction, not a copy of the reference illustrations.
+The theme chooser is a small native popup, so it appears correctly above the embedded WebKit view without hiding or reloading the page. The volume popover and the address bar's history dropdown use the same approach; the dropdown is opened without keyboard focus so typing continues in the address bar. The artwork is original vector work inspired by the supplied design direction, not a copy of the reference illustrations.
 
 ## Architecture
 
@@ -134,13 +145,13 @@ GPUI: tabs, address bar, controls, new-tab page
 
 Two small document-start scripts run in every frame: one for links, one for tab audio. The link script supplies hover destinations, modifier-click requests and the link menu, including inside frames. Its narrowly scoped native message handler accepts only bounded HTTP(S) URLs; it exposes no filesystem or general native-command API. The link menu uses an isolated shadow root within the page because a GPUI overlay would be covered by WebKit's native view. Web pages remain untrusted and can interfere with document-local UI.
 
-A GPUI canvas supplies the webview's window-relative logical bounds so it stays below the toolbar and above the status bar during resizing. Hidden tabs keep their documents and JavaScript state. Native callbacks enqueue events, which the UI drains every 100 ms; they never re-enter GPUI while it is rendering.
+A GPUI canvas supplies the webview's window-relative logical bounds so it stays below the toolbar and above the status bar during resizing. Hidden tabs keep their documents and JavaScript state. Native callbacks enqueue events, which the UI drains every 100 ms; they never re-enter GPUI while it is rendering. That drain also records finished loads and same-document URL changes in the in-memory history; the file is rewritten atomically (temporary file, then rename) on a background thread at most once a second and once more when the window closes, so the UI thread never waits on disk.
 
 The previous WebRender/SWGL pipeline, HTML extraction, custom HTTP loader and `--render-check` command have been removed. WebKit now owns the entire web-content pipeline.
 
 ## Scope and limitations
 
-Keep it small: no bookmarks manager, extensions, download UI, permission UI, session restoration, or private-mode promise. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
+Keep it small: no bookmarks manager, extensions, download UI, permission UI, session restoration, or private-mode promise. Browsing history is the one thing Felifox itself persists, in `~/Library/Application Support/Felifox/history/`; delete that folder to clear it. Tabs, theme and volume choices still last for the session only. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
 
 - Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
@@ -171,6 +182,8 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/main.rs`: GPUI window, tabs and navigation controls.
 - `src/input.rs`: address input adapted from Zed's Apache-2.0 GPUI input example.
 - `src/engine.rs`: address-to-URL/search resolution only.
+- `src/history.rs`: on-disk visit store, fuzzy matcher and frecency ranking.
+- `src/suggestions.rs`: the native, non-focusing history dropdown under the address bar.
 - `src/webview.rs`: Wry child views, native callbacks, history, bounds and focus.
 - `src/theme.rs`: shared palettes, contrast checks and native Reduce Motion support.
 - `src/art.rs` and `src/art/`: theme dispatch and five independent procedural scenes; no textures or animation framework.
