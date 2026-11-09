@@ -508,6 +508,7 @@ impl Browser {
         let mut address_changed = false;
         let mut open = Vec::new();
         let mut icons = Vec::new();
+        let mut page_focused = false;
         for (index, tab) in self.tabs.iter_mut().enumerate() {
             let Some(page) = &tab.page else {
                 continue;
@@ -548,6 +549,7 @@ impl Browser {
                     Event::Open(url) => open.push((url, true)),
                     Event::OpenInBackground(url) => open.push((url, false)),
                     Event::Hover(url) => tab.hovered_link = url,
+                    Event::Focused => page_focused |= index == self.active,
                     // A new document asks for the tab's settings; default ones need no script.
                     Event::Audio(AudioReport::Hello) => {
                         if !tab.audio.is_default() {
@@ -562,7 +564,13 @@ impl Browser {
                 }
             }
         }
-        if address_changed && !self.address.read(cx).focus_handle(cx).is_focused(window) {
+        let address_focused = self.address.read(cx).focus_handle(cx).is_focused(window);
+        if address_changed && !address_focused {
+            self.sync_address(cx);
+        }
+        // Clicking the page while editing the address ends the edit, like other browsers.
+        if page_focused && address_focused {
+            window.focus(&self.focus);
             self.sync_address(cx);
         }
         for (url, activate) in open {

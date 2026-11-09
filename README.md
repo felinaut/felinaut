@@ -72,7 +72,7 @@ hdiutil verify dist/Felifox-0.1-beta-macos-arm64.dmg
 ## Controls
 
 - Native address input with Unicode, IME, selection and clipboard.
-- **Title-first address bar**: while you are not editing it, the address field shows the site's icon, the page title and the domain instead of the raw URL. Click it or press `⌘L` to get the full URL, selected for editing. **Theme ▾ → Address bar shows** switches between *Page title*, *Domain only* and *Full address*.
+- **Title-first address bar**: while you are not editing it, the address field shows the site's icon, the page title and the domain instead of the raw URL. Click it or press `⌘L` to get the full URL, selected for editing; clicking into the page ends the edit. **Theme ▾ → Address bar shows** switches between *Page title*, *Domain only* and *Full address*.
 - **History suggestions** while you type: a dropdown of previously visited pages, each with its icon, matched fuzzily against both title and URL; an empty address bar lists your most frecent pages (see below).
 - Tabs retain their own live webview and native navigation history when switched.
 - Back, forward, reload and home; native page titles and URLs update the chrome.

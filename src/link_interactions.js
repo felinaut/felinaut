@@ -28,6 +28,8 @@
     post("hover", url || "");
   };
   window.addEventListener("pointerover", (event) => hover(linkAt(event)), true);
+  // A click in the page ends editing in the address bar, as in other browsers.
+  window.addEventListener("pointerdown", () => post("focus"), true);
   window.addEventListener(
     "pointerout",
     (event) => {

@@ -17,6 +17,8 @@ pub enum Event {
     Open(String),
     OpenInBackground(String),
     Hover(Option<String>),
+    /// The user clicked into the page.
+    Focused,
     Audio(AudioReport),
     /// The site's icon as a small validated PNG.
     Icon(Vec<u8>),
@@ -198,8 +200,12 @@ fn parse_link_event(message: &str) -> Option<Event> {
         return None;
     }
     let (kind, value) = message.strip_prefix("felifox-link:")?.split_once(':')?;
-    if kind == "hover" && value.is_empty() {
-        return Some(Event::Hover(None));
+    if value.is_empty() {
+        return match kind {
+            "hover" => Some(Event::Hover(None)),
+            "focus" => Some(Event::Focused),
+            _ => None,
+        };
     }
     if value.chars().any(char::is_control) {
         return None;
@@ -250,6 +256,14 @@ mod tests {
         assert_eq!(
             parse_link_event("felifox-link:hover:"),
             Some(Event::Hover(None))
+        );
+        assert_eq!(
+            parse_link_event("felifox-link:focus:"),
+            Some(Event::Focused)
+        );
+        assert_eq!(
+            parse_link_event("felifox-link:focus:https://x.example"),
+            None
         );
         assert!(matches!(
             parse_link_event("felifox-link:background:https://example.com"),
