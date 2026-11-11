@@ -96,6 +96,36 @@ impl NativePage {
         })
     }
 
+    /// A page the user never sees, for reading another site with the shared WebKit logins:
+    /// no injected scripts, no new windows, only load events. It stays hidden and offscreen.
+    pub fn hidden(window: &gpui::Window, url: &str) -> Result<Self, String> {
+        check_url(url)?;
+        let (sender, events) = mpsc::channel();
+        let webview = WebViewBuilder::new()
+            .with_visible(false)
+            .with_focused(false)
+            // A real viewport: rows that never get a layout may render empty.
+            .with_bounds(wry::Rect {
+                position: wry::dpi::LogicalPosition::new(-20_000., -20_000.).into(),
+                size: wry::dpi::LogicalSize::new(1024., 768.).into(),
+            })
+            .with_navigation_handler(|url| allowed_url(&url))
+            .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
+            .with_on_page_load_handler(move |event, url| {
+                if matches!(event, PageLoadEvent::Finished) {
+                    let _ = sender.send(Event::Finished(url));
+                }
+            })
+            .with_url(url)
+            .build_as_child(window)
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            webview,
+            events,
+            last_url: RefCell::new(String::new()),
+        })
+    }
+
     #[cfg(test)]
     #[allow(dead_code, reason = "Used by the opt-in native link interaction test")]
     pub fn evaluate_for_test(&self, script: &str) -> Result<(), String> {
