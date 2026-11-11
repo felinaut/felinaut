@@ -8,6 +8,7 @@ mod engine;
 mod history;
 mod icons;
 mod input;
+mod live;
 mod session;
 mod suggestions;
 mod theme;
@@ -24,7 +25,7 @@ use std::{
     fs,
     path::PathBuf,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use theme::{AddressDisplay, Palette, ThemeSettings};
@@ -94,6 +95,32 @@ impl Render for DragPreview {
 struct TabMenu {
     id: u64,
     at: Point<Pixels>,
+}
+
+/// The one live folder refresh in flight: a hidden page, and the extractor's last answer.
+struct Fetch {
+    folder: usize,
+    page: NativePage,
+    started: Instant,
+    loaded: bool,
+    tries: u32,
+    next_try: Instant,
+    result: Arc<Mutex<Option<String>>>,
+}
+/// GitHub renders its list after the load finishes, so the extractor runs a few times.
+const FETCH_TRIES: u32 = 6;
+const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The Add / Edit live folder form, drawn inline in the sidebar.
+struct LiveForm {
+    /// The folder being edited; `None` adds one.
+    editing: Option<usize>,
+    name: Entity<AddressInput>,
+    url: Entity<AddressInput>,
+    selector: Entity<AddressInput>,
+    minutes: Entity<AddressInput>,
+    error: Option<String>,
+    _subscriptions: Vec<Subscription>,
 }
 
 /// One right-click menu entry: its label and, when it has one, the shortcut that does the same.
@@ -252,7 +279,8 @@ actions!(
         PinTab,
         NextTab,
         PreviousTab,
-        ReopenTab
+        ReopenTab,
+        NewLiveFolder
     ]
 );
 
@@ -414,6 +442,16 @@ struct Browser {
     session_path: Option<PathBuf>,
     /// What `tabs.tsv` last received, so unchanged tabs are not rewritten every poll.
     last_session: RefCell<String>,
+    live: Vec<live::LiveFolder>,
+    /// `live.tsv`; `None` like `session_path`.
+    live_path: Option<PathBuf>,
+    last_live: RefCell<String>,
+    fetch: Option<Fetch>,
+    /// A live folder's right-click menu: its index and where the click was.
+    live_menu: Option<(usize, Point<Pixels>)>,
+    live_form: Option<LiveForm>,
+    /// The hovered live folder item's title and address, for the status bar.
+    live_hover: Option<String>,
 }
 impl Browser {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -523,6 +561,8 @@ impl Browser {
                 for tab in &mut this.tabs {
                     tab.page.take();
                 }
+                this.fetch = None;
+                this.save_live();
                 // The debounced save may still be pending; this is the last chance to write.
                 if let Some((path, contents)) = this.history.take_snapshot()
                     && let Err(error) = history::write(&path, &contents)
@@ -547,6 +587,17 @@ impl Browser {
             None => Vec::new(),
         };
         let (tabs, active) = restore_tabs(saved);
+        let mut live_path = live::default_path();
+        let live = match live_path.as_deref().map(fs::read_to_string) {
+            Some(Ok(text)) => live::parse(&text),
+            Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Some(Err(error)) => {
+                eprintln!("Could not read live folders: {error}");
+                live_path = None;
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
         let mut browser = Self {
             active,
             next_id: tabs.len() as u64 + 1,
@@ -582,6 +633,13 @@ impl Browser {
             closed: Vec::new(),
             session_path,
             last_session: RefCell::new(String::new()),
+            live,
+            live_path,
+            last_live: RefCell::new(String::new()),
+            fetch: None,
+            live_menu: None,
+            live_form: None,
+            live_hover: None,
         };
         // Restored tabs load lazily; only the active one (and its split partner) needs a page.
         browser.load_if_needed(active, window);
@@ -629,6 +687,279 @@ impl Browser {
         }
         // Recorded even on failure, so a broken disk is reported once per change, not per poll.
         *self.last_session.borrow_mut() = contents;
+    }
+    /// Writes `live.tsv` when the folders differ from the last write, like `save_session`.
+    fn save_live(&self) {
+        let Some(path) = &self.live_path else {
+            return;
+        };
+        let contents = live::serialize(&self.live);
+        if *self.last_live.borrow() == contents {
+            return;
+        }
+        // An empty list is only written once a file exists, so a fresh profile stays clean.
+        if (!self.live.is_empty() || path.exists())
+            && let Err(error) = history::write(path, &contents)
+        {
+            eprintln!("Could not save live folders: {error}");
+        }
+        *self.last_live.borrow_mut() = contents;
+    }
+    /// Drives the one hidden refresh page, and starts the next due folder while the window
+    /// is active.
+    fn poll_live(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        if let Some(fetch) = &mut self.fetch {
+            let folder = &self.live[fetch.folder];
+            let mut done: Option<Result<Vec<live::Item>, String>> = None;
+            let mut sign_in = false;
+            for event in fetch.page.drain_events() {
+                match event {
+                    Event::Finished(url) | Event::Url(url) if live::is_sign_in(&url) => {
+                        sign_in = true;
+                    }
+                    Event::Finished(_) if !fetch.loaded => {
+                        fetch.loaded = true;
+                        fetch.next_try = now + Duration::from_millis(300);
+                    }
+                    _ => {}
+                }
+            }
+            let answer = fetch
+                .result
+                .lock()
+                .ok()
+                .and_then(|mut answer| answer.take());
+            if let Some(json) = answer {
+                match live::parse_items(&json, &folder.url) {
+                    Some(items) if !items.is_empty() => done = Some(Ok(items)),
+                    // Still empty after the last try: the list really is empty.
+                    _ if fetch.tries >= FETCH_TRIES => done = Some(Ok(Vec::new())),
+                    _ => {}
+                }
+            }
+            if done.is_none() && fetch.loaded && fetch.tries < FETCH_TRIES && now >= fetch.next_try
+            {
+                fetch.tries += 1;
+                fetch.next_try = now + Duration::from_secs(1);
+                let result = fetch.result.clone();
+                let _ = fetch
+                    .page
+                    .evaluate(&live::extractor(&folder.selector), move |json| {
+                        if let Ok(mut answer) = result.lock() {
+                            *answer = Some(json);
+                        }
+                    });
+            }
+            if done.is_none() && fetch.started.elapsed() > FETCH_TIMEOUT {
+                done = Some(Err("The page did not load in 20 seconds".into()));
+            }
+            if sign_in || done.is_some() {
+                let index = fetch.folder;
+                self.fetch = None;
+                let folder = &mut self.live[index];
+                match done {
+                    _ if sign_in => {
+                        folder.error = None;
+                        folder.sign_in = live::web_host(&folder.url);
+                    }
+                    Some(Ok(items)) => folder.update(items),
+                    Some(Err(error)) => folder.error = Some(error),
+                    None => {}
+                }
+                folder.last = Some(now);
+                cx.notify();
+            }
+            return;
+        }
+        if !window.is_window_active() {
+            return;
+        }
+        let Some(index) = self.live.iter().position(live::LiveFolder::due) else {
+            return;
+        };
+        match NativePage::hidden(window, &self.live[index].url) {
+            Ok(page) => {
+                self.fetch = Some(Fetch {
+                    folder: index,
+                    page,
+                    started: now,
+                    loaded: false,
+                    tries: 0,
+                    next_try: now,
+                    result: Arc::new(Mutex::new(None)),
+                });
+            }
+            Err(error) => {
+                self.live[index].error = Some(error);
+                self.live[index].last = Some(now);
+            }
+        }
+        cx.notify();
+    }
+    fn refresh_live(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self
+            .fetch
+            .as_ref()
+            .is_some_and(|fetch| fetch.folder == index)
+        {
+            self.fetch = None;
+        }
+        if let Some(folder) = self.live.get_mut(index) {
+            folder.last = None;
+        }
+        cx.notify();
+    }
+    fn delete_live(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.live.len() {
+            return;
+        }
+        match &mut self.fetch {
+            Some(fetch) if fetch.folder == index => self.fetch = None,
+            Some(fetch) if fetch.folder > index => fetch.folder -= 1,
+            _ => {}
+        }
+        self.live.remove(index);
+        self.save_live();
+        cx.notify();
+    }
+    fn open_live_item(
+        &mut self,
+        folder: usize,
+        item: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(item) = self
+            .live
+            .get_mut(folder)
+            .and_then(|folder| folder.items.get_mut(item))
+        else {
+            return;
+        };
+        item.seen = true;
+        let url = item.url.clone();
+        self.open_link_tab(&url, true, window, cx);
+    }
+    fn new_live_folder(&mut self, _: &NewLiveFolder, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_live_form(None, window, cx);
+    }
+    /// Opens the Add (`None`) or Edit form in the sidebar, showing the sidebar if needed.
+    fn open_live_form(
+        &mut self,
+        editing: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let folder = editing.and_then(|index| self.live.get(index));
+        let field = |text: &str, placeholder: &'static str, cx: &mut Context<Self>| {
+            let input = cx.new(AddressInput::new);
+            input.update(cx, |input, cx| {
+                input.set_placeholder(placeholder);
+                input.set_text(text.to_owned(), cx);
+            });
+            input
+        };
+        let name = field(folder.map_or("", |f| &f.name), "Name", cx);
+        let url = field(folder.map_or("", |f| &f.url), "https://…", cx);
+        let selector = field(
+            folder.map_or("", |f| &f.selector),
+            "CSS selector of the links",
+            cx,
+        );
+        let minutes = field(&folder.map_or(10, |f| f.every).to_string(), "Minutes", cx);
+        let mut subscriptions = Vec::new();
+        for input in [&name, &url, &selector, &minutes] {
+            subscriptions.push(cx.subscribe_in(
+                input,
+                window,
+                |this, _, _: &Submit, window, cx| {
+                    this.submit_live_form(window, cx);
+                },
+            ));
+            subscriptions.push(cx.subscribe_in(
+                input,
+                window,
+                |this, _, event: &AddressEvent, window, cx| {
+                    if matches!(event, AddressEvent::Escape) {
+                        this.close_live_form(window, cx);
+                    }
+                },
+            ));
+        }
+        window.focus(&name.read(cx).focus_handle(cx));
+        self.live_form = Some(LiveForm {
+            editing,
+            name,
+            url,
+            selector,
+            minutes,
+            error: None,
+            _subscriptions: subscriptions,
+        });
+        if !self.sidebar_shown(cx) {
+            self.toggle_sidebar(&ToggleSidebar, window, cx);
+        }
+        cx.notify();
+    }
+    fn close_live_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.live_form.take().is_some() {
+            window.focus(&self.focus);
+            cx.notify();
+        }
+    }
+    /// Fills the form with a GitHub pull request list.
+    fn live_preset(&mut self, name: &str, url: &str, cx: &mut Context<Self>) {
+        let Some(form) = &self.live_form else {
+            return;
+        };
+        for (input, text) in [
+            (&form.name, name),
+            (&form.url, url),
+            (&form.selector, live::GITHUB_SELECTOR),
+            (&form.minutes, "5"),
+        ] {
+            input.update(cx, |input, cx| input.set_text(text.to_owned(), cx));
+        }
+    }
+    fn submit_live_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &self.live_form else {
+            return;
+        };
+        let text = |input: &Entity<AddressInput>| input.read(cx).text().to_owned();
+        let checked = live::check(
+            &text(&form.name),
+            &text(&form.url),
+            &text(&form.selector),
+            &text(&form.minutes),
+        );
+        let editing = form.editing.filter(|&index| index < self.live.len());
+        match checked {
+            Ok(mut folder) => {
+                if let Some(index) = editing {
+                    let old = &self.live[index];
+                    folder.open = old.open;
+                    // The same source keeps its items and schedule.
+                    if old.url == folder.url && old.selector == folder.selector {
+                        folder.items = old.items.clone();
+                        folder.last = old.last;
+                    } else if self.fetch.as_ref().is_some_and(|f| f.folder == index) {
+                        self.fetch = None;
+                    }
+                    self.live[index] = folder;
+                } else {
+                    self.live.push(folder);
+                }
+                self.save_live();
+                self.close_live_form(window, cx);
+            }
+            Err(error) => {
+                if let Some(form) = &mut self.live_form {
+                    form.error = Some(error);
+                }
+                cx.notify();
+            }
+        }
     }
     /// Pins at the end of the pinned group, or unpins to the top of the other tabs.
     fn toggle_pin_at(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -1145,9 +1476,11 @@ impl Browser {
         for (url, png) in icons {
             self.store_icon(&url, png, cx);
         }
+        self.poll_live(window, cx);
         self.update_peek(window, cx);
         self.flush_history(cx);
         self.save_session();
+        self.save_live();
         if changed {
             cx.notify();
         }
@@ -1321,11 +1654,12 @@ impl Browser {
         cx: &mut Context<Self>,
     ) {
         self.menu = Some(TabMenu { id, at });
+        self.live_menu = None;
         window.focus(&self.menu_focus);
         cx.notify();
     }
     fn close_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.take().is_some() {
+        if self.menu.take().is_some() | self.live_menu.take().is_some() {
             window.focus(&self.focus);
             cx.notify();
         }
@@ -2344,6 +2678,373 @@ impl Browser {
                 this.drop_tab(dragged.0, at, true, cx);
             }))
     }
+    /// A quiet one-line row inside a live folder: an icon slot and text.
+    fn live_row(id: impl Into<ElementId>, p: Palette) -> Stateful<Div> {
+        div()
+            .id(id)
+            .h(px(28.))
+            .w_full()
+            .flex_shrink_0()
+            .pl(px(26.))
+            .pr_2()
+            .rounded_lg()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_sm()
+            .cursor_pointer()
+            .hover(move |s| s.bg(rgb(p.surface)))
+    }
+    /// Live folders, Arc-style: a row per folder with its count, and its links when open.
+    fn live_folders(&self, p: Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut rows = Vec::new();
+        for (index, folder) in self.live.iter().enumerate() {
+            let fetching = self.fetch.as_ref().is_some_and(|f| f.folder == index);
+            let unseen = folder.unseen();
+            let host = live::web_host(&folder.url).unwrap_or_default();
+            rows.push(
+                div()
+                    .id(("live", index))
+                    .h(px(30.))
+                    .w_full()
+                    .flex_shrink_0()
+                    .px_2()
+                    .rounded_lg()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(rgb(p.surface)))
+                    .on_hover(Self::hint_on_hover(
+                        "Live folder · click to open or close, right-click to refresh or edit",
+                        cx,
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(folder) = this.live.get_mut(index) {
+                            folder.open = !folder.open;
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.menu = None;
+                            this.live_menu = Some((index, event.position));
+                            window.focus(&this.menu_focus);
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .w(px(10.))
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(rgb(p.muted))
+                            .child(if folder.open { "▾" } else { "▸" }),
+                    )
+                    .child(self.site_icon(&host, 16., p))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(folder.name.clone()),
+                    )
+                    .when(fetching, |row| {
+                        row.child(div().text_xs().text_color(rgb(p.muted)).child("◌"))
+                    })
+                    .when(!folder.items.is_empty(), |row| {
+                        row.child(
+                            div()
+                                .px(px(6.))
+                                .rounded_full()
+                                .text_xs()
+                                .bg(rgb(if unseen > 0 { p.primary } else { p.surface }))
+                                .text_color(rgb(if unseen > 0 { p.background } else { p.muted }))
+                                .child(folder.items.len().to_string()),
+                        )
+                    })
+                    .into_any_element(),
+            );
+            if !folder.open {
+                continue;
+            }
+            if let Some(host) = &folder.sign_in {
+                let url = folder.url.clone();
+                rows.push(
+                    Self::live_row(("live-sign-in", index), p)
+                        .text_color(rgb(p.primary))
+                        .on_hover(Self::hint_on_hover(
+                            "Opens the sign-in page in a new tab",
+                            cx,
+                        ))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_link_tab(&url, true, window, cx);
+                        }))
+                        .child(format!("Sign in to {host}"))
+                        .into_any_element(),
+                );
+            } else if let Some(error) = &folder.error {
+                rows.push(
+                    Self::live_row(("live-error", index), p)
+                        .text_xs()
+                        .text_color(rgb(p.muted))
+                        .on_hover(Self::hint_on_hover("Click to try again", cx))
+                        .on_click(cx.listener(move |this, _, _, cx| this.refresh_live(index, cx)))
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(error.clone()),
+                        )
+                        .into_any_element(),
+                );
+            } else if folder.items.is_empty() {
+                rows.push(
+                    Self::live_row(("live-empty", index), p)
+                        .cursor_default()
+                        .text_xs()
+                        .text_color(rgb(p.muted))
+                        .child(if fetching || folder.last.is_none() {
+                            "Loading…"
+                        } else {
+                            "Nothing here right now"
+                        })
+                        .into_any_element(),
+                );
+            }
+            for (n, item) in folder.items.iter().enumerate() {
+                let status = format!("{} · {}", item.title, history::display_url(&item.url));
+                rows.push(
+                    Self::live_row(("live-item", index * live::MAX_ITEMS + n), p)
+                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            if *hovered {
+                                this.live_hover = Some(status.clone());
+                            } else if this.live_hover.as_ref() == Some(&status) {
+                                this.live_hover = None;
+                            }
+                            cx.notify();
+                        }))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.live_hover = None;
+                            this.open_live_item(index, n, window, cx);
+                        }))
+                        .child(self.site_icon(&host, 14., p))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .text_color(rgb(if item.seen { p.muted } else { p.text }))
+                                .child(item.title.clone()),
+                        )
+                        .when(!item.seen, |row| {
+                            row.child(
+                                div()
+                                    .size(px(6.))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .bg(rgb(p.primary)),
+                            )
+                        })
+                        .into_any_element(),
+                );
+            }
+        }
+        rows.push(match &self.live_form {
+            Some(form) => self.live_form_view(form, p, cx),
+            None => div()
+                .id("live-add")
+                .h(px(30.))
+                .flex_shrink_0()
+                .px_2()
+                .rounded_lg()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_xs()
+                .text_color(rgb(p.muted))
+                .cursor_pointer()
+                .hover(move |s| s.bg(rgb(p.surface)).text_color(rgb(p.text)))
+                .on_click(cx.listener(|this, _, window, cx| this.open_live_form(None, window, cx)))
+                .child(
+                    div()
+                        .w(px(18.))
+                        .flex()
+                        .justify_center()
+                        .text_sm()
+                        .child("✦"),
+                )
+                .child("Add live folder…")
+                .into_any_element(),
+        });
+        rows
+    }
+    fn live_form_view(&self, form: &LiveForm, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let label =
+            |text: &'static str| div().pt_1().text_xs().text_color(rgb(p.muted)).child(text);
+        let chip = |id: &'static str, text: &'static str| {
+            div()
+                .id(id)
+                .px_2()
+                .py(px(3.))
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(p.border))
+                .text_xs()
+                .cursor_pointer()
+                .hover(move |s| s.bg(rgb(p.elevated)))
+                .child(text)
+        };
+        div()
+            .id("live-form")
+            .flex_shrink_0()
+            .p_2()
+            .mb_1()
+            .rounded_lg()
+            .bg(rgb(p.surface))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(
+                if form.editing.is_some() {
+                    "Edit live folder"
+                } else {
+                    "New live folder"
+                },
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .child(
+                        chip("live-preset-prs", "GitHub: my PRs").on_click(cx.listener(
+                            |this, _, _, cx| this.live_preset("My PRs", live::GITHUB_MY_PRS, cx),
+                        )),
+                    )
+                    .child(
+                        chip("live-preset-reviews", "Review requests").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.live_preset("Review requests", live::GITHUB_REVIEWS, cx)
+                            },
+                        )),
+                    ),
+            )
+            .child(label("Name"))
+            .child(form.name.clone())
+            .child(label("Page address"))
+            .child(form.url.clone())
+            .child(label("Links matching (CSS selector)"))
+            .child(form.selector.clone())
+            .child(label("Refresh every (minutes)"))
+            .child(form.minutes.clone())
+            .when_some(form.error.clone(), |form, error| {
+                form.child(div().text_xs().text_color(rgb(p.accent)).child(error))
+            })
+            .child(
+                div()
+                    .pt_1()
+                    .flex()
+                    .justify_end()
+                    .gap_1()
+                    .child(chip("live-cancel", "Cancel").on_click(
+                        cx.listener(|this, _, window, cx| this.close_live_form(window, cx)),
+                    ))
+                    .child(
+                        chip("live-save", "Save")
+                            .bg(rgb(p.primary))
+                            .text_color(rgb(p.background))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.submit_live_form(window, cx)
+                                }),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+    /// Right-click menu for a live folder, kept inside the sidebar like the tab menu.
+    fn live_menu_view(
+        &self,
+        (index, at): (usize, Point<Pixels>),
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let full = cx.global::<ThemeSettings>().sidebar_width;
+        let width = (full - 16.).min(200.);
+        let x = f32::from(at.x).clamp(8., (full - width - 8.).max(8.));
+        let body = div()
+            .id("live-menu")
+            .track_focus(&self.menu_focus)
+            .w(px(width))
+            .p_1()
+            .rounded_lg()
+            .bg(rgb(p.surface))
+            .border_1()
+            .border_color(rgb(p.border))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .text_color(rgb(p.text))
+            .font_family(".AppleSystemUIFont")
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close_menu(window, cx)))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    this.close_menu(window, cx);
+                }
+            }))
+            .child(
+                menu_item("live-refresh", "Refresh", None, p).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.close_menu(window, cx);
+                        this.refresh_live(index, cx);
+                    },
+                )),
+            )
+            .child(
+                menu_item("live-mark-seen", "Mark All as Seen", None, p).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.close_menu(window, cx);
+                        if let Some(folder) = this.live.get_mut(index) {
+                            folder.items.iter_mut().for_each(|item| item.seen = true);
+                        }
+                    },
+                )),
+            )
+            .child(
+                menu_item("live-edit", "Edit…", None, p).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.close_menu(window, cx);
+                        this.open_live_form(Some(index), window, cx);
+                    },
+                )),
+            )
+            .child(menu_separator(p))
+            .child(
+                menu_item("live-delete", "Delete Folder", None, p).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.close_menu(window, cx);
+                        this.delete_live(index, cx);
+                    },
+                )),
+            );
+        deferred(
+            anchored()
+                .position(point(px(x), at.y))
+                .snap_to_window_with_margin(px(8.))
+                .child(body),
+        )
+        .with_priority(1)
+        .into_any_element()
+    }
     /// Arc-style vertical tabs: pinned tiles, then New tab and the other tabs.
     fn sidebar_view(&self, p: Palette, cx: &mut Context<Self>) -> Stateful<Div> {
         let pinned = self.pinned_count();
@@ -2414,6 +3115,7 @@ impl Browser {
                                 .children((0..pinned).map(|index| self.pinned_tile(index, p, cx))),
                         )
                     })
+                    .children(self.live_folders(p, cx))
                     .child(
                         // An action, not a tab: no fill or icon tile, quieter text, its shortcut.
                         // Dropping a tab here moves it to the top of the list (unpinning it).
@@ -2488,6 +3190,9 @@ impl Browser {
             )
             .when_some(self.menu, |sidebar, menu| {
                 sidebar.child(self.tab_menu(menu, p, cx))
+            })
+            .when_some(self.live_menu, |sidebar, menu| {
+                sidebar.child(self.live_menu_view(menu, p, cx))
             })
     }
     /// The active tab's page, or the active split view's two pages side by side.
@@ -2587,6 +3292,7 @@ impl Render for Browser {
         };
         let status = drop_status
             .or(self.hint.map(str::to_owned))
+            .or(self.live_hover.clone())
             .or(hovered_row)
             .unwrap_or_else(|| {
                 tab.hovered_link
@@ -2623,6 +3329,7 @@ impl Render for Browser {
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::reopen_tab))
+            .on_action(cx.listener(Self::new_live_folder))
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(
@@ -2829,6 +3536,8 @@ fn main() {
                     MenuItem::action("Close Tab", CloseTab),
                     MenuItem::action("Reopen Closed Tab", ReopenTab),
                     MenuItem::action("Pin / Unpin Tab", PinTab),
+                    MenuItem::separator(),
+                    MenuItem::action("New Live Folder…", NewLiveFolder),
                 ],
             },
             Menu {
