@@ -257,9 +257,14 @@ impl NativePage {
 
     /// Sends a real key press to the page. `key` is a DOM key name or one character.
     pub fn native_key(&self, key: &str) -> Result<(), String> {
-        use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+        use objc2_app_kit::{NSEvent, NSEventType};
         use wry::WebViewExtMacOS;
-        let (code, characters) = native_key(key).ok_or_else(|| format!("Unknown key: {key}"))?;
+        let (modifiers, name) = native_modifiers(key);
+        let (code, characters) = native_key(name).ok_or_else(|| format!("Unknown key: {key}"))?;
+        // One character has key code 0, and a shortcut reads the key code.
+        if !modifiers.is_empty() && name.chars().count() == 1 {
+            return Err(format!("Modifiers need a named key: {key}"));
+        }
         let view = self.webview.webview();
         let window = view.window().ok_or("The page has no window")?;
         window.makeFirstResponder(Some(&view));
@@ -269,7 +274,7 @@ impl NativePage {
             let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
                 kind,
                 objc2_foundation::NSPoint::new(0., 0.),
-                NSEventModifierFlags::empty(),
+                modifiers,
                 time,
                 window.windowNumber(),
                 None,
@@ -279,7 +284,15 @@ impl NativePage {
                 code,
             )
             .ok_or("AppKit could not make the key event")?;
-            if kind == NSEventType::KeyDown {
+            if !modifiers.is_empty() {
+                // A key with a modifier goes into the event queue and takes the route of a real
+                // key: AppKit first offers it to the window as a key equivalent. Felifox must
+                // be the active app.
+                let app: *mut objc2::runtime::AnyObject =
+                    unsafe { objc2::msg_send![objc2::class!(NSApplication), sharedApplication] };
+                // SAFETY: the main thread, with a live event.
+                let _: () = unsafe { objc2::msg_send![app, postEvent: &*event, atStart: false] };
+            } else if kind == NSEventType::KeyDown {
                 view.keyDown(&event);
             } else {
                 view.keyUp(&event);
@@ -366,9 +379,61 @@ fn parse_icon_event(message: &str) -> Option<Event> {
     crate::icons::png_from_data_url(message.strip_prefix("felifox-icon:")?).map(Event::Icon)
 }
 
+/// Gives Command+arrow keys to the focused page. AppKit offers each Command key to GPUI as a
+/// key equivalent first, and the text input context of GPUI consumes the arrows. Thus WebKit
+/// did not move the caret to the start or the end of a line. Call this once, on the main thread.
+#[cfg(target_os = "macos")]
+pub fn forward_command_arrows() {
+    use objc2::{ClassType, runtime::NSObjectProtocol};
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
+    let handler = block2::RcBlock::new(|event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+        // SAFETY: AppKit gives a live event on the main thread.
+        let key = unsafe { event.as_ref() };
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return event.as_ptr();
+        };
+        // Key codes 123 to 126 are the arrows.
+        if (123..=126).contains(&key.keyCode())
+            && key.modifierFlags().contains(NSEventModifierFlags::Command)
+            && let Some(responder) = key.window(mtm).and_then(|window| window.firstResponder())
+            && responder.isKindOfClass(objc2_web_kit::WKWebView::class())
+        {
+            responder.keyDown(key);
+            return std::ptr::null_mut();
+        }
+        event.as_ptr()
+    });
+    // SAFETY: the handler only reads the event. The monitor stays for the life of the app.
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler)
+    };
+    std::mem::forget(monitor);
+}
+
 /// Agent control is opt-in: only `FELIFOX_AGENT=1` injects `agent.js` and opens the socket.
 pub fn agent_enabled() -> bool {
     std::env::var("FELIFOX_AGENT").as_deref() == Ok("1")
+}
+
+/// Splits `Meta+Shift+ArrowLeft` into the modifier flags and the key name.
+fn native_modifiers(mut key: &str) -> (objc2_app_kit::NSEventModifierFlags, &str) {
+    use objc2_app_kit::NSEventModifierFlags as Flags;
+    let mut flags = Flags::empty();
+    'prefixes: loop {
+        for (prefix, flag) in [
+            ("Meta+", Flags::Command),
+            ("Alt+", Flags::Option),
+            ("Shift+", Flags::Shift),
+            ("Control+", Flags::Control),
+        ] {
+            if let Some(rest) = key.strip_prefix(prefix).filter(|rest| !rest.is_empty()) {
+                flags |= flag;
+                key = rest;
+                continue 'prefixes;
+            }
+        }
+        return (flags, key);
+    }
 }
 
 /// The macOS virtual key code and the characters for a DOM key name.
@@ -389,7 +454,7 @@ fn native_key(key: &str) -> Option<(u16, String)> {
         "PageUp" => (116, '\u{f72c}'),
         "PageDown" => (121, '\u{f72d}'),
         // ponytail: one character has key code 0, thus `event.code` is always "KeyA".
-        // Add a layout table if a site reads `code`. Modifier keys are also not available.
+        // Add a layout table if a site reads `code`, or for modifiers with a character.
         _ => {
             let mut characters = key.chars();
             let character = characters.next()?;
@@ -514,6 +579,13 @@ mod tests {
         assert_eq!(native_key("Enter"), Some((36, "\r".into())));
         assert_eq!(native_key("é"), Some((0, "é".into())));
         assert_eq!(native_key("Control+a"), None);
+        use objc2_app_kit::NSEventModifierFlags as Flags;
+        assert_eq!(
+            super::native_modifiers("Meta+Shift+ArrowLeft"),
+            (Flags::Command | Flags::Shift, "ArrowLeft")
+        );
+        assert_eq!(super::native_modifiers("+"), (Flags::empty(), "+"));
+        assert_eq!(super::native_modifiers("Alt+"), (Flags::empty(), "Alt+"));
         assert_eq!(native_key(""), None);
     }
 

@@ -26,6 +26,14 @@ actions!(
         SelectAll,
         Home,
         End,
+        SelectHome,
+        SelectEnd,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        DeleteWordLeft,
+        DeleteToStart,
         ShowCharacterPalette,
         Paste,
         Cut,
@@ -64,6 +72,18 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-x", Cut, Some("AddressInput")),
         KeyBinding::new("home", Home, Some("AddressInput")),
         KeyBinding::new("end", End, Some("AddressInput")),
+        KeyBinding::new("cmd-left", Home, Some("AddressInput")),
+        KeyBinding::new("cmd-right", End, Some("AddressInput")),
+        KeyBinding::new("shift-home", SelectHome, Some("AddressInput")),
+        KeyBinding::new("shift-end", SelectEnd, Some("AddressInput")),
+        KeyBinding::new("cmd-shift-left", SelectHome, Some("AddressInput")),
+        KeyBinding::new("cmd-shift-right", SelectEnd, Some("AddressInput")),
+        KeyBinding::new("alt-backspace", DeleteWordLeft, Some("AddressInput")),
+        KeyBinding::new("cmd-backspace", DeleteToStart, Some("AddressInput")),
+        KeyBinding::new("alt-left", WordLeft, Some("AddressInput")),
+        KeyBinding::new("alt-right", WordRight, Some("AddressInput")),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, Some("AddressInput")),
+        KeyBinding::new("alt-shift-right", SelectWordRight, Some("AddressInput")),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some("AddressInput")),
         KeyBinding::new("enter", SubmitAddress, Some("AddressInput")),
         KeyBinding::new("up", Up, Some("AddressInput")),
@@ -217,9 +237,52 @@ impl AddressInput {
         self.move_to(self.content.len(), cx);
     }
 
+    fn select_home(&mut self, _: &SelectHome, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(0, cx);
+    }
+
+    fn select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.content.len(), cx);
+    }
+
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(previous_word(&self.content, self.cursor_offset()), cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(next_word(&self.content, self.cursor_offset()), cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(previous_word(&self.content, self.cursor_offset()), cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(next_word(&self.content, self.cursor_offset()), cx);
+    }
+
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.select_to(self.previous_boundary(self.cursor_offset()), cx)
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
+    fn delete_word_left(
+        &mut self,
+        _: &DeleteWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(previous_word(&self.content, self.cursor_offset()), cx)
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
+    fn delete_to_start(&mut self, _: &DeleteToStart, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(0, cx)
         }
         self.replace_text_in_range(None, "", window, cx)
     }
@@ -386,6 +449,46 @@ impl AddressInput {
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
+    }
+}
+
+/// Start of the word before `offset`, as Option+Left finds it. Punctuation and spaces are not words.
+fn previous_word(text: &str, offset: usize) -> usize {
+    text.split_word_bound_indices()
+        .rev()
+        .find_map(|(start, word)| (start < offset && is_word(word)).then_some(start))
+        .unwrap_or(0)
+}
+
+/// End of the word after `offset`, as Option+Right finds it.
+fn next_word(text: &str, offset: usize) -> usize {
+    text.split_word_bound_indices()
+        .find_map(|(start, word)| {
+            let end = start + word.len();
+            (end > offset && is_word(word)).then_some(end)
+        })
+        .unwrap_or(text.len())
+}
+
+fn is_word(segment: &str) -> bool {
+    segment.chars().any(char::is_alphanumeric)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{next_word, previous_word};
+
+    #[test]
+    fn word_motion_stops_at_words_not_punctuation() {
+        let text = "https://example.com/foo bar";
+        assert_eq!(previous_word(text, text.len()), 24);
+        assert_eq!(previous_word(text, 24), 20);
+        assert_eq!(previous_word(text, 8), 0);
+        assert_eq!(previous_word(text, 0), 0);
+        assert_eq!(next_word(text, 0), 5);
+        assert_eq!(next_word(text, 5), 19);
+        assert_eq!(next_word(text, 23), text.len());
+        assert_eq!(next_word(text, text.len()), text.len());
     }
 }
 
@@ -755,6 +858,8 @@ impl Render for AddressInput {
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_to_start))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::select_left))
@@ -762,6 +867,12 @@ impl Render for AddressInput {
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
+            .on_action(cx.listener(Self::select_home))
+            .on_action(cx.listener(Self::select_end))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::show_character_palette))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))

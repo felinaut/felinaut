@@ -76,7 +76,7 @@ Native mode sends a real mouse or keyboard event to the page. Use it for:
 
 - `eval` takes one expression and does not wait for a promise. For statements, use a function: `(() => { const x = 1; return x })()`.
 - A snapshot includes the main document and open shadow roots. It does not include frames.
-- Native keys have no modifiers. `Control+a` gives an error.
+- Native keys accept the modifiers `Meta+`, `Alt+`, `Shift+` and `Control+` only with a named key, for example `Meta+Shift+ArrowLeft`. `Control+a` gives an error. Felifox must be the active app for a key with a modifier.
 - A click on a link that opens a new window makes a new tab. Use `tabs` and `tab <index>` to find and select it.
 - "The page gave no result" shows that the page did not load fully, or that the expression is not valid.
 - "Unknown or stale reference" shows that the page changed. Take a new snapshot.

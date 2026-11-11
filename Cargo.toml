@@ -24,6 +24,8 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSAccessibility",
     # Agent control: real mouse and keyboard events, and page snapshots.
     "NSEvent",
+    # The key event monitor that gives Command+arrow keys to the page.
+    "block2",
     "NSGraphicsContext",
     "NSResponder",
     "NSView",

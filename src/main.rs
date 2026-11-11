@@ -2790,6 +2790,8 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.set_global(ThemeSettings::load());
         input::init(cx);
+        #[cfg(target_os = "macos")]
+        webview::forward_command_arrows();
         cx.bind_keys([
             KeyBinding::new("cmd-t", NewTab, None),
             KeyBinding::new("cmd-w", CloseTab, None),
