@@ -2759,107 +2759,131 @@ fn open_volume(
     });
 }
 
+/// Links handed over by macOS (Felifox as the default browser, `open -a Felifox <url>`).
+/// The bundle registers only http/https; `NativePage` rejects anything else. A launch by
+/// link delivers the URLs before the window exists, so they wait in `pending`.
+#[derive(Default)]
+struct UrlHandoff {
+    pending: Vec<String>,
+    browser: Option<(WindowHandle<Browser>, AsyncApp)>,
+}
+
+fn open_links(window: WindowHandle<Browser>, cx: &mut impl AppContext, urls: Vec<String>) {
+    let _ = window.update(cx, |browser, window, cx| {
+        for url in urls {
+            browser.open_link_tab(&url, true, window, cx);
+        }
+    });
+}
+
 fn main() {
-    Application::new()
-        .with_assets(brand::BrandAssets)
-        .run(|cx: &mut App| {
-            cx.set_global(ThemeSettings::load());
-            input::init(cx);
-            cx.bind_keys([
-                KeyBinding::new("cmd-t", NewTab, None),
-                KeyBinding::new("cmd-w", CloseTab, None),
-                KeyBinding::new("cmd-l", FocusAddress, None),
-                KeyBinding::new("cmd-r", Reload, None),
-                KeyBinding::new("cmd-[", Back, None),
-                KeyBinding::new("cmd-]", Forward, None),
-                KeyBinding::new("cmd-shift-h", Home, None),
-                KeyBinding::new("cmd-q", Quit, None),
-                KeyBinding::new("cmd-shift-m", MuteTab, None),
-                KeyBinding::new("cmd-s", ToggleSidebar, None),
-                KeyBinding::new("cmd-d", PinTab, None),
-                KeyBinding::new("cmd-shift-t", ReopenTab, None),
-                KeyBinding::new("ctrl-tab", NextTab, None),
-                KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
-                KeyBinding::new("cmd-shift-]", NextTab, None),
-                KeyBinding::new("cmd-shift-[", PreviousTab, None),
-                KeyBinding::new("cmd-9", ActivateTab(LAST_TAB), None),
-            ]);
-            cx.bind_keys(
-                (1..=8).map(|n| KeyBinding::new(&format!("cmd-{n}"), ActivateTab(n - 1), None)),
-            );
-            // Native menu equivalents remain available while WKWebView owns keyboard focus.
-            cx.set_menus(vec![
-                Menu {
-                    name: "Felifox".into(),
-                    items: vec![
-                        MenuItem::action("About Felifox", AboutFelifox),
-                        MenuItem::separator(),
-                        MenuItem::action("Quit Felifox", Quit),
-                    ],
-                },
-                Menu {
-                    name: "File".into(),
-                    items: vec![
-                        MenuItem::action("New Tab", NewTab),
-                        MenuItem::action("Close Tab", CloseTab),
-                        MenuItem::action("Reopen Closed Tab", ReopenTab),
-                        MenuItem::action("Pin / Unpin Tab", PinTab),
-                    ],
-                },
-                Menu {
-                    name: "Edit".into(),
-                    items: vec![
-                        MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
-                        MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
-                        MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
-                        MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
-                    ],
-                },
-                Menu {
-                    name: "View".into(),
-                    // Menu items keep these working while the page has keyboard focus.
-                    items: [
-                        MenuItem::action("Toggle Sidebar", ToggleSidebar),
-                        MenuItem::separator(),
-                        MenuItem::action("Show Next Tab", NextTab),
-                        MenuItem::action("Show Previous Tab", PreviousTab),
-                        MenuItem::separator(),
-                    ]
-                    .into_iter()
-                    .chain(
-                        (1..=8).map(|n| MenuItem::action(format!("Tab {n}"), ActivateTab(n - 1))),
-                    )
-                    .chain([MenuItem::action("Last Tab", ActivateTab(LAST_TAB))])
-                    .collect(),
-                },
-                Menu {
-                    name: "Navigate".into(),
-                    items: vec![
-                        MenuItem::action("Open Location", FocusAddress),
-                        MenuItem::action("Back", Back),
-                        MenuItem::action("Forward", Forward),
-                        MenuItem::action("Reload", Reload),
-                        MenuItem::action("Home", Home),
-                    ],
-                },
-                Menu {
-                    name: "Sound".into(),
-                    items: vec![
-                        MenuItem::action("Volume Controls…", VolumeControls),
-                        MenuItem::action("Mute / Unmute Tab", MuteTab),
-                    ],
-                },
-            ]);
-            cx.on_action(|_: &AboutFelifox, cx| about::open(cx));
-            cx.on_action(|_: &Quit, cx| cx.quit());
-            cx.on_window_closed(|cx| {
-                if cx.windows().is_empty() {
-                    cx.quit();
-                }
-            })
-            .detach();
-            let bounds = Bounds::centered(None, size(px(1280.), px(900.)), cx);
-            cx.open_window(
+    let handoff = Rc::new(RefCell::new(UrlHandoff::default()));
+    let opener = handoff.clone();
+    let app = Application::new().with_assets(brand::BrandAssets);
+    app.on_open_urls(move |urls| {
+        let mut handoff = opener.borrow_mut();
+        match &mut handoff.browser {
+            Some((window, cx)) => open_links(*window, cx, urls),
+            None => handoff.pending.extend(urls),
+        }
+    });
+    app.run(move |cx: &mut App| {
+        cx.set_global(ThemeSettings::load());
+        input::init(cx);
+        cx.bind_keys([
+            KeyBinding::new("cmd-t", NewTab, None),
+            KeyBinding::new("cmd-w", CloseTab, None),
+            KeyBinding::new("cmd-l", FocusAddress, None),
+            KeyBinding::new("cmd-r", Reload, None),
+            KeyBinding::new("cmd-[", Back, None),
+            KeyBinding::new("cmd-]", Forward, None),
+            KeyBinding::new("cmd-shift-h", Home, None),
+            KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-shift-m", MuteTab, None),
+            KeyBinding::new("cmd-s", ToggleSidebar, None),
+            KeyBinding::new("cmd-d", PinTab, None),
+            KeyBinding::new("cmd-shift-t", ReopenTab, None),
+            KeyBinding::new("ctrl-tab", NextTab, None),
+            KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
+            KeyBinding::new("cmd-shift-]", NextTab, None),
+            KeyBinding::new("cmd-shift-[", PreviousTab, None),
+            KeyBinding::new("cmd-9", ActivateTab(LAST_TAB), None),
+        ]);
+        cx.bind_keys(
+            (1..=8).map(|n| KeyBinding::new(&format!("cmd-{n}"), ActivateTab(n - 1), None)),
+        );
+        // Native menu equivalents remain available while WKWebView owns keyboard focus.
+        cx.set_menus(vec![
+            Menu {
+                name: "Felifox".into(),
+                items: vec![
+                    MenuItem::action("About Felifox", AboutFelifox),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit Felifox", Quit),
+                ],
+            },
+            Menu {
+                name: "File".into(),
+                items: vec![
+                    MenuItem::action("New Tab", NewTab),
+                    MenuItem::action("Close Tab", CloseTab),
+                    MenuItem::action("Reopen Closed Tab", ReopenTab),
+                    MenuItem::action("Pin / Unpin Tab", PinTab),
+                ],
+            },
+            Menu {
+                name: "Edit".into(),
+                items: vec![
+                    MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
+                    MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
+                    MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
+                    MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+                ],
+            },
+            Menu {
+                name: "View".into(),
+                // Menu items keep these working while the page has keyboard focus.
+                items: [
+                    MenuItem::action("Toggle Sidebar", ToggleSidebar),
+                    MenuItem::separator(),
+                    MenuItem::action("Show Next Tab", NextTab),
+                    MenuItem::action("Show Previous Tab", PreviousTab),
+                    MenuItem::separator(),
+                ]
+                .into_iter()
+                .chain((1..=8).map(|n| MenuItem::action(format!("Tab {n}"), ActivateTab(n - 1))))
+                .chain([MenuItem::action("Last Tab", ActivateTab(LAST_TAB))])
+                .collect(),
+            },
+            Menu {
+                name: "Navigate".into(),
+                items: vec![
+                    MenuItem::action("Open Location", FocusAddress),
+                    MenuItem::action("Back", Back),
+                    MenuItem::action("Forward", Forward),
+                    MenuItem::action("Reload", Reload),
+                    MenuItem::action("Home", Home),
+                ],
+            },
+            Menu {
+                name: "Sound".into(),
+                items: vec![
+                    MenuItem::action("Volume Controls…", VolumeControls),
+                    MenuItem::action("Mute / Unmute Tab", MuteTab),
+                ],
+            },
+        ]);
+        cx.on_action(|_: &AboutFelifox, cx| about::open(cx));
+        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+        let bounds = Bounds::centered(None, size(px(1280.), px(900.)), cx);
+        let window = cx
+            .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(1000.), px(700.))),
@@ -2873,8 +2897,11 @@ fn main() {
                 |window, cx| cx.new(|cx| Browser::new(window, cx)),
             )
             .expect("Could not open Felifox window");
-            cx.activate(true);
-        });
+        let mut handoff = handoff.borrow_mut();
+        handoff.browser = Some((window, cx.to_async()));
+        open_links(window, cx, std::mem::take(&mut handoff.pending));
+        cx.activate(true);
+    });
 }
 
 #[cfg(test)]

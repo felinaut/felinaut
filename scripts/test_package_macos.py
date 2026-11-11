@@ -23,6 +23,8 @@ class PackagingTests(unittest.TestCase):
             info["NSAppTransportSecurity"]["NSAllowsArbitraryLoadsInWebContent"]
         )
         self.assertNotIn("NSAllowsArbitraryLoads", info["NSAppTransportSecurity"])
+        schemes = [t["CFBundleURLSchemes"] for t in info["CFBundleURLTypes"]]
+        self.assertEqual(schemes, [["http", "https"]])
 
     def test_developer_id_signing_uses_hardened_runtime_and_timestamp(self):
         self.assertEqual(package.codesign_args(""), ["--force", "--sign", "-"])
@@ -30,6 +32,20 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(args[args.index("--options") + 1], "runtime")
         self.assertIn("--timestamp", args)
         self.assertEqual(args[-1], "Developer ID Application: X (T)")
+        self.assertNotIn("--entitlements", args)
+
+    def test_passkey_entitlement_is_claimed_only_with_a_provisioning_profile(self):
+        with open(package.ENTITLEMENTS, "rb") as file:
+            entitlements = plistlib.load(file)
+        self.assertEqual(
+            entitlements,
+            {"com.apple.developer.web-browser.public-key-credential": True},
+        )
+        self.assertIsNone(package.app_entitlements(""))
+        self.assertEqual(package.app_entitlements("/x.provisionprofile"), package.ENTITLEMENTS)
+        args = package.codesign_args("Developer ID Application: X (T)", package.ENTITLEMENTS)
+        self.assertEqual(args[args.index("--entitlements") + 1], str(package.ENTITLEMENTS))
+        self.assertIn("runtime", args)
 
     def test_dist_command_rebuilds_and_replaces_previous_artifacts(self):
         makefile = (package.ROOT / "Makefile").read_text()

@@ -5,6 +5,9 @@ Requires macOS, Python 3.11+, Rust, and Xcode command-line tools. No pip package
 By default artifacts use an ad-hoc code signature. For other Macs, set
 FELIFOX_SIGN_IDENTITY to a "Developer ID Application: …" identity, and
 FELIFOX_NOTARY_PROFILE to an `xcrun notarytool store-credentials` profile.
+Passkeys in WKWebView need Apple's restricted browser entitlement: once Apple has
+granted it, set FELIFOX_PROVISIONING_PROFILE to a Developer ID provisioning profile
+that carries it and the app is signed with assets/Felifox.entitlements.
 """
 
 from __future__ import annotations
@@ -30,13 +33,33 @@ BUNDLE_ID = "io.github.casaroli.felifox"
 MINIMUM_MACOS = "12.0"
 SIGN_IDENTITY = os.environ.get("FELIFOX_SIGN_IDENTITY", "")
 NOTARY_PROFILE = os.environ.get("FELIFOX_NOTARY_PROFILE", "")
+PROVISIONING_PROFILE = os.environ.get("FELIFOX_PROVISIONING_PROFILE", "")
+ENTITLEMENTS = ROOT / "assets" / "Felifox.entitlements"
 
 
-def codesign_args(identity: str) -> list[str]:
+def codesign_args(identity: str, entitlements: Path | None = None) -> list[str]:
     if not identity:
         return ["--force", "--sign", "-"]
     # Notarization requires the hardened runtime and a secure timestamp.
-    return ["--force", "--options", "runtime", "--timestamp", "--sign", identity]
+    args = ["--force", "--options", "runtime", "--timestamp", "--sign", identity]
+    if entitlements:
+        args += ["--entitlements", str(entitlements)]
+    return args
+
+
+def app_entitlements(provisioning_profile: str) -> Path | None:
+    """Restricted entitlements are claimed only when a profile can vouch for them.
+
+    Without a matching embedded profile macOS kills the app at launch, so an
+    unprovisioned build keeps the plain hardened-runtime signature.
+    """
+    return ENTITLEMENTS if provisioning_profile else None
+
+
+def profile_entitlements(provisioning_profile: Path) -> dict:
+    """The entitlement dictionary inside a (CMS-signed) .provisionprofile."""
+    decoded = run("security", "cms", "-D", "-i", provisioning_profile, capture=True)
+    return plistlib.loads(decoded.stdout.encode()).get("Entitlements", {})
 
 
 def run(*args: str | Path, capture: bool = False, timeout: int = 120, env=None):
@@ -80,6 +103,15 @@ def info_plist(version: str, display: str) -> dict:
         "LSApplicationCategoryType": "public.app-category.productivity",
         "NSPrincipalClass": "NSApplication",
         "NSHighResolutionCapable": True,
+        # Lets macOS offer Felifox as the default browser and hand it http/https links;
+        # Apple's browser entitlements require these schemes to be declared.
+        "CFBundleURLTypes": [
+            {
+                "CFBundleURLName": "Web address",
+                "CFBundleURLSchemes": ["http", "https"],
+                "CFBundleTypeRole": "Viewer",
+            }
+        ],
         "NSHumanReadableCopyright": "Copyright © 2026 Felifox contributors. MIT license.",
         # Browser web content, including users' HTTP development sites, must work
         # when launched as a bundle as well as when run as a bare Cargo executable.
@@ -159,9 +191,12 @@ def make_app(binary: Path, icon: Path, destination: Path, version: str, display:
     shutil.copy2(ROOT / "LICENSE", contents / "Resources" / "LICENSE")
     (contents / "Info.plist").write_bytes(plistlib.dumps(info_plist(version, display)))
     (contents / "PkgInfo").write_bytes(b"APPL????")
+    if PROVISIONING_PROFILE:
+        shutil.copy2(PROVISIONING_PROFILE, contents / "embedded.provisionprofile")
     run("plutil", "-lint", contents / "Info.plist")
     run("strip", "-x", executable)
-    run("codesign", *codesign_args(SIGN_IDENTITY), destination)
+    entitlements = app_entitlements(PROVISIONING_PROFILE)
+    run("codesign", *codesign_args(SIGN_IDENTITY, entitlements), destination)
     run("codesign", "--verify", "--deep", "--strict", "--verbose=2", destination)
 
 
@@ -363,6 +398,19 @@ def main():
         parser.error("FELIFOX_NOTARY_PROFILE requires FELIFOX_SIGN_IDENTITY")
     if NOTARY_PROFILE and args.app_only:
         parser.error("Notarization needs the DMG; drop --app-only")
+    if PROVISIONING_PROFILE:
+        if not SIGN_IDENTITY:
+            parser.error("FELIFOX_PROVISIONING_PROFILE requires FELIFOX_SIGN_IDENTITY")
+        if not Path(PROVISIONING_PROFILE).is_file():
+            parser.error(f"Provisioning profile not found: {PROVISIONING_PROFILE}")
+        with open(ENTITLEMENTS, "rb") as file:
+            claimed = plistlib.load(file)
+        granted = profile_entitlements(Path(PROVISIONING_PROFILE))
+        for key in claimed:
+            if key not in granted:
+                parser.error(
+                    f"{PROVISIONING_PROFILE} does not grant {key}; macOS would refuse to launch the app"
+                )
     tools = [
         "cargo",
         "rustc",

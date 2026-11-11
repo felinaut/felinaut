@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Restricted: Apple grants it per team (macOS 13.3+) and it must also appear in the
+	     embedded provisioning profile, or macOS refuses to launch the app. Lets WKWebView
+	     serve navigator.credentials (passkeys, security keys) for any relying party.
+	     com.apple.developer.web-browser is iOS/iPadOS only and is deliberately absent. -->
+	<key>com.apple.developer.web-browser.public-key-credential</key>
+	<true/>
+</dict>
+</plist>

@@ -76,6 +76,29 @@ codesign --verify --deep --strict dist/Felifox.app
 hdiutil verify dist/Felifox-0.1-beta-macos-arm64.dmg
 ```
 
+## Passkeys
+
+**Today:** passwords, one-time codes and every other sign-in that runs inside the page work. Passkeys do not: WebKit refuses WebAuthn in an embedded `WKWebView` unless the app carries Apple's restricted browser entitlement. Measured in a dev-signed Felifox build on macOS 26: `navigator.credentials` and `PublicKeyCredential` exist on https://webauthn.io, but `isUserVerifyingPlatformAuthenticatorAvailable()` returns `false` and both `create()` and `get()` reject immediately with `NotAllowedError: The request is not allowed by the user agent or the platform in the current context`. No passkey sheet appears. There is no JavaScript workaround: the passkey UI and the iCloud Keychain access belong to WebKit's own process.
+
+**What unlocks it:** the `com.apple.developer.web-browser.public-key-credential` entitlement ([Apple docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.web-browser.public-key-credential), macOS 13.3+). It is a *managed capability*: Apple grants it per team, it must also be listed in a provisioning profile embedded in the app, and macOS kills at launch any non-App-Store app whose signature claims it without such a profile (the packager therefore never adds it on its own). The iOS default-browser entitlement `com.apple.developer.web-browser` does not exist on macOS and is not used.
+
+Request steps (once, by the **Account Holder** of the Apple Developer team that owns the Developer ID certificate):
+
+1. Ship a build that meets Apple's browser criteria: `http`/`https` in `CFBundleURLTypes` (done; Felifox can be chosen as the default browser in **System Settings → Desktop & Dock** and opens links handed over by macOS), an address bar on launch, and direct navigation to the requested URL.
+2. Fill in the [macOS Browsers Passkeys request form](https://developer.apple.com/contact/request/macos-browsers-passkeys/) while signed in as the Account Holder. Apple reviews it against the criteria above and, if accepted, adds the capability to the team.
+3. In **Certificates, Identifiers & Profiles → Identifiers**, open the App ID `io.github.casaroli.felifox`, enable the *Web Browser Public Key Credential* capability, then create a **Developer ID Application** provisioning profile for that App ID (Profiles → + → Developer ID) and download it.
+4. Package with the profile. The packager embeds it as `Contents/embedded.provisionprofile`, checks that it actually grants every key in `assets/Felifox.entitlements`, and signs with those entitlements:
+
+```sh
+FELIFOX_PROVISIONING_PROFILE=~/Downloads/Felifox.provisionprofile \
+FELIFOX_SIGN_IDENTITY="Developer ID Application: <name> (<team-id>)" \
+FELIFOX_NOTARY_PROFILE=felifox-notary cargo dist
+```
+
+`FELIFOX_PROVISIONING_PROFILE` requires `FELIFOX_SIGN_IDENTITY`; a Developer ID profile does not match an *Apple Development* certificate. Without the variable nothing changes: the app is signed exactly as before.
+
+**Testing:** open https://webauthn.io, enter any user name and click **Register**; macOS should show its passkey sheet (Touch ID or the account password) and the site should then **Authenticate** with the new passkey. For Gmail, open https://accounts.google.com, enter the address and choose **Try another way → Use your passkey** (or let the conditional-UI prompt appear in the address field) with a passkey that already exists in iCloud Keychain. Until the entitlement is granted both report that no passkey is available; the Google sign-in page falls back to the password.
+
 ## Controls
 
 - Native address input with Unicode, IME, selection and clipboard.
