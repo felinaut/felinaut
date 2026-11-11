@@ -14,7 +14,8 @@ reference image, use emoji, or depend on fonts, external images, or external URL
   preview at 16, 24, 32 and 64 px when choosing an application placement.
 
 - `icons/*.svg` — 24 × 24 monochrome UI icons (speaker levels, muted speaker, voice,
-  bass and natural sound presets). They are single-color masks: GPUI's `svg()` tints
+  bass and natural sound presets, sidebar, disclosure chevron). `icons/github.svg` is GitHub's
+  mark from Primer Octicons (MIT, GitHub Inc.), used for the GitHub live folder. They are single-color masks: GPUI's `svg()` tints
   them with the element's text color, so they follow every theme.
 
 The shared palette is midnight purple, fuchsia, amber, yellow, aqua and violet.
