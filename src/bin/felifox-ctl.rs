@@ -23,6 +23,10 @@ Usage: felifox-ctl <command>      (start Felifox with FELIFOX_AGENT=1)
   eval <expression>       Evaluate one JavaScript expression in the page. For statements,
                           use a function: (() => { …; return x })()
   screenshot [path]       Save a PNG of the page
+  live                    List the live folders, their sections and items
+  live add <integration>  Add a live folder (github)
+  live refresh|remove <index>
+                          Refresh or remove a live folder
 
   --native                With click, type or press: send a real mouse or keyboard event.
                           Use it when a site ignores the default synthetic events.";
@@ -32,6 +36,11 @@ fn command(args: &[String]) -> Option<Value> {
     Some(match args[..] {
         ["tabs"] | ["snapshot"] => json!({"cmd": args[0]}),
         ["tab", index] => json!({"cmd": "tab", "index": index.parse::<u64>().ok()?}),
+        ["live"] => json!({"cmd": "live"}),
+        ["live", "add", key] => json!({"cmd": "live", "add": key}),
+        ["live", action @ ("refresh" | "remove"), index] => {
+            json!({"cmd": "live", action: index.parse::<u64>().ok()?})
+        }
         ["navigate", url] => json!({"cmd": "navigate", "url": url}),
         ["click", reference] => json!({"cmd": "click", "ref": reference}),
         ["type", reference, text] => json!({"cmd": "type", "ref": reference, "text": text}),
