@@ -56,6 +56,8 @@ The references are valid only until the next snapshot. A snapshot does not show 
 | `live` | Lists the live folders as JSON: sections, items, sign-in state |
 | `live add <integration>` | Adds a live folder (`github`) |
 | `live refresh <index>` / `live remove <index>` | Refreshes or removes a live folder |
+| `live open <folder> <section> <item>` | Shows a live folder item in its tab |
+| `live close <folder> <section> <item>` | Closes an item (and its tab) until the site updates it |
 
 The exit status is 0 on success and 1 on an error. The error text goes to stderr.
 

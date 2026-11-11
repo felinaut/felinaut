@@ -27,6 +27,8 @@ Usage: felifox-ctl <command>      (start Felifox with FELIFOX_AGENT=1)
   live add <integration>  Add a live folder (github)
   live refresh|remove <index>
                           Refresh or remove a live folder
+  live open|close <folder> <section> <item>
+                          Show a live folder item in its tab, or close it until it is updated
 
   --native                With click, type or press: send a real mouse or keyboard event.
                           Use it when a site ignores the default synthetic events.";
@@ -41,6 +43,11 @@ fn command(args: &[String]) -> Option<Value> {
         ["live", action @ ("refresh" | "remove"), index] => {
             json!({"cmd": "live", action: index.parse::<u64>().ok()?})
         }
+        ["live", action @ ("open" | "close"), folder, section, item] => json!({
+            "cmd": "live",
+            "open": [folder.parse::<u64>().ok()?, section.parse::<u64>().ok()?, item.parse::<u64>().ok()?],
+            "close": action == "close",
+        }),
         ["navigate", url] => json!({"cmd": "navigate", "url": url}),
         ["click", reference] => json!({"cmd": "click", "ref": reference}),
         ["type", reference, text] => json!({"cmd": "type", "ref": reference, "text": text}),
