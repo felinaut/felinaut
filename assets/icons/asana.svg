@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Asana's three-dot mark, redrawn as plain circles on the 24 × 24 grid. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="#000">
+  <title>Asana</title>
+  <circle cx="12" cy="7" r="4.6"/>
+  <circle cx="6" cy="16.2" r="4.6"/>
+  <circle cx="18" cy="16.2" r="4.6"/>
+</svg>

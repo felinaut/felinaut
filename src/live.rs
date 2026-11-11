@@ -1,6 +1,7 @@
 //! Live folders: premade integrations that list pages from a site in the sidebar, refreshed in
-//! a hidden page that shares the user's WebKit logins, so no token is needed. GitHub is the
-//! only one: open pull requests that ask for your review, that you wrote, that mention you.
+//! a hidden page that shares the user's WebKit logins, so no token is needed. GitHub lists open
+//! pull requests that ask for your review, that you wrote and that mention you; Asana lists the
+//! incomplete tasks assigned to you, and those due within a week.
 //!
 //! Kept in `Felifox/live.tsv` under Application Support: `F \t integration \t open` per folder,
 //! `S \t section \t open \t shown` per section, then `I \t seen \t url \t updated \t dismissed
@@ -19,45 +20,88 @@ const SIGNED_OUT_EVERY: Duration = Duration::from_secs(60);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Integration {
     Github,
+    Asana,
 }
 
-/// One list inside a folder: where it comes from and what it is called.
+/// One list inside a folder: the page the hidden view loads, the script that reads it, and
+/// what it is called.
 pub struct Source {
     pub key: &'static str,
     pub label: &'static str,
     pub url: &'static str,
+    pub extractor: &'static str,
+}
+
+/// GitHub's pull request list: `null` until it has rendered, then `[{title, url, updated}]`.
+/// GitHub draws the list after the load and shows a Blankslate when nothing matches. Rows
+/// outside the viewport have no layout, hence `textContent`. A row's last `relative-time` is
+/// its "Updated" time. Merged and closed rows are skipped even if a query lets them through.
+const GITHUB: &str = "(() => { const links = [...document.querySelectorAll('a[data-testid=\"listitem-title-link\"], a.js-navigation-open.Link--primary')]; if (!links.length && !document.querySelector('[class*=\"Blankslate\"]')) return null; return links.slice(0, 200).filter(a => !a.closest('li')?.querySelector('.octicon-git-merge, .octicon-git-pull-request-closed')).map(a => { const times = a.closest('li')?.querySelectorAll('relative-time') || []; return { title: (a.innerText || a.textContent || '').trim(), url: a.href || '', updated: times.length ? times[times.length - 1].getAttribute('datetime') || '' : '' }; }); })()";
+
+/// Asana's own API answers the web session's cookie on a top-level load, but the API's pages
+/// block `fetch`. So the hidden view loads `users/me` for the workspace, then this script sends
+/// it on to the task list and reads that once it is there. A 401 means signed out.
+/// shortcut: only the first workspace; loop over `workspaces` if someone has several.
+const ASANA_ME: &str = "https://app.asana.com/api/1.0/users/me?opt_fields=workspaces";
+macro_rules! asana {
+    ($filter:literal) => {
+        concat!(
+            "(() => { let d; try { d = JSON.parse(document.body.innerText); } catch (e) { return null; } if (d.errors) return 'signed-out'; if (location.pathname.endsWith('/users/me')) { const ws = (d.data.workspaces || [])[0]; if (!ws) return []; location.replace('/api/1.0/tasks?assignee=me&completed_since=now&limit=100&opt_fields=name,permalink_url,modified_at,due_on,due_at&workspace=' + ws.gid); return null; } if (!Array.isArray(d.data)) return null; const due = t => t.due_at || t.due_on; return d.data",
+            $filter,
+            ".map(t => ({ title: t.name || '', url: t.permalink_url || '', updated: t.modified_at || '' })); })()"
+        )
+    };
 }
 
 impl Integration {
-    pub const ALL: [Integration; 1] = [Integration::Github];
+    pub const ALL: [Integration; 2] = [Integration::Github, Integration::Asana];
 
     pub fn key(self) -> &'static str {
         match self {
             Integration::Github => "github",
+            Integration::Asana => "asana",
         }
     }
     pub fn name(self) -> &'static str {
         match self {
             Integration::Github => "GitHub",
+            Integration::Asana => "Asana",
+        }
+    }
+    /// What its items are, for the folder's notes.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Integration::Github => "pull requests",
+            Integration::Asana => "tasks",
+        }
+    }
+    pub fn icon(self) -> &'static str {
+        match self {
+            Integration::Github => crate::brand::icon::GITHUB,
+            Integration::Asana => crate::brand::icon::ASANA,
         }
     }
     pub fn summary(self) -> &'static str {
         match self {
             Integration::Github => "Review requests, your pull requests, mentions",
+            Integration::Asana => "Your tasks, and those due this week",
         }
     }
     pub fn host(self) -> &'static str {
         match self {
             Integration::Github => "github.com",
+            Integration::Asana => "app.asana.com",
         }
     }
     /// Opens in a normal tab when the hidden page lands on a sign-in page.
     pub fn sign_in_url(self) -> &'static str {
         match self {
             Integration::Github => "https://github.com/login",
+            Integration::Asana => "https://app.asana.com/-/login",
         }
     }
-    /// Checked against the signed-in `/pulls` page (it redirects to `/pulls/search`).
+    /// Checked against the signed-in pages: GitHub's `/pulls` (it redirects to
+    /// `/pulls/search`) and Asana's API.
     pub fn sources(self) -> &'static [Source] {
         match self {
             Integration::Github => &[
@@ -65,30 +109,38 @@ impl Integration {
                     key: "reviews",
                     label: "Review requests",
                     url: "https://github.com/pulls?q=is:open+is:pr+review-requested:@me",
+                    extractor: GITHUB,
                 },
                 Source {
                     key: "mine",
                     label: "My pull requests",
                     url: "https://github.com/pulls?q=is:open+is:pr+author:@me",
+                    extractor: GITHUB,
                 },
                 Source {
                     key: "mentions",
                     label: "Mentions",
                     url: "https://github.com/pulls?q=is:open+is:pr+mentions:@me",
+                    extractor: GITHUB,
                 },
             ],
-        }
-    }
-    /// The script run in the hidden page: `null` until the list has rendered, then
-    /// `[{title, url, updated}]`. GitHub draws the list after the load and shows a Blankslate
-    /// when nothing matches. Rows outside the viewport have no layout, hence `textContent`.
-    /// A row's last `relative-time` is its "Updated" time. Merged and closed rows are skipped
-    /// even if a query lets them through.
-    pub fn extractor(self) -> &'static str {
-        match self {
-            Integration::Github => {
-                "(() => { const links = [...document.querySelectorAll('a[data-testid=\"listitem-title-link\"], a.js-navigation-open.Link--primary')]; if (!links.length && !document.querySelector('[class*=\"Blankslate\"]')) return null; return links.slice(0, 200).filter(a => !a.closest('li')?.querySelector('.octicon-git-merge, .octicon-git-pull-request-closed')).map(a => { const times = a.closest('li')?.querySelectorAll('relative-time') || []; return { title: (a.innerText || a.textContent || '').trim(), url: a.href || '', updated: times.length ? times[times.length - 1].getAttribute('datetime') || '' : '' }; }); })()"
-            }
+            Integration::Asana => &[
+                Source {
+                    key: "due",
+                    label: "Due this week",
+                    url: ASANA_ME,
+                    // Overdue too; soonest first.
+                    extractor: asana!(
+                        ".filter(t => due(t) && Date.parse(due(t)) < Date.now() + 7 * 864e5).sort((a, b) => Date.parse(due(a)) - Date.parse(due(b)))"
+                    ),
+                },
+                Source {
+                    key: "mine",
+                    label: "My tasks",
+                    url: ASANA_ME,
+                    extractor: asana!(""),
+                },
+            ],
         }
     }
     fn from_key(key: &str) -> Option<Self> {
@@ -132,6 +184,7 @@ pub struct Section {
     pub key: &'static str,
     pub label: &'static str,
     pub url: &'static str,
+    pub extractor: &'static str,
     pub open: bool,
     /// Chosen in the live folder settings; hidden sections are neither shown nor fetched.
     pub shown: bool,
@@ -209,6 +262,7 @@ impl LiveFolder {
                     key: source.key,
                     label: source.label,
                     url: source.url,
+                    extractor: source.extractor,
                     open: true,
                     shown: true,
                     items: Vec::new(),
@@ -271,11 +325,14 @@ impl LiveFolder {
 pub fn is_sign_in(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|url| {
         let path = url.path().to_ascii_lowercase();
-        ["/login", "/signin", "/sign_in", "/session"]
+        ["/login", "/signin", "/sign_in", "/session", "/-/login"]
             .iter()
             .any(|prefix| path.starts_with(prefix))
     })
 }
+
+/// What an extractor returns, as JSON, when the site says the session is not signed in.
+pub const SIGNED_OUT: &str = "\"signed-out\"";
 
 /// Turns the extractor's JSON into items: web links on `host` only, each once, at most 50,
 /// titles trimmed to 200 characters. `None` while the page has not rendered its list.
@@ -570,6 +627,33 @@ mod tests {
         assert_eq!(folder.due(), Some(1));
         assert!(is_sign_in("https://github.com/login?return_to=%2Fpulls"));
         assert!(!is_sign_in("https://github.com/pulls/search?q=x"));
+    }
+
+    #[test]
+    fn asana_is_a_second_integration() {
+        let text = "F\tasana\t1\nS\tmine\t1\t1\nI\t0\thttps://app.asana.com/1/2/task/3\t2026-01-01\t-\tShip\nI\t0\thttps://github.com/a/b/pull/1\t\t-\tPR\nF\tgithub\t1\n";
+        let parsed = parse(text);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].integration, Integration::Asana);
+        assert_eq!(parsed[0].sections.len(), 2);
+        assert_eq!(
+            parsed[0].sections[1].items.len(),
+            1,
+            "only app.asana.com links"
+        );
+        let json = r#"[{"title":"Ship","url":"https://app.asana.com/1/2/task/3","updated":"2026-01-01T00:00:00Z"}]"#;
+        assert_eq!(
+            parse_items(json, Integration::Asana.host()).unwrap().len(),
+            1
+        );
+        assert_eq!(parse_items(SIGNED_OUT, "app.asana.com"), None);
+        assert!(is_sign_in("https://app.asana.com/-/login"));
+        for source in Integration::Asana.sources() {
+            assert!(
+                source.extractor.contains("signed-out")
+                    && source.url.starts_with("https://app.asana.com/")
+            );
+        }
     }
 
     #[test]

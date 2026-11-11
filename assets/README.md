@@ -15,7 +15,8 @@ reference image, use emoji, or depend on fonts, external images, or external URL
 
 - `icons/*.svg` — 24 × 24 monochrome UI icons (speaker levels, muted speaker, voice,
   bass and natural sound presets, sidebar, disclosure chevron, check mark). `icons/github.svg` is GitHub's
-  mark from Primer Octicons (MIT, GitHub Inc.), used for the GitHub live folder. They are single-color masks: GPUI's `svg()` tints
+  mark from Primer Octicons (MIT, GitHub Inc.), used for the GitHub live folder. `icons/asana.svg`
+  redraws Asana's three-dot mark as plain circles for the Asana live folder. They are single-color masks: GPUI's `svg()` tints
   them with the element's text color, so they follow every theme.
 
 The shared palette is midnight purple, fuchsia, amber, yellow, aqua and violet.

@@ -24,7 +24,8 @@ pub mod icon {
     pub const CHEVRON: &str = "icons/chevron.svg";
     pub const GITHUB: &str = "icons/github.svg";
     pub const CHECK: &str = "icons/check.svg";
-    pub const ALL: [&str; 11] = [
+    pub const ASANA: &str = "icons/asana.svg";
+    pub const ALL: [&str; 12] = [
         SPEAKER_MUTED,
         SPEAKER_LOW,
         SPEAKER,
@@ -36,6 +37,7 @@ pub mod icon {
         CHEVRON,
         GITHUB,
         CHECK,
+        ASANA,
     ];
 }
 
@@ -58,6 +60,7 @@ impl gpui::AssetSource for BrandAssets {
             icon::CHEVRON => include_bytes!("../assets/icons/chevron.svg"),
             icon::GITHUB => include_bytes!("../assets/icons/github.svg"),
             icon::CHECK => include_bytes!("../assets/icons/check.svg"),
+            icon::ASANA => include_bytes!("../assets/icons/asana.svg"),
             _ => return Ok(None),
         };
         Ok(Some(Cow::Borrowed(bytes)))
