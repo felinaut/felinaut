@@ -728,7 +728,7 @@ impl Browser {
             let mut signed_out = false;
             for event in fetch.page.drain_events() {
                 match event {
-                    Event::Finished(url) | Event::Url(url) if live::is_sign_in(&url) => {
+                    Event::Finished(url) | Event::Url(url) if integration.is_sign_in(&url) => {
                         signed_out = true;
                     }
                     Event::Finished(_) if !fetch.loaded => {
@@ -746,7 +746,7 @@ impl Browser {
             // An API answers a lapsed session with an error rather than a sign-in page.
             signed_out |= answer.as_deref() == Some(live::SIGNED_OUT);
             let mut done = answer
-                .and_then(|json| live::parse_items(&json, integration.host()))
+                .and_then(|json| live::parse_items(&json, integration.host))
                 .map(Ok);
             if done.is_none() && fetch.loaded && fetch.tries < FETCH_TRIES && now >= fetch.next_try
             {
@@ -762,7 +762,7 @@ impl Browser {
             if done.is_none() && fetch.started.elapsed() > FETCH_TIMEOUT {
                 done = Some(Err(format!(
                     "{} did not answer. Click to try again.",
-                    integration.name()
+                    integration.name
                 )));
             }
             if signed_out || done.is_some() {
@@ -826,12 +826,12 @@ impl Browser {
     /// A tab finished loading a page of a signed-out integration's site, such as after the
     /// user signed in: check again now.
     fn recheck_live(&mut self, url: &str) {
-        if live::is_sign_in(url) {
-            return;
-        }
         let host = host(url);
         for folder in &mut self.live {
-            if folder.signed_out && host.as_deref() == Some(folder.integration.host()) {
+            if folder.signed_out
+                && host.as_deref() == Some(folder.integration.host)
+                && !folder.integration.is_sign_in(url)
+            {
                 folder.refresh();
             }
         }
@@ -1168,9 +1168,9 @@ impl Browser {
         use serde_json::json;
         let index = |key| command[key].as_u64().map(|index| index as usize);
         if let Some(key) = command["add"].as_str() {
-            let integration = live::Integration::ALL
+            let integration = live::ALL
                 .into_iter()
-                .find(|integration| integration.key() == key)
+                .find(|integration| integration.key == key)
                 .ok_or_else(|| format!("Unknown integration: {key}"))?;
             self.add_live(integration, cx);
         } else if let Some(index) = index("refresh") {
@@ -1204,7 +1204,7 @@ impl Browser {
             .iter()
             .map(|folder| {
                 json!({
-                    "integration": folder.integration.key(),
+                    "integration": folder.integration.key,
                     "open": folder.open,
                     "checking": folder.checking(),
                     "signed_out": folder.signed_out,
@@ -2878,7 +2878,10 @@ impl Browser {
                             .text_sm()
                             .child("+"),
                     )
-                    .child("Add GitHub or Asana")
+                    .child(format!(
+                        "Add {}",
+                        live::ALL.map(|spec| spec.name).join(" or ")
+                    ))
                     .into_any_element(),
             );
         }
@@ -2982,7 +2985,7 @@ impl Browser {
             .bg(rgb(p.surface))
             .flex()
             .flex_col()
-            .children(live::Integration::ALL.into_iter().map(|integration| {
+            .children(live::ALL.into_iter().map(|integration| {
                 let added = self.live.iter().position(|f| f.integration == integration);
                 div()
                     .flex()
@@ -2995,15 +2998,15 @@ impl Browser {
                             .items_center()
                             .gap_2()
                             .child(
-                                brand::icon(integration.icon())
+                                brand::icon(integration.icon)
                                     .size(px(18.))
                                     .flex_shrink_0()
                                     .text_color(rgb(p.text)),
                             )
-                            .child(div().flex_1().min_w_0().text_sm().child(integration.name()))
+                            .child(div().flex_1().min_w_0().text_sm().child(integration.name))
                             .child(
                                 div()
-                                    .id(integration.key())
+                                    .id(integration.key)
                                     .px_2()
                                     .py(px(2.))
                                     .rounded_md()
@@ -3037,7 +3040,7 @@ impl Browser {
                                 .pb(px(6.))
                                 .text_xs()
                                 .text_color(rgb(p.muted))
-                                .child(integration.summary()),
+                                .child(integration.summary),
                         ),
                         Some(index) => {
                             block.children(self.live[index].sections.iter().enumerate().map(
@@ -3070,7 +3073,7 @@ impl Browser {
         p: Palette,
         cx: &mut Context<Self>,
     ) {
-        let name = folder.integration.name();
+        let name = folder.integration.name;
         if folder.checking() {
             rows.push(
                 Self::live_note(
@@ -3083,7 +3086,7 @@ impl Browser {
             return;
         }
         if folder.signed_out {
-            let url = folder.integration.sign_in_url();
+            let url = folder.integration.sign_in_url;
             rows.push(
                 Self::live_row(("live-sign-in", index), 30.)
 .hover(move |s| s.bg(rgb(p.surface)))
@@ -3103,7 +3106,7 @@ impl Browser {
             rows.push(
                 Self::live_note(
                     ("live-sign-in-note", index),
-                    format!("Then your {} show up here", folder.integration.noun()),
+                    format!("Then your {} show up here", folder.integration.noun),
                     p,
                 )
                 .mt(px(-6.))
@@ -3213,7 +3216,11 @@ impl Browser {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (folder, section, n) = at;
-        let status = format!("{} · {}", item.title, item.place());
+        let status = if item.detail.is_empty() {
+            item.title.clone()
+        } else {
+            format!("{} · {}", item.title, item.detail)
+        };
         let url = item.url.clone();
         let hovered = self.hovered_live.as_deref() == Some(item.url.as_str());
         let loading = self
@@ -3335,7 +3342,7 @@ impl Browser {
             )
             .child(Self::chevron(folder.open, p))
             .child(
-                brand::icon(folder.integration.icon())
+                brand::icon(folder.integration.icon)
                     .size(px(16.))
                     .flex_shrink_0()
                     .text_color(rgb(p.text))
@@ -3350,7 +3357,7 @@ impl Browser {
                     .text_ellipsis()
                     .whitespace_nowrap()
                     .text_sm()
-                    .child(folder.integration.name()),
+                    .child(folder.integration.name),
             )
             .when(unseen > 0, |row| row.child(Self::unseen_badge(unseen, p)))
             .into_any_element()
@@ -3432,7 +3439,7 @@ impl Browser {
             .child(
                 menu_item(
                     "live-remove",
-                    format!("Remove {} Folder", folder.integration.name()),
+                    format!("Remove {} Folder", folder.integration.name),
                     None,
                     p,
                 )
