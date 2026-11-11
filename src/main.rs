@@ -112,6 +112,17 @@ struct Fetch {
 const FETCH_TRIES: u32 = 15;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// The system font with tabular figures, so counts that change keep their width.
+fn tabular_font(weight: FontWeight) -> Font {
+    Font {
+        family: ".AppleSystemUIFont".into(),
+        features: FontFeatures(Arc::new(vec![("tnum".into(), 1)])),
+        fallbacks: None,
+        weight,
+        style: FontStyle::Normal,
+    }
+}
+
 /// One right-click menu entry: its label and, when it has one, the shortcut that does the same.
 fn menu_item(
     id: impl Into<ElementId>,
@@ -123,7 +134,8 @@ fn menu_item(
         .id(id)
         .h(px(28.))
         .px_2()
-        .rounded_md()
+        // Concentric with the menu: 8 pt corners, 4 pt padding.
+        .rounded(px(4.))
         .flex()
         .items_center()
         .gap_2()
@@ -2824,7 +2836,7 @@ impl Browser {
             .id(id)
             .h(px(26.))
             .flex_shrink_0()
-            .pl(px(44.))
+            .pl(px(50.))
             .pr_2()
             .flex()
             .items_center()
@@ -2922,7 +2934,8 @@ impl Browser {
             .h(px(26.))
             .pl(px(34.))
             .pr_2()
-            .rounded_md()
+            // Concentric with the 8 pt panel and its 4 pt padding.
+            .rounded(px(4.))
             .flex()
             .items_center()
             .gap_2()
@@ -3078,7 +3091,7 @@ impl Browser {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_link_tab(url, true, window, cx);
                     }))
-                    .child(div().w(px(10.)).flex_shrink_0())
+                    .child(div().w(px(16.)).flex_shrink_0())
                     .child(format!("Sign in to {name}"))
                     .into_any_element(),
             );
@@ -3117,7 +3130,15 @@ impl Browser {
                             cx.notify();
                         }
                     }))
-                    .child(Self::chevron(section.open, p))
+                    // 16 pt wide, the folder icon's slot: labels line up with the folder name.
+                    .child(
+                        div()
+                            .w(px(16.))
+                            .flex_shrink_0()
+                            .flex()
+                            .justify_center()
+                            .child(Self::chevron(section.open, p)),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -3136,6 +3157,7 @@ impl Browser {
                                 .text_xs()
                                 .text_color(rgb(p.muted))
                                 .opacity(if fetching { 0.5 } else { 1. })
+                                .font(tabular_font(FontWeight::NORMAL))
                                 .child(count.to_string()),
                         )
                     })
@@ -3218,7 +3240,7 @@ impl Browser {
         // New items carry a dot where the section has its chevron.
         .child(
             div()
-                .w(px(10.))
+                .w(px(16.))
                 .flex_shrink_0()
                 .flex()
                 .justify_center()
@@ -3332,7 +3354,7 @@ impl Browser {
                         .items_center()
                         .justify_center()
                         .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font(tabular_font(FontWeight::SEMIBOLD))
                         .bg(rgb(p.primary))
                         .text_color(rgb(p.background))
                         .child(unseen.to_string()),
