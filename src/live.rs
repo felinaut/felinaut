@@ -144,14 +144,22 @@ pub struct Section {
 
 impl Section {
     /// Takes a refresh's items and returns the URLs that left the list (merged or closed).
-    /// Known items keep their seen and dismissed state; a dismissed item that was updated
-    /// since comes back as new. The first refresh counts as seen, so a new folder is not all
+    /// Known items keep their seen and dismissed state, except that an updated item is new
+    /// again, and a dismissed one comes back. The first refresh counts as seen, so a new folder is not all
     /// dots.
     pub fn update(&mut self, mut items: Vec<Item>) -> Vec<String> {
         let first = self.last.is_none() && self.items.is_empty();
         for item in &mut items {
             let old = self.items.iter().find(|old| old.url == item.url);
-            item.seen = first || old.is_some_and(|old| old.seen);
+            // Any activity GitHub reports (comments, reviews, pushes, CI) makes it new again.
+            // An empty time means the page gave none, which is no evidence of an update.
+            item.seen = first
+                || old.is_some_and(|old| {
+                    old.seen
+                        && (old.updated == item.updated
+                            || old.updated.is_empty()
+                            || item.updated.is_empty())
+                });
             item.dismissed = old.and_then(|old| old.dismissed.clone());
             if item
                 .dismissed
@@ -533,6 +541,14 @@ mod tests {
         assert!(!section.items[0].shown(), "still closed without an update");
         section.update(vec![updated(a, "2"), updated(b, "1")]);
         assert!(section.items[0].shown() && !section.items[0].seen);
+        // An update to an item still listed makes it new again; no time is no update.
+        section.items[1].seen = true;
+        section.update(vec![updated(a, "2"), updated(b, "3")]);
+        assert!(!section.items[1].seen);
+        section.items[1].seen = true;
+        section.update(vec![updated(a, "2"), updated(b, "")]);
+        assert!(section.items[1].seen);
+        section.update(vec![updated(a, "2"), updated(b, "3")]);
         // A merged pull request leaves the list.
         assert_eq!(section.update(vec![updated(a, "2")]), vec![b.to_owned()]);
     }

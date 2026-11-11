@@ -3116,6 +3116,9 @@ impl Browser {
                 .as_ref()
                 .is_some_and(|f| f.folder == index && f.section == s);
             let count = section.shown_items().count();
+            let unseen = section.shown_items().filter(|(_, item)| !item.seen).count();
+            // Collapsed, the dots are hidden: the section shows how many are new instead.
+            let badge = !section.open && unseen > 0;
             rows.push(
                 Self::live_row(("live-section", index * 8 + s), 26.)
                     .hover(move |s| s.bg(rgb(p.surface)))
@@ -3151,7 +3154,8 @@ impl Browser {
                             .text_color(rgb(p.muted))
                             .child(section.label),
                     )
-                    .when(section.last.is_some() || count > 0, |row| {
+                    .when(badge, |row| row.child(Self::unseen_badge(unseen, p)))
+                    .when(!badge && (section.last.is_some() || count > 0), |row| {
                         row.child(
                             div()
                                 .text_xs()
@@ -3343,24 +3347,24 @@ impl Browser {
                     .text_sm()
                     .child(folder.integration.name()),
             )
-            .when(unseen > 0, |row| {
-                row.child(
-                    div()
-                        .min_w(px(18.))
-                        .h(px(18.))
-                        .px(px(5.))
-                        .rounded_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_xs()
-                        .font(tabular_font(FontWeight::SEMIBOLD))
-                        .bg(rgb(p.primary))
-                        .text_color(rgb(p.background))
-                        .child(unseen.to_string()),
-                )
-            })
+            .when(unseen > 0, |row| row.child(Self::unseen_badge(unseen, p)))
             .into_any_element()
+    }
+    /// The bright count of new or updated items on a folder or a collapsed section.
+    fn unseen_badge(unseen: usize, p: Palette) -> Div {
+        div()
+            .min_w(px(18.))
+            .h(px(18.))
+            .px(px(5.))
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_xs()
+            .font(tabular_font(FontWeight::SEMIBOLD))
+            .bg(rgb(p.primary))
+            .text_color(rgb(p.background))
+            .child(unseen.to_string())
     }
     /// Right-click menu for a live folder, kept inside the sidebar like the tab menu.
     fn live_menu_view(
