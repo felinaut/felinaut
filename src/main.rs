@@ -307,6 +307,8 @@ struct Tab {
     /// The tab shown beside this one in split view. Partners are unpinned, adjacent in
     /// `Browser::tabs` and point at each other.
     split: Option<u64>,
+    /// The live folder item this tab shows; such tabs are drawn in their folder, not the rows.
+    live: Option<String>,
 }
 impl Tab {
     /// A saved tab (pinned unless the caller clears `pinned`); its page is created when it is
@@ -335,6 +337,7 @@ impl Tab {
             recorded: String::new(),
             pinned: None,
             split: None,
+            live: None,
         }
     }
     /// Adds the current page to history once per URL per tab.
@@ -438,8 +441,13 @@ struct Browser {
     fetch: Option<Fetch>,
     /// A live folder's right-click menu: its index and where the click was.
     live_menu: Option<(usize, Point<Pixels>)>,
-    /// The inline list of integrations to add, shown by Add live folder.
-    live_picker: bool,
+    /// The live folder settings, open under the Live folders header.
+    live_settings: bool,
+    /// The live folder item under the pointer, by URL; it reveals the item's ×.
+    hovered_live: Option<String>,
+    /// Where live folder rows sit in the sidebar list, for `reveal_active`: how many children
+    /// they add, and each item's child index by URL.
+    live_layout: RefCell<(usize, HashMap<String, usize>)>,
     /// The hovered live folder item's title and address, for the status bar.
     live_hover: Option<String>,
 }
@@ -628,7 +636,9 @@ impl Browser {
             last_live: RefCell::new(String::new()),
             fetch: None,
             live_menu: None,
-            live_picker: false,
+            live_settings: false,
+            hovered_live: None,
+            live_layout: RefCell::new((0, HashMap::new())),
             live_hover: None,
         };
         // Restored tabs load lazily; only the active one (and its split partner) needs a page.
@@ -655,7 +665,8 @@ impl Browser {
         for (index, tab) in self.tabs.iter().enumerate() {
             let url = tab.pinned.clone().unwrap_or_else(|| tab.url.clone());
             // Blank New Tabs have nothing to reopen.
-            if tab.pinned.is_none() && (tab.home || !url.starts_with("http")) {
+            if tab.pinned.is_none() && (tab.home || tab.live.is_some() || !url.starts_with("http"))
+            {
                 previous_kept = false;
                 continue;
             }
@@ -748,12 +759,18 @@ impl Browser {
                 } else {
                     folder.signed_out = false;
                     let section = &mut folder.sections[section];
-                    match done {
+                    let gone = match done {
                         Some(Ok(items)) => section.update(items),
-                        Some(Err(error)) => section.error = Some(error),
-                        None => {}
-                    }
+                        Some(Err(error)) => {
+                            section.error = Some(error);
+                            Vec::new()
+                        }
+                        None => Vec::new(),
+                    };
                     section.last = Some(now);
+                    if !gone.is_empty() {
+                        self.sync_live_tabs();
+                    }
                 }
                 cx.notify();
             }
@@ -827,9 +844,12 @@ impl Browser {
             _ => {}
         }
         self.live.remove(index);
+        self.sync_live_tabs();
         self.save_live();
         cx.notify();
     }
+    /// Shows a live folder item in its own tab, kept in the folder: selects the tab if the
+    /// item has one, else opens it.
     fn open_live_item(
         &mut self,
         (folder, section, item): (usize, usize, usize),
@@ -845,29 +865,114 @@ impl Browser {
             return;
         };
         item.seen = true;
-        let url = item.url.clone();
-        self.open_link_tab(&url, true, window, cx);
-    }
-    /// Integrations not added yet; the add row and the picker list only these.
-    fn available_integrations(&self) -> Vec<live::Integration> {
-        live::Integration::ALL
-            .into_iter()
-            .filter(|integration| !self.live.iter().any(|f| f.integration == *integration))
-            .collect()
-    }
-    fn new_live_folder(&mut self, _: &NewLiveFolder, window: &mut Window, cx: &mut Context<Self>) {
-        if self.available_integrations().is_empty() {
+        let (url, title) = (item.url.clone(), item.title.clone());
+        if let Some(index) = self.live_tab(&url) {
+            self.select_tab(index, window, cx);
             return;
         }
-        self.live_picker = true;
+        match NativePage::new(window, &url) {
+            Ok(page) => {
+                let page = Rc::new(page);
+                let mut tab = Tab::new(self.next_id);
+                self.next_id += 1;
+                tab.url = url.clone();
+                tab.title = title;
+                tab.home = false;
+                tab.loading = true;
+                tab.page = Some(page.clone());
+                tab.live = Some(url);
+                // Live tabs sit after the others; the rows skip them wherever they are.
+                self.tabs.push(tab);
+                self.select_tab(self.tabs.len() - 1, window, cx);
+                window.on_next_frame(move |_, _| {
+                    let _ = page.focus();
+                });
+            }
+            Err(error) => self.tabs[self.active].error = Some(error),
+        }
+        cx.notify();
+    }
+    fn live_tab(&self, url: &str) -> Option<usize> {
+        self.tabs
+            .iter()
+            .position(|tab| tab.live.as_deref() == Some(url))
+    }
+    /// Closing an item, or its tab, hides it until the site reports an update.
+    fn dismiss_live(&mut self, url: &str) {
+        for item in self
+            .live
+            .iter_mut()
+            .flat_map(|folder| &mut folder.sections)
+            .flat_map(|section| &mut section.items)
+            .filter(|item| item.url == url)
+        {
+            item.dismissed = Some(item.updated.clone());
+            item.seen = true;
+        }
+    }
+    /// The × of a live item: closes its tab if it has one, which dismisses it too.
+    fn close_live_item(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match self.live_tab(url) {
+            Some(index) => self.close_tab_at(index, window, cx),
+            None => {
+                self.dismiss_live(url);
+                cx.notify();
+            }
+        }
+    }
+    /// Live tabs whose item is no longer listed in a shown section (merged, closed, its
+    /// section hidden or folder removed) leave: an unseen one closes, the one the user is
+    /// looking at stays as an ordinary tab.
+    fn sync_live_tabs(&mut self) {
+        let listed = |live: &[live::LiveFolder], url: &str| {
+            live.iter()
+                .flat_map(|folder| &folder.sections)
+                .filter(|section| section.shown)
+                .any(|section| section.items.iter().any(|item| item.url == url))
+        };
+        let mut index = 0;
+        while index < self.tabs.len() {
+            let orphan = self.tabs[index]
+                .live
+                .as_deref()
+                .is_some_and(|url| !listed(&self.live, url));
+            if !orphan {
+                index += 1;
+            } else if index == self.active {
+                self.tabs[index].live = None;
+                index += 1;
+            } else {
+                self.tabs.remove(index);
+                if index < self.active {
+                    self.active -= 1;
+                }
+            }
+        }
+    }
+    fn new_live_folder(&mut self, _: &NewLiveFolder, window: &mut Window, cx: &mut Context<Self>) {
+        self.live_settings = true;
         if !self.sidebar_shown(cx) {
             self.toggle_sidebar(&ToggleSidebar, window, cx);
         }
         cx.notify();
     }
+    fn toggle_live_section(&mut self, folder: usize, section: usize, cx: &mut Context<Self>) {
+        let Some(section) = self
+            .live
+            .get_mut(folder)
+            .and_then(|folder| folder.sections.get_mut(section))
+        else {
+            return;
+        };
+        section.shown = !section.shown;
+        // Shown again: fetch it now rather than show a stale list.
+        section.last = None;
+        self.sync_live_tabs();
+        self.save_live();
+        cx.notify();
+    }
     /// Adds the folder; its first refresh checks the sign-in before any list shows.
     fn add_live(&mut self, integration: live::Integration, cx: &mut Context<Self>) {
-        self.live_picker = false;
         if !self.live.iter().any(|f| f.integration == integration) {
             self.live.push(live::LiveFolder::new(integration));
             self.save_live();
@@ -887,6 +992,8 @@ impl Browser {
             Some(_) => None,
             None => Some(tab.url.clone()),
         };
+        // Pinning takes a live tab out of its folder.
+        tab.live = None;
         self.tabs.insert(self.pinned_count(), tab);
         self.active = self
             .tabs
@@ -1018,7 +1125,7 @@ impl Browser {
                 }
                 _ => Err("No such tab".into()),
             },
-            "live" => self.agent_live(command, cx),
+            "live" => self.agent_live(command, window, cx),
             "navigate" => {
                 self.navigate(command["url"].as_str().unwrap_or_default(), window, cx);
                 let tab = &self.tabs[self.active];
@@ -1040,6 +1147,7 @@ impl Browser {
     fn agent_live(
         &mut self,
         command: &serde_json::Value,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<serde_json::Value, String> {
         use serde_json::json;
@@ -1054,6 +1162,27 @@ impl Browser {
             self.refresh_live(index, cx);
         } else if let Some(index) = index("remove") {
             self.remove_live(index, cx);
+        } else if let Some([folder, section, item]) = command["open"]
+            .as_array()
+            .and_then(|at| {
+                at.iter()
+                    .map(|n| n.as_u64().map(|n| n as usize))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .and_then(|at| <[usize; 3]>::try_from(at).ok())
+        {
+            let url = self
+                .live
+                .get(folder)
+                .and_then(|f| f.sections.get(section))
+                .and_then(|s| s.items.get(item))
+                .map(|item| item.url.clone())
+                .ok_or("No such live folder item")?;
+            if command["close"].as_bool() == Some(true) {
+                self.close_live_item(&url, window, cx);
+            } else {
+                self.open_live_item((folder, section, item), window, cx);
+            }
         }
         Ok(self
             .live
@@ -1066,12 +1195,16 @@ impl Browser {
                     "signed_out": folder.signed_out,
                     "sections": folder.sections.iter().map(|section| json!({
                         "label": section.label,
+                        "shown": section.shown,
                         "loaded": section.last.is_some(),
                         "error": section.error,
                         "items": section.items.iter().map(|item| json!({
                             "title": item.title,
                             "url": item.url,
                             "seen": item.seen,
+                            "updated": item.updated,
+                            "dismissed": item.dismissed,
+                            "tab": self.live_tab(&item.url),
                         })).collect::<Vec<_>>(),
                     })).collect::<Vec<_>>(),
                 })
@@ -1645,7 +1778,7 @@ impl Browser {
         } else {
             self.tabs[self.pinned_count()..]
                 .iter()
-                .filter(|other| other.id != id && other.split.is_none())
+                .filter(|other| other.id != id && other.split.is_none() && other.live.is_none())
                 .take(6)
                 .map(|other| (other.id, other.display_title()))
                 .collect()
@@ -1773,15 +1906,23 @@ impl Browser {
         let pinned = self.pinned_count();
         // List children: the pinned grid (when pins exist), the New tab row, then the rows,
         // where a split view's two tabs share one.
+        let (live_rows, live_items) = &*self.live_layout.borrow();
+        let first_live = usize::from(pinned > 0);
         let row = if self.active < pinned {
             0
+        } else if let Some(at) = self.tabs[self.active]
+            .live
+            .as_ref()
+            .and_then(|url| live_items.get(url))
+        {
+            first_live + at
         } else {
             let row = self
                 .rows()
                 .iter()
                 .position(|&(first, last)| (first..=last).contains(&self.active))
                 .unwrap_or(0);
-            row + usize::from(pinned > 0) + 1
+            row + first_live + live_rows + 1
         };
         self.tab_scroll.scroll_to_item(row);
     }
@@ -1848,6 +1989,9 @@ impl Browser {
         if let Some(url) = self.tabs[index].pinned.clone() {
             self.unload_pinned(index, url, window, cx);
             return;
+        }
+        if let Some(url) = self.tabs[index].live.clone() {
+            self.dismiss_live(&url);
         }
         let tab = &self.tabs[index];
         if !tab.home && tab.page.is_some() {
@@ -2358,6 +2502,10 @@ impl Browser {
         let mut rows = Vec::new();
         let mut index = self.pinned_count();
         while index < self.tabs.len() {
+            if self.tabs[index].live.is_some() {
+                index += 1;
+                continue;
+            }
             let last = if self.partner(index) == Some(index + 1) {
                 index + 1
             } else {
@@ -2652,7 +2800,7 @@ impl Browser {
             })
     }
     /// A one-line row inside a live folder, indented under the folder's icon.
-    fn live_row(id: impl Into<ElementId>, height: f32, p: Palette) -> Stateful<Div> {
+    fn live_row(id: impl Into<ElementId>, height: f32) -> Stateful<Div> {
         div()
             .id(id)
             .h(px(height))
@@ -2665,7 +2813,6 @@ impl Browser {
             .items_center()
             .gap_2()
             .cursor_pointer()
-            .hover(move |s| s.bg(rgb(p.surface)))
     }
     /// A quiet note in a live folder: checking, empty or failed.
     fn live_note(
@@ -2692,200 +2839,427 @@ impl Browser {
                     .child(text.into()),
             )
     }
-    /// Live folders, Arc-style: the folder, then its sections and their pull requests.
+    /// The always-visible Live folders header, which opens their settings, then each folder.
+    /// Records where items land in the list for `reveal_active`.
     fn live_folders(&self, p: Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut rows = Vec::new();
-        for (index, folder) in self.live.iter().enumerate() {
-            rows.push(self.live_folder_row(index, folder, p, cx));
-            if !folder.open {
-                continue;
-            }
-            let name = folder.integration.name();
-            if folder.checking() {
-                rows.push(
-                    Self::live_note(
-                        ("live-checking", index),
-                        format!("Checking your {name} sign-in…"),
-                        p,
-                    )
-                    .into_any_element(),
-                );
-                continue;
-            }
-            if folder.signed_out {
-                let url = folder.integration.sign_in_url();
-                rows.push(
-                    Self::live_row(("live-sign-in", index), 30., p)
-                        .text_sm()
-                        .text_color(rgb(p.primary))
-                        .on_hover(Self::hint_on_hover(
-                            "Opens the sign-in page in a new tab. The folder fills in once you are signed in",
-                            cx,
-                        ))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_link_tab(url, true, window, cx);
-                        }))
-                        .child(div().w(px(10.)).flex_shrink_0())
-                        .child(format!("Sign in to {name}"))
-                        .into_any_element(),
-                );
-                rows.push(
-                    Self::live_note(
-                        ("live-sign-in-note", index),
-                        "Then your pull requests show up here",
-                        p,
-                    )
-                    .mt(px(-6.))
-                    .into_any_element(),
-                );
-                continue;
-            }
-            for (s, section) in folder.sections.iter().enumerate() {
-                let fetching = self
-                    .fetch
-                    .as_ref()
-                    .is_some_and(|f| f.folder == index && f.section == s);
-                rows.push(
-                    Self::live_row(("live-section", index * 8 + s), 26., p)
-                        .on_hover(Self::hint_on_hover("Click to show or hide", cx))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(section) = this
-                                .live
-                                .get_mut(index)
-                                .and_then(|folder| folder.sections.get_mut(s))
-                            {
-                                section.open = !section.open;
-                                cx.notify();
-                            }
-                        }))
-                        .child(Self::chevron(section.open, p))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_nowrap()
-                                .text_xs()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(p.muted))
-                                .child(section.label),
-                        )
-                        .when(section.last.is_some() || !section.items.is_empty(), |row| {
-                            row.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(p.muted))
-                                    .opacity(if fetching { 0.5 } else { 1. })
-                                    .child(section.items.len().to_string()),
-                            )
-                        })
-                        .into_any_element(),
-                );
-                if !section.open {
-                    continue;
-                }
-                let id = index * 8 + s;
-                if let Some(error) = &section.error {
-                    rows.push(
-                        Self::live_note(("live-error", id), error.clone(), p)
-                            .cursor_pointer()
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.refresh_live(index, cx)),
-                            )
-                            .into_any_element(),
-                    );
-                } else if section.last.is_none() && section.items.is_empty() {
-                    rows.push(
-                        Self::live_note(("live-loading", id), "Loading…", p).into_any_element(),
-                    );
-                } else if section.items.is_empty() {
-                    rows.push(
-                        Self::live_note(("live-empty", id), "Nothing here", p).into_any_element(),
-                    );
-                }
-                for (n, item) in section.items.iter().enumerate() {
-                    let status = format!("{} · {}", item.title, item.place());
-                    rows.push(
-                        Self::live_row(("live-item", id * live::MAX_ITEMS + n), 28., p)
-                            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                                if *hovered {
-                                    this.live_hover = Some(status.clone());
-                                } else if this.live_hover.as_ref() == Some(&status) {
-                                    this.live_hover = None;
-                                }
-                                cx.notify();
-                            }))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.live_hover = None;
-                                this.open_live_item((index, s, n), window, cx);
-                            }))
-                            // New items carry a dot where the section has its chevron.
-                            .child(
-                                div()
-                                    .w(px(10.))
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .justify_center()
-                                    .when(!item.seen, |slot| {
-                                        slot.child(
-                                            div().size(px(6.)).rounded_full().bg(rgb(p.primary)),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .text_sm()
-                                    .child(item.title.clone()),
-                            )
-                            .into_any_element(),
-                    );
-                }
-            }
-        }
-        let available = self.available_integrations();
-        if self.live_picker && !available.is_empty() {
-            rows.push(self.live_picker_view(available, p, cx));
-        } else if !available.is_empty() {
+        let mut rows = vec![self.live_header(p, cx)];
+        if self.live_settings {
+            rows.push(self.live_settings_view(p, cx));
+        } else if self.live.is_empty() {
             rows.push(
-                div()
-                    .id("live-add")
-                    .h(px(30.))
-                    .flex_shrink_0()
-                    .px_2()
-                    .rounded_lg()
-                    .flex()
-                    .items_center()
-                    .gap_2()
+                Self::live_row("live-empty-add", 28.)
+                    .pl(px(8.))
                     .text_xs()
                     .text_color(rgb(p.muted))
-                    .cursor_pointer()
                     .hover(move |s| s.bg(rgb(p.surface)).text_color(rgb(p.text)))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.new_live_folder(&NewLiveFolder, window, cx)
                     }))
                     .child(
-                        div()
-                            .w(px(18.))
-                            .flex()
-                            .justify_center()
-                            .text_sm()
-                            .child("+"),
+                        brand::icon(brand::icon::GITHUB)
+                            .size(px(14.))
+                            .flex_shrink_0()
+                            .text_color(rgb(p.muted)),
                     )
-                    .child("Add live folder")
+                    .child("Add GitHub pull requests")
                     .into_any_element(),
             );
         }
-        // Set apart from the tabs, like the pinned tiles.
-        if !self.live.is_empty() {
-            rows.push(div().h(px(6.)).flex_shrink_0().into_any_element());
+        let mut items = HashMap::new();
+        for (index, folder) in self.live.iter().enumerate() {
+            rows.push(self.live_folder_row(index, folder, p, cx));
+            if folder.open {
+                self.live_folder_body(index, folder, &mut rows, &mut items, p, cx);
+            }
         }
+        // Set apart from the tabs, like the pinned tiles.
+        rows.push(div().h(px(6.)).flex_shrink_0().into_any_element());
+        *self.live_layout.borrow_mut() = (rows.len(), items);
         rows
+    }
+    fn live_header(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.live_settings;
+        div()
+            .id("live-header")
+            .h(px(26.))
+            .flex_shrink_0()
+            .px_2()
+            .rounded_lg()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_xs()
+            .text_color(rgb(p.muted))
+            .cursor_pointer()
+            .hover(move |s| s.bg(rgb(p.surface)))
+            .on_hover(Self::hint_on_hover("Choose which live folders to show", cx))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.live_settings = !open;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Live folders"),
+            )
+            .child(
+                div()
+                    .text_color(rgb(if open { p.primary } else { p.muted }))
+                    .child(if open { "Done" } else { "Edit" }),
+            )
+            .into_any_element()
+    }
+    /// A checkbox row in the live folder settings.
+    fn live_check(
+        id: impl Into<ElementId>,
+        checked: bool,
+        label: &'static str,
+        p: Palette,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .h(px(26.))
+            .pl(px(34.))
+            .pr_2()
+            .rounded_md()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_xs()
+            .cursor_pointer()
+            .hover(move |s| s.bg(rgb(p.elevated)))
+            .child(
+                div()
+                    .size(px(14.))
+                    .flex_shrink_0()
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(rgb(if checked { p.primary } else { p.muted }))
+                    .when(checked, |box_| box_.bg(rgb(p.primary)))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(checked, |box_| {
+                        box_.child(
+                            brand::icon(brand::icon::CHECK)
+                                .size(px(10.))
+                                .text_color(rgb(p.background)),
+                        )
+                    }),
+            )
+            .child(label)
+    }
+    /// The premade integrations, each with an Add or Remove control and, once added, the
+    /// lists it shows.
+    fn live_settings_view(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("live-settings")
+            .flex_shrink_0()
+            .mb_1()
+            .p_1()
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(p.border))
+            .bg(rgb(p.surface))
+            .flex()
+            .flex_col()
+            .children(live::Integration::ALL.into_iter().map(|integration| {
+                let added = self.live.iter().position(|f| f.integration == integration);
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .px_2()
+                            .py(px(6.))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                brand::icon(brand::icon::GITHUB)
+                                    .size(px(18.))
+                                    .flex_shrink_0()
+                                    .text_color(rgb(p.text)),
+                            )
+                            .child(div().flex_1().min_w_0().text_sm().child(integration.name()))
+                            .child(
+                                div()
+                                    .id(integration.key())
+                                    .px_2()
+                                    .py(px(2.))
+                                    .rounded_md()
+                                    .text_xs()
+                                    .cursor_pointer()
+                                    .map(|button| match added {
+                                        Some(index) => button
+                                            .border_1()
+                                            .border_color(rgb(p.border))
+                                            .text_color(rgb(p.muted))
+                                            .hover(move |s| s.text_color(rgb(p.text)))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.remove_live(index, cx)
+                                            }))
+                                            .child("Remove"),
+                                        None => button
+                                            .bg(rgb(p.primary))
+                                            .text_color(rgb(p.background))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.add_live(integration, cx)
+                                            }))
+                                            .child("Add"),
+                                    }),
+                            ),
+                    )
+                    .map(|block| match added {
+                        None => block.child(
+                            div()
+                                .pl(px(34.))
+                                .pr_2()
+                                .pb(px(6.))
+                                .text_xs()
+                                .text_color(rgb(p.muted))
+                                .child(integration.summary()),
+                        ),
+                        Some(index) => {
+                            block.children(self.live[index].sections.iter().enumerate().map(
+                                |(s, section)| {
+                                    Self::live_check(
+                                        ("live-shown", index * 8 + s),
+                                        section.shown,
+                                        section.label,
+                                        p,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.toggle_live_section(index, s, cx)
+                                        },
+                                    ))
+                                },
+                            ))
+                        }
+                    })
+            }))
+            .into_any_element()
+    }
+    /// A folder's sign-in state, or its shown sections and their items as tabs.
+    fn live_folder_body(
+        &self,
+        index: usize,
+        folder: &live::LiveFolder,
+        rows: &mut Vec<AnyElement>,
+        items: &mut HashMap<String, usize>,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) {
+        let name = folder.integration.name();
+        if folder.checking() {
+            rows.push(
+                Self::live_note(
+                    ("live-checking", index),
+                    format!("Checking your {name} sign-in…"),
+                    p,
+                )
+                .into_any_element(),
+            );
+            return;
+        }
+        if folder.signed_out {
+            let url = folder.integration.sign_in_url();
+            rows.push(
+                Self::live_row(("live-sign-in", index), 30.)
+.hover(move |s| s.bg(rgb(p.surface)))
+                    .text_sm()
+                    .text_color(rgb(p.primary))
+                    .on_hover(Self::hint_on_hover(
+                        "Opens the sign-in page in a new tab. The folder fills in once you are signed in",
+                        cx,
+                    ))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_link_tab(url, true, window, cx);
+                    }))
+                    .child(div().w(px(10.)).flex_shrink_0())
+                    .child(format!("Sign in to {name}"))
+                    .into_any_element(),
+            );
+            rows.push(
+                Self::live_note(
+                    ("live-sign-in-note", index),
+                    "Then your pull requests show up here",
+                    p,
+                )
+                .mt(px(-6.))
+                .into_any_element(),
+            );
+            return;
+        }
+        let active_live = self.tabs[self.active].live.as_deref();
+        for (s, section) in folder.sections.iter().enumerate() {
+            if !section.shown {
+                continue;
+            }
+            let fetching = self
+                .fetch
+                .as_ref()
+                .is_some_and(|f| f.folder == index && f.section == s);
+            let count = section.shown_items().count();
+            rows.push(
+                Self::live_row(("live-section", index * 8 + s), 26.)
+                    .hover(move |s| s.bg(rgb(p.surface)))
+                    .on_hover(Self::hint_on_hover("Click to show or hide", cx))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(section) = this
+                            .live
+                            .get_mut(index)
+                            .and_then(|folder| folder.sections.get_mut(s))
+                        {
+                            section.open = !section.open;
+                            cx.notify();
+                        }
+                    }))
+                    .child(Self::chevron(section.open, p))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(p.muted))
+                            .child(section.label),
+                    )
+                    .when(section.last.is_some() || count > 0, |row| {
+                        row.child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(p.muted))
+                                .opacity(if fetching { 0.5 } else { 1. })
+                                .child(count.to_string()),
+                        )
+                    })
+                    .into_any_element(),
+            );
+            if !section.open {
+                continue;
+            }
+            let id = index * 8 + s;
+            if let Some(error) = &section.error {
+                rows.push(
+                    Self::live_note(("live-error", id), error.clone(), p)
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| this.refresh_live(index, cx)))
+                        .into_any_element(),
+                );
+            } else if section.last.is_none() && count == 0 {
+                rows.push(Self::live_note(("live-loading", id), "Loading…", p).into_any_element());
+            } else if count == 0 {
+                rows.push(
+                    Self::live_note(("live-empty", id), "Nothing here", p).into_any_element(),
+                );
+            }
+            for (n, item) in section.shown_items() {
+                items.entry(item.url.clone()).or_insert(rows.len());
+                rows.push(self.live_item(
+                    (index, s, n),
+                    item,
+                    active_live == Some(item.url.as_str()),
+                    p,
+                    cx,
+                ));
+            }
+        }
+    }
+    /// A live folder item, drawn like a tab: selected while its tab shows, × to close it,
+    /// which keeps it away until it is updated.
+    fn live_item(
+        &self,
+        at: (usize, usize, usize),
+        item: &live::Item,
+        selected: bool,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (folder, section, n) = at;
+        let status = format!("{} · {}", item.title, item.place());
+        let url = item.url.clone();
+        let hovered = self.hovered_live.as_deref() == Some(item.url.as_str());
+        let loading = self
+            .live_tab(&item.url)
+            .is_some_and(|index| self.tabs[index].loading);
+        Self::live_row(
+            ("live-item", (folder * 8 + section) * live::MAX_ITEMS + n),
+            30.,
+        )
+        .pr_1()
+        .border_1()
+        .border_color(rgb(if selected { p.border } else { p.background }))
+        .bg(rgb(if selected { p.elevated } else { p.background }))
+        .when(!selected, |row| {
+            row.hover(move |s| s.bg(rgb(p.surface)).border_color(rgb(p.surface)))
+        })
+        .on_hover(cx.listener({
+            let url = url.clone();
+            move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.live_hover = Some(status.clone());
+                    this.hovered_live = Some(url.clone());
+                } else if this.hovered_live.as_ref() == Some(&url) {
+                    this.live_hover = None;
+                    this.hovered_live = None;
+                }
+                cx.notify();
+            }
+        }))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.open_live_item(at, window, cx);
+        }))
+        // New items carry a dot where the section has its chevron.
+        .child(
+            div()
+                .w(px(10.))
+                .flex_shrink_0()
+                .flex()
+                .justify_center()
+                .when(!item.seen, |slot| {
+                    slot.child(div().size(px(6.)).rounded_full().bg(rgb(p.primary)))
+                }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .text_sm()
+                .opacity(if loading { 0.6 } else { 1. })
+                .child(item.title.clone()),
+        )
+        .when(hovered || selected, |row| {
+            row.child(
+                Self::row_control(
+                    (
+                        "live-close",
+                        ((folder * 8 + section) * live::MAX_ITEMS + n) as u64,
+                    ),
+                    p,
+                )
+                .on_hover(Self::hint_on_hover(
+                    "Close · it comes back when the pull request is updated",
+                    cx,
+                ))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.hovered_live = None;
+                    this.live_hover = None;
+                    this.close_live_item(&url, window, cx);
+                }))
+                .child("×"),
+            )
+        })
+        .into_any_element()
     }
     fn live_folder_row(
         &self,
@@ -2964,85 +3338,6 @@ impl Browser {
                         .child(unseen.to_string()),
                 )
             })
-            .into_any_element()
-    }
-    /// The premade integrations to choose from, inline where the add row was.
-    fn live_picker_view(
-        &self,
-        available: Vec<live::Integration>,
-        p: Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .id("live-picker")
-            .flex_shrink_0()
-            .mb_1()
-            .p_1()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(p.border))
-            .bg(rgb(p.surface))
-            .flex()
-            .flex_col()
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                this.live_picker = false;
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .px_2()
-                    .pt_1()
-                    .pb(px(6.))
-                    .flex()
-                    .items_center()
-                    .text_xs()
-                    .text_color(rgb(p.muted))
-                    .child(div().flex_1().child("Add a live folder"))
-                    .child(
-                        div()
-                            .id("live-picker-cancel")
-                            .cursor_pointer()
-                            .hover(move |s| s.text_color(rgb(p.text)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.live_picker = false;
-                                cx.notify();
-                            }))
-                            .child("Cancel"),
-                    ),
-            )
-            .children(available.into_iter().map(|integration| {
-                div()
-                    .id(integration.key())
-                    .px_2()
-                    .py(px(6.))
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(rgb(p.elevated)))
-                    .on_click(cx.listener(move |this, _, _, cx| this.add_live(integration, cx)))
-                    .child(
-                        brand::icon(brand::icon::GITHUB)
-                            .size(px(20.))
-                            .flex_shrink_0()
-                            .text_color(rgb(p.text)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_sm().child(integration.name()))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(p.muted))
-                                    .child(integration.summary()),
-                            ),
-                    )
-            }))
             .into_any_element()
     }
     /// Right-click menu for a live folder, kept inside the sidebar like the tab menu.
