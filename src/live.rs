@@ -3,13 +3,13 @@
 //! only one: open pull requests that ask for your review, that you wrote, that mention you.
 //!
 //! Kept in `Felifox/live.tsv` under Application Support: `F \t integration \t open` per folder,
-//! `S \t section \t open` per section, then `I \t seen \t url \t title` per item it showed.
+//! `S \t section \t open \t shown` per section, then `I \t seen \t url \t updated \t dismissed
+//! \t title` per item it showed. `dismissed` is the `updated` time the user closed it at.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-const HEADER: &str =
-    "# Felifox live folders: F\tintegration\topen; S\tsection\topen; I\tseen\turl\ttitle";
+const HEADER: &str = "# Felifox live folders: F\tintegration\topen; S\tsection\topen\tshown; I\tseen\turl\tupdated\tdismissed\ttitle";
 pub const MAX_ITEMS: usize = 50;
 const MAX_TITLE: usize = 200;
 const EVERY: Duration = Duration::from_secs(5 * 60);
@@ -80,12 +80,14 @@ impl Integration {
         }
     }
     /// The script run in the hidden page: `null` until the list has rendered, then
-    /// `[{title, url}]`. GitHub draws the list after the load and shows a Blankslate when
-    /// nothing matches. Rows outside the viewport have no layout, hence `textContent`.
+    /// `[{title, url, updated}]`. GitHub draws the list after the load and shows a Blankslate
+    /// when nothing matches. Rows outside the viewport have no layout, hence `textContent`.
+    /// A row's last `relative-time` is its "Updated" time. Merged and closed rows are skipped
+    /// even if a query lets them through.
     pub fn extractor(self) -> &'static str {
         match self {
             Integration::Github => {
-                "(() => { const links = [...document.querySelectorAll('a[data-testid=\"listitem-title-link\"], a.js-navigation-open.Link--primary')]; if (!links.length && !document.querySelector('[class*=\"Blankslate\"]')) return null; return links.slice(0, 200).map(a => ({ title: (a.innerText || a.textContent || '').trim(), url: a.href || '' })); })()"
+                "(() => { const links = [...document.querySelectorAll('a[data-testid=\"listitem-title-link\"], a.js-navigation-open.Link--primary')]; if (!links.length && !document.querySelector('[class*=\"Blankslate\"]')) return null; return links.slice(0, 200).filter(a => !a.closest('li')?.querySelector('.octicon-git-merge, .octicon-git-pull-request-closed')).map(a => { const times = a.closest('li')?.querySelectorAll('relative-time') || []; return { title: (a.innerText || a.textContent || '').trim(), url: a.href || '', updated: times.length ? times[times.length - 1].getAttribute('datetime') || '' : '' }; }); })()"
             }
         }
     }
@@ -101,9 +103,17 @@ pub struct Item {
     pub title: String,
     pub url: String,
     pub seen: bool,
+    /// The site's last-updated time for the item, as it gave it.
+    pub updated: String,
+    /// The `updated` time at which the user closed the item; it stays hidden until it changes.
+    pub dismissed: Option<String>,
 }
 
 impl Item {
+    pub fn shown(&self) -> bool {
+        self.dismissed.is_none()
+    }
+
     /// `owner/repo #12` for a GitHub pull request, else the URL's path.
     pub fn place(&self) -> String {
         let Ok(url) = url::Url::parse(&self.url) else {
@@ -123,6 +133,8 @@ pub struct Section {
     pub label: &'static str,
     pub url: &'static str,
     pub open: bool,
+    /// Chosen in the live folder settings; hidden sections are neither shown nor fetched.
+    pub shown: bool,
     pub items: Vec<Item>,
     /// Why the last refresh failed; not saved.
     pub error: Option<String>,
@@ -131,15 +143,40 @@ pub struct Section {
 }
 
 impl Section {
-    /// Takes a refresh's items. Items already shown keep their seen state; the first refresh
-    /// counts as seen, so a new folder is not all dots.
-    pub fn update(&mut self, mut items: Vec<Item>) {
+    /// Takes a refresh's items and returns the URLs that left the list (merged or closed).
+    /// Known items keep their seen and dismissed state; a dismissed item that was updated
+    /// since comes back as new. The first refresh counts as seen, so a new folder is not all
+    /// dots.
+    pub fn update(&mut self, mut items: Vec<Item>) -> Vec<String> {
         let first = self.last.is_none() && self.items.is_empty();
         for item in &mut items {
-            item.seen = first || self.items.iter().any(|old| old.url == item.url && old.seen);
+            let old = self.items.iter().find(|old| old.url == item.url);
+            item.seen = first || old.is_some_and(|old| old.seen);
+            item.dismissed = old.and_then(|old| old.dismissed.clone());
+            if item
+                .dismissed
+                .as_ref()
+                .is_some_and(|at| *at != item.updated)
+            {
+                item.dismissed = None;
+                item.seen = false;
+            }
         }
+        let gone = self
+            .items
+            .iter()
+            .filter(|old| !items.iter().any(|item| item.url == old.url))
+            .map(|old| old.url.clone())
+            .collect();
         self.items = items;
         self.error = None;
+        gone
+    }
+    pub fn shown_items(&self) -> impl Iterator<Item = (usize, &Item)> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.shown())
     }
 }
 
@@ -165,6 +202,7 @@ impl LiveFolder {
                     label: source.label,
                     url: source.url,
                     open: true,
+                    shown: true,
                     items: Vec::new(),
                     error: None,
                     last: None,
@@ -180,14 +218,16 @@ impl LiveFolder {
             && self
                 .sections
                 .iter()
+                .filter(|section| section.shown)
                 .all(|section| section.last.is_none() && section.items.is_empty())
     }
 
     pub fn unseen(&self) -> usize {
         self.sections
             .iter()
+            .filter(|section| section.shown)
             .flat_map(|section| &section.items)
-            .filter(|item| !item.seen)
+            .filter(|item| item.shown() && !item.seen)
             .count()
     }
 
@@ -198,9 +238,9 @@ impl LiveFolder {
         } else {
             EVERY
         };
-        self.sections
-            .iter()
-            .position(|section| section.last.is_none_or(|last| last.elapsed() >= every))
+        self.sections.iter().position(|section| {
+            section.shown && section.last.is_none_or(|last| last.elapsed() >= every)
+        })
     }
 
     /// Refreshes every section at the next poll.
@@ -259,6 +299,13 @@ pub fn parse_items(json: &str, host: &str) -> Option<Vec<Item>> {
             title: if title.is_empty() { url.clone() } else { title },
             url,
             seen: false,
+            updated: value["updated"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(40)
+                .collect(),
+            dismissed: None,
         });
         if items.len() == MAX_ITEMS {
             break;
@@ -296,10 +343,11 @@ pub fn parse(text: &str) -> Vec<LiveFolder> {
                 section = folder.and_then(|folder| {
                     let index = folder.sections.iter().position(|s| s.key == *key)?;
                     folder.sections[index].open = rest.first() != Some(&"0");
+                    folder.sections[index].shown = rest.get(1) != Some(&"0");
                     Some(index)
                 });
             }
-            ["I", seen, url, title @ ..] => {
+            ["I", seen, url, updated, dismissed, title @ ..] => {
                 let (Some(folder), Some(index)) = (folders.last_mut(), section) else {
                     continue;
                 };
@@ -318,6 +366,8 @@ pub fn parse(text: &str) -> Vec<LiveFolder> {
                             .collect(),
                         url: (*url).to_owned(),
                         seen: *seen == "1",
+                        updated: (*updated).to_owned(),
+                        dismissed: (*dismissed != "-").then(|| (*dismissed).to_owned()),
                     });
                 }
             }
@@ -337,12 +387,21 @@ pub fn serialize(folders: &[LiveFolder]) -> String {
             u8::from(folder.open)
         ));
         for section in &folder.sections {
-            out.push_str(&format!("\nS\t{}\t{}", section.key, u8::from(section.open)));
+            out.push_str(&format!(
+                "\nS\t{}\t{}\t{}",
+                section.key,
+                u8::from(section.open),
+                u8::from(section.shown)
+            ));
             for item in &section.items {
+                // `-` marks an item that is not dismissed; an empty field is a dismissal of an
+                // item without an updated time.
                 out.push_str(&format!(
-                    "\nI\t{}\t{}\t{}",
+                    "\nI\t{}\t{}\t{}\t{}\t{}",
                     u8::from(item.seen),
                     clean(&item.url),
+                    clean(&item.updated),
+                    item.dismissed.as_deref().map_or("-".into(), clean),
                     clean(&item.title)
                 ));
             }
@@ -361,6 +420,15 @@ mod tests {
             title: title.into(),
             url: url.into(),
             seen,
+            updated: String::new(),
+            dismissed: None,
+        }
+    }
+
+    fn updated(url: &str, at: &str) -> Item {
+        Item {
+            updated: at.into(),
+            ..item(url, "t", false)
         }
     }
 
@@ -369,7 +437,18 @@ mod tests {
         let mut github = LiveFolder::new(Integration::Github);
         github.open = false;
         github.sections[1].open = false;
+        github.sections[2].shown = false;
         github.sections[0].items = vec![item("https://github.com/a/b/pull/1", "Fix\tit", true)];
+        github.sections[1].items = vec![
+            Item {
+                dismissed: Some("2026-01-01T00:00:00Z".into()),
+                ..updated("https://github.com/a/b/pull/3", "2026-01-01T00:00:00Z")
+            },
+            Item {
+                dismissed: Some(String::new()),
+                ..item("https://github.com/a/b/pull/4", "", true)
+            },
+        ];
         github.sections[2].items = vec![item("https://github.com/a/b/pull/2", "New", false)];
         let parsed = parse(&serialize(std::slice::from_ref(&github)));
         assert_eq!(parsed.len(), 1);
@@ -380,12 +459,12 @@ mod tests {
 
     #[test]
     fn skips_unknown_and_foreign_lines() {
-        let text = "# x\nF\tgitlab\t1\nS\treviews\t1\nI\t1\thttps://github.com/x\tx\nF\tgithub\t1\nS\tnope\t1\nI\t1\thttps://github.com/y\ty\nS\tmine\t0\nI\t0\tjavascript:alert(1)\tx\nI\t0\thttps://evil.example/\tx\nI\t0\thttps://github.com/a/b/pull/1\tOne\nF\tgithub\t1\n";
+        let text = "# x\nF\tgitlab\t1\nS\treviews\t1\t1\nI\t1\thttps://github.com/x\t\t-\tx\nF\tgithub\t1\nS\tnope\t1\t1\nI\t1\thttps://github.com/y\t\t-\ty\nS\tmine\t0\nI\t0\tjavascript:alert(1)\t\t-\tx\nI\t0\thttps://evil.example/\t\t-\tx\nI\t0\thttps://github.com/a/b/pull/1\t\t-\tOne\nI\t0\thttps://github.com/a/b/pull/2\tOld format\nF\tgithub\t1\n";
         let parsed = parse(text);
         assert_eq!(parsed.len(), 1);
         let sections = &parsed[0].sections;
         assert!(sections[0].items.is_empty() && sections[2].items.is_empty());
-        assert!(!sections[1].open);
+        assert!(!sections[1].open && sections[1].shown);
         assert_eq!(
             sections[1].items,
             vec![item("https://github.com/a/b/pull/1", "One", false)]
@@ -433,6 +512,29 @@ mod tests {
             item("https://github.com/2", "b", false),
         ]);
         assert!(section.items[0].seen && !section.items[1].seen);
+    }
+
+    #[test]
+    fn closed_items_return_only_when_updated() {
+        let mut section = LiveFolder::new(Integration::Github).sections.remove(0);
+        let (a, b) = (
+            "https://github.com/a/b/pull/1",
+            "https://github.com/a/b/pull/2",
+        );
+        section.update(vec![updated(a, "1"), updated(b, "1")]);
+        section.last = Some(Instant::now());
+        section.items[0].dismissed = Some("1".into());
+        assert_eq!(section.shown_items().count(), 1);
+        assert!(
+            section
+                .update(vec![updated(a, "1"), updated(b, "1")])
+                .is_empty()
+        );
+        assert!(!section.items[0].shown(), "still closed without an update");
+        section.update(vec![updated(a, "2"), updated(b, "1")]);
+        assert!(section.items[0].shown() && !section.items[0].seen);
+        // A merged pull request leaves the list.
+        assert_eq!(section.update(vec![updated(a, "2")]), vec![b.to_owned()]);
     }
 
     #[test]
