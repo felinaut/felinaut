@@ -24,7 +24,7 @@ Usage: felifox-ctl <command>      (start Felifox with FELIFOX_AGENT=1)
                           use a function: (() => { …; return x })()
   screenshot [path]       Save a PNG of the page
   live                    List the live folders, their sections and items
-  live add <integration>  Add a live folder (github)
+  live add <integration>  Add a live folder (github, asana)
   live refresh|remove <index>
                           Refresh or remove a live folder
   live open|close <folder> <section> <item>

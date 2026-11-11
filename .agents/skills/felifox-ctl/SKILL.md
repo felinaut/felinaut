@@ -54,7 +54,7 @@ The references are valid only until the next snapshot. A snapshot does not show 
 | `eval <expression>` | Evaluates one JavaScript expression and prints the result as JSON |
 | `screenshot [path]` | Saves a PNG of the visible page and prints the path |
 | `live` | Lists the live folders as JSON: sections, items, sign-in state |
-| `live add <integration>` | Adds a live folder (`github`) |
+| `live add <integration>` | Adds a live folder (`github` or `asana`) |
 | `live refresh <index>` / `live remove <index>` | Refreshes or removes a live folder |
 | `live open <folder> <section> <item>` | Shows a live folder item in its tab |
 | `live close <folder> <section> <item>` | Closes an item (and its tab) until the site updates it |

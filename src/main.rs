@@ -724,6 +724,7 @@ impl Browser {
         let now = Instant::now();
         if let Some(fetch) = &mut self.fetch {
             let integration = self.live[fetch.folder].integration;
+            let extractor = self.live[fetch.folder].sections[fetch.section].extractor;
             let mut signed_out = false;
             for event in fetch.page.drain_events() {
                 match event {
@@ -742,6 +743,8 @@ impl Browser {
                 .lock()
                 .ok()
                 .and_then(|mut answer| answer.take());
+            // An API answers a lapsed session with an error rather than a sign-in page.
+            signed_out |= answer.as_deref() == Some(live::SIGNED_OUT);
             let mut done = answer
                 .and_then(|json| live::parse_items(&json, integration.host()))
                 .map(Ok);
@@ -750,7 +753,7 @@ impl Browser {
                 fetch.tries += 1;
                 fetch.next_try = now + Duration::from_secs(1);
                 let result = fetch.result.clone();
-                let _ = fetch.page.evaluate(integration.extractor(), move |json| {
+                let _ = fetch.page.evaluate(extractor, move |json| {
                     if let Ok(mut answer) = result.lock() {
                         *answer = Some(json);
                     }
@@ -2868,12 +2871,14 @@ impl Browser {
                         this.new_live_folder(&NewLiveFolder, window, cx)
                     }))
                     .child(
-                        brand::icon(brand::icon::GITHUB)
-                            .size(px(14.))
-                            .flex_shrink_0()
-                            .text_color(rgb(p.muted)),
+                        div()
+                            .w(px(18.))
+                            .flex()
+                            .justify_center()
+                            .text_sm()
+                            .child("+"),
                     )
-                    .child("Add GitHub pull requests")
+                    .child("Add GitHub or Asana")
                     .into_any_element(),
             );
         }
@@ -2990,7 +2995,7 @@ impl Browser {
                             .items_center()
                             .gap_2()
                             .child(
-                                brand::icon(brand::icon::GITHUB)
+                                brand::icon(integration.icon())
                                     .size(px(18.))
                                     .flex_shrink_0()
                                     .text_color(rgb(p.text)),
@@ -3098,7 +3103,7 @@ impl Browser {
             rows.push(
                 Self::live_note(
                     ("live-sign-in-note", index),
-                    "Then your pull requests show up here",
+                    format!("Then your {} show up here", folder.integration.noun()),
                     p,
                 )
                 .mt(px(-6.))
@@ -3273,7 +3278,7 @@ impl Browser {
                     p,
                 )
                 .on_hover(Self::hint_on_hover(
-                    "Close · it comes back when the pull request is updated",
+                    "Close · it comes back when it is updated",
                     cx,
                 ))
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -3330,7 +3335,7 @@ impl Browser {
             )
             .child(Self::chevron(folder.open, p))
             .child(
-                brand::icon(brand::icon::GITHUB)
+                brand::icon(folder.integration.icon())
                     .size(px(16.))
                     .flex_shrink_0()
                     .text_color(rgb(p.text))
