@@ -6,6 +6,7 @@ use std::ffi::c_void;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use gpui::{Bounds, Pixels};
+use objc2::{msg_send, rc::Retained, runtime::AnyObject};
 use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
 use crate::audio::{AudioReport, TabAudio, parse_report};
@@ -38,6 +39,9 @@ pub struct NativePage {
     events: Receiver<Event>,
     last_url: RefCell<String>,
     failure_key: Option<usize>,
+    /// A tab page's own view, sized to the page area: a docked Web Inspector stays in it, and
+    /// hides with its tab.
+    container: Option<Retained<objc2_app_kit::NSView>>,
 }
 
 impl Drop for NativePage {
@@ -45,6 +49,9 @@ impl Drop for NativePage {
         if let Some(key) = self.failure_key {
             FAILURES.with_borrow_mut(|pages| pages.remove(&key));
             crate::downloads::native::detach(key);
+        }
+        if let Some(container) = &self.container {
+            container.removeFromSuperview();
         }
     }
 }
@@ -64,6 +71,7 @@ impl NativePage {
                 builder.with_initialization_script_for_main_only(include_str!("agent.js"), true);
         }
         let webview = builder
+            .with_devtools(true)
             .with_initialization_script_for_main_only(include_str!("link_interactions.js"), false)
             .with_initialization_script_for_main_only(include_str!("audio_control.js"), false)
             .with_initialization_script_for_main_only(include_str!("page_icon.js"), true)
@@ -109,14 +117,24 @@ impl NativePage {
         let failure_key = watch_failures(&webview, failure_sender);
         {
             use wry::WebViewExtMacOS;
-            crate::downloads::native::attach(&webview.webview(), failure_key.is_some());
+            let view = webview.webview();
+            crate::downloads::native::attach(&view, failure_key.is_some());
+            // Keep the in-app inspector but stop Safari's Develop menu attaching from outside.
+            // SAFETY: a live WKWebView on the main thread; the setter exists on macOS 13.3+.
+            unsafe {
+                if msg_send![&*view, respondsToSelector: objc2::sel!(setInspectable:)] {
+                    let () = msg_send![&*view, setInspectable: false];
+                }
+            }
         }
+        let container = contain(&webview);
 
         Ok(Self {
             webview,
             events,
             last_url: RefCell::new(String::new()),
             failure_key,
+            container,
         })
     }
 
@@ -128,6 +146,7 @@ impl NativePage {
         let webview = WebViewBuilder::new()
             .with_visible(false)
             .with_focused(false)
+            .with_devtools(false)
             // A real viewport: rows that never get a layout may render empty.
             .with_bounds(wry::Rect {
                 position: wry::dpi::LogicalPosition::new(-20_000., -20_000.).into(),
@@ -153,6 +172,7 @@ impl NativePage {
             events,
             last_url: RefCell::new(String::new()),
             failure_key: None,
+            container: None,
         })
     }
 
@@ -180,6 +200,28 @@ impl NativePage {
 
     pub fn set_zoom(&self, zoom: f64) -> Result<(), String> {
         self.webview.zoom(zoom).map_err(|error| error.to_string())
+    }
+
+    /// Opens WebKit's Web Inspector where it was last (docked in the page or in its own
+    /// window), or closes it if open.
+    pub fn toggle_devtools(&self) {
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // SAFETY: WebKit's private `_inspector` and its methods, as Wry's `open_devtools` uses,
+        // on a live WKWebView on the main thread.
+        unsafe {
+            let available: bool = msg_send![&*view, respondsToSelector: objc2::sel!(_inspector)];
+            if !available {
+                return;
+            }
+            let inspector: Retained<AnyObject> = msg_send![&*view, _inspector];
+            let visible: bool = msg_send![&*inspector, isVisible];
+            if visible {
+                let () = msg_send![&*inspector, close];
+            } else {
+                let () = msg_send![&*inspector, show];
+            }
+        }
     }
 
     pub fn navigate(&self, url: &str) -> Result<(), String> {
@@ -228,6 +270,10 @@ impl NativePage {
     }
 
     pub fn set_visible(&self, visible: bool) -> Result<(), String> {
+        if let Some(container) = &self.container {
+            container.setHidden(!visible);
+            return Ok(());
+        }
         self.webview
             .set_visible(visible)
             .map_err(|error| error.to_string())
@@ -245,6 +291,18 @@ impl NativePage {
 
     /// Bounds are window-relative logical pixels, as supplied by the GPUI canvas.
     pub fn set_bounds(&self, bounds: Bounds<Pixels>) -> Result<(), String> {
+        if let Some(container) = &self.container {
+            // SAFETY: a view this page owns, on the main thread.
+            let parent = unsafe { container.superview() }.ok_or("The page has no parent view")?;
+            let (x, y) = (f64::from(bounds.origin.x), f64::from(bounds.origin.y));
+            let (width, height) = (f64::from(bounds.size.width), f64::from(bounds.size.height));
+            let y = container_y(y, height, parent.frame().size.height, parent.isFlipped());
+            container.setFrame(objc2_foundation::NSRect::new(
+                objc2_foundation::NSPoint::new(x, y),
+                objc2_foundation::NSSize::new(width, height),
+            ));
+            return Ok(());
+        }
         self.webview
             .set_bounds(wry::Rect {
                 position: wry::dpi::LogicalPosition::new(
@@ -690,6 +748,48 @@ pub fn forward_command_arrows() {
     std::mem::forget(monitor);
 }
 
+/// Moves a tab's page into its own view, sized to the page area: a docked Web Inspector
+/// splits its page's parent view, which would otherwise be the whole window.
+fn contain(webview: &WebView) -> Option<Retained<objc2_app_kit::NSView>> {
+    use objc2::MainThreadOnly;
+    use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
+    use wry::WebViewExtMacOS;
+    let view = webview.webview();
+    // SAFETY: the page's live view, on the main thread.
+    let parent = unsafe { view.superview() }?;
+    let container =
+        NSView::initWithFrame(NSView::alloc(objc2::MainThreadMarker::new()?), view.frame());
+    container.setHidden(true);
+    parent.addSubview(&container);
+    view.removeFromSuperview();
+    container.addSubview(&view);
+    view.setFrame(container.bounds());
+    view.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    );
+    view.setHidden(false);
+    Some(container)
+}
+
+/// A top-left `y` in the container's parent view, which is bottom-left unless flipped.
+fn container_y(y: f64, height: f64, parent_height: f64, flipped: bool) -> f64 {
+    if flipped {
+        y
+    } else {
+        parent_height - y - height
+    }
+}
+
+/// Closes the app's key window if it is not a browser window, such as a detached Web Inspector.
+pub fn close_key_window() {
+    if let Some(mtm) = objc2::MainThreadMarker::new()
+        && let Some(window) = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow()
+        && window.class().name().to_bytes() != b"GPUIWindow"
+    {
+        window.performClose(None);
+    }
+}
+
 /// Agent control is opt-in. The new setting takes precedence, including an explicit disable.
 /// Keep the legacy name for existing local automation without enabling either by default.
 pub fn agent_enabled() -> bool {
@@ -802,6 +902,12 @@ fn check_url(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn container_y_flips_only_for_an_unflipped_parent() {
+        assert_eq!(super::container_y(40., 300., 800., true), 40.);
+        assert_eq!(super::container_y(40., 300., 800., false), 460.);
+    }
+
     #[test]
     fn renamed_agent_flag_preserves_opt_in_and_honors_explicit_disable() {
         use std::ffi::OsStr;

@@ -10,6 +10,7 @@ default-run = "felinaut"
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"] }
 wry = { version = "=0.57.1", default-features = false, features = [
     "os-webview",
+    "devtools",
 ] }
 url = "2.5"
 unicode-segmentation = "1.12"

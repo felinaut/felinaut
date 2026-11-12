@@ -189,6 +189,7 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | `⌘⇧H`            | Home                                                            |
 | `⌘⇧M`            | Mute / unmute active tab                                        |
 | `⌘⇧J`            | Show / hide the downloads list                                  |
+| `⌥⌘I`            | Web Inspector for the active page (also **Inspect Element**)    |
 | `⌘S`             | Show / hide the tab sidebar (remembered)                        |
 | `⌘D`             | Pin / unpin active tab                                          |
 | `⌘1`–`⌘8` / `⌘9` | Go to tab 1–8 / last tab                                        |
@@ -316,6 +317,7 @@ Keep it small: no bookmarks manager, extensions, permission UI, tracker-blocker 
 - Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
 - This is an early browser shell, not a security-audited Safari replacement. WebKit's engine security updates come from macOS updates.
+- Web Inspector (**View → Developer Tools**) is opened through WebKit's private `_inspector` API (via Wry's `devtools` feature). Safari's **Develop** menu cannot attach to Felinaut pages.
 - Only macOS is configured and tested. Windows and Linux backends are not configured.
 
 ## Validate

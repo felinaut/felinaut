@@ -297,6 +297,8 @@ actions!(
     ]
 );
 
+actions!(felinaut, [DevTools]);
+
 /// What ⌘⇧T needs to bring a closed tab back where it was.
 struct ClosedTab {
     url: String,
@@ -1769,6 +1771,12 @@ impl Browser {
             .zoom_flash
             .map_or(1., |at| at.elapsed().as_secs_f32() / 0.4);
         Some((label.into(), flash.min(1.)))
+    }
+    fn dev_tools(&mut self, _: &DevTools, _: &mut Window, _: &mut Context<Self>) {
+        let tab = &self.tabs[self.active];
+        if let Some(page) = tab.page.as_ref().filter(|_| !tab.home) {
+            page.toggle_devtools();
+        }
     }
     fn mute_tab(&mut self, _: &MuteTab, _: &mut Window, cx: &mut Context<Self>) {
         self.toggle_mute(self.tabs[self.active].id, cx);
@@ -3991,6 +3999,7 @@ impl Render for Browser {
             .on_action(cx.listener(Self::pin_tab))
             .on_action(cx.listener(Self::activate_tab))
             .on_action(cx.listener(Self::zoom))
+            .on_action(cx.listener(Self::dev_tools))
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::reopen_tab))
@@ -4182,6 +4191,7 @@ fn main() {
             KeyBinding::new("cmd-[", Back, None),
             KeyBinding::new("cmd-]", Forward, None),
             KeyBinding::new("cmd-shift-h", Home, None),
+            KeyBinding::new("alt-cmd-i", DevTools, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-,", OpenSettings, None),
             KeyBinding::new("cmd-shift-m", MuteTab, None),
@@ -4253,6 +4263,8 @@ fn main() {
                     MenuItem::action("Zoom In", Zoom(1)),
                     MenuItem::action("Zoom Out", Zoom(-1)),
                     MenuItem::action("Actual Size", Zoom(0)),
+                    MenuItem::separator(),
+                    MenuItem::action("Developer Tools", DevTools),
                 ])
                 .collect(),
             },
@@ -4277,6 +4289,9 @@ fn main() {
         cx.on_action(|_: &AboutFelinaut, cx| about::open(cx));
         cx.on_action(|_: &OpenSettings, cx| settings::open(cx));
         cx.on_action(|_: &Quit, cx| cx.quit());
+        // A detached Web Inspector is not a browser window: ⌥⌘I and ⌘W there close just it.
+        cx.on_action(|_: &DevTools, _| webview::close_key_window());
+        cx.on_action(|_: &CloseTab, _| webview::close_key_window());
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();
