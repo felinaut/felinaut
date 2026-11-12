@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.13"
       - name: Install Rust with validation tools
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
@@ -68,7 +68,7 @@ jobs:
         run: |
           cargo dist --app-only
           codesign --verify --deep --strict dist/Felinaut.app
-          lipo -verify_arch '${{ matrix.arch }}' dist/Felinaut.app/Contents/MacOS/felinaut
+          lipo dist/Felinaut.app/Contents/MacOS/felinaut -verify_arch '${{ matrix.arch }}'
       - name: ZIP app (preserve macOS metadata and bundle root)
         env:
           ARCH: ${{ matrix.arch }}
@@ -110,7 +110,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.13"
       - uses: actions/download-artifact@v4
         with:
           pattern: release-macos-*
