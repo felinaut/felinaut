@@ -40,6 +40,8 @@ block2 = "0.6"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "objc2-core-foundation",
+    # The installed Safari's version, for the User-Agent.
+    "NSBundle",
     "NSData",
     "NSDictionary",
     "NSError",
@@ -58,6 +60,8 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = [
     "block2",
     "objc2-app-kit",
     "WKWebView",
+    # Set the Safari part of the User-Agent before a webview exists.
+    "WKWebViewConfiguration",
     "WKSnapshotConfiguration",
     # Felinaut is its own download delegate, for progress and cancelling.
     "WKDownload",

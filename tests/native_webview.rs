@@ -24,7 +24,7 @@ use std::{
     net::TcpListener,
     rc::Rc,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -74,6 +74,9 @@ fn main() {
     let base = format!("http://{}", listener.local_addr().unwrap());
     let download_requests = Arc::new(AtomicUsize::new(0));
     let served_downloads = download_requests.clone();
+    // The User-Agent header of every request, and `navigator.userAgent` as the page reports it.
+    let user_agents = Arc::new(Mutex::new(Vec::new()));
+    let seen_agents = user_agents.clone();
     std::thread::spawn(move || {
         for connection in listener.incoming() {
             let Ok(mut stream) = connection else {
@@ -87,6 +90,17 @@ fn main() {
                 continue;
             };
             let request = String::from_utf8_lossy(&request[..count]);
+            let header = request
+                .lines()
+                .find_map(|line| line.strip_prefix("User-Agent: "));
+            let reported = request
+                .strip_prefix("GET /agent?")
+                .and_then(|rest| rest.split(' ').next())
+                .map(|query| query.replace("%20", " "));
+            seen_agents
+                .lock()
+                .unwrap()
+                .extend(header.map(str::to_string).into_iter().chain(reported));
             if request.starts_with("GET /download ") {
                 // The server asks for a name outside the downloads folder.
                 served_downloads.fetch_add(1, Ordering::SeqCst);
@@ -97,7 +111,7 @@ fn main() {
             let script = if second {
                 "document.title = localStorage.getItem('felifox-smoke') === 'yes' ? 'JS SECOND' : 'STORAGE FAILED';"
             } else {
-                "localStorage.setItem('felifox-smoke', 'yes'); document.title = 'JS FIRST';"
+                "fetch('/agent?' + navigator.userAgent); localStorage.setItem('felifox-smoke', 'yes'); document.title = 'JS FIRST';"
             };
             let body = format!(
                 "<!doctype html><meta charset=utf-8><title>Waiting</title><style>body{{background:#edf0ff;color:#101324}}</style><h1 id=result>JavaScript test</h1><a id=testlink href='/link-destination'><span id=linkchild>Test link</span></a><script>{script}document.querySelector('#result').textContent = document.title;</script>"
@@ -118,6 +132,7 @@ fn main() {
         let download_url = format!("{base}/download");
         let folder = folder.clone();
         let download_requests = download_requests.clone();
+        let user_agents = user_agents.clone();
         let handle = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(800.), px(600.)), cx))),
@@ -242,7 +257,17 @@ fn main() {
                                     assert_eq!(std::fs::read(saved).unwrap(), b"fixture");
                                     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "the hidden page saved nothing");
                                     std::fs::remove_dir_all(folder.parent().unwrap()).unwrap();
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, and a download that stays in the downloads folder while a hidden page's is refused");
+                                    // The visible page's requests, its `navigator.userAgent` and the hidden
+                                    // page's request all carry one Safari-compatible User-Agent.
+                                    let agents = user_agents.lock().unwrap().clone();
+                                    let agent = &agents[0];
+                                    let (webkit, safari) = agent.split_once(" Version/").unwrap_or_else(|| panic!("no Safari part: {agent:?}"));
+                                    assert!(webkit.starts_with("Mozilla/5.0 (Macintosh; ") && webkit.ends_with(" (KHTML, like Gecko)"), "{agent:?}");
+                                    let version = safari.strip_suffix(" Safari/605.1.15").unwrap_or_else(|| panic!("no Safari token: {agent:?}"));
+                                    assert!(version.split('.').all(|part| part.parse::<u16>().is_ok()), "{agent:?}");
+                                    assert!(!agent.to_lowercase().contains("feli"), "{agent:?}");
+                                    assert!(agents.len() >= 8 && agents.iter().all(|other| other == agent), "{agents:?}");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and one Safari-compatible User-Agent for visible and hidden pages");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;

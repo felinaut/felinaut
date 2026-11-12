@@ -6,7 +6,7 @@ use std::ffi::c_void;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use gpui::{Bounds, Pixels};
-use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
+use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder, WebViewBuilderExtMacos};
 
 use crate::audio::{AudioReport, TabAudio, parse_report};
 use crate::load_error::{Exceptions, LoadFailure};
@@ -64,6 +64,7 @@ impl NativePage {
                 builder.with_initialization_script_for_main_only(include_str!("agent.js"), true);
         }
         let webview = builder
+            .with_webview_configuration(configuration()?)
             .with_initialization_script_for_main_only(include_str!("link_interactions.js"), false)
             .with_initialization_script_for_main_only(include_str!("audio_control.js"), false)
             .with_initialization_script_for_main_only(include_str!("page_icon.js"), true)
@@ -126,6 +127,7 @@ impl NativePage {
         check_url(url)?;
         let (sender, events) = mpsc::channel();
         let webview = WebViewBuilder::new()
+            .with_webview_configuration(configuration()?)
             .with_visible(false)
             .with_focused(false)
             // A real viewport: rows that never get a layout may render empty.
@@ -784,6 +786,50 @@ pub fn pointer(_: &gpui::Window) -> Option<gpui::Point<f32>> {
     None
 }
 
+/// The configuration for every webview, visible or hidden. WebKit's default User-Agent ends
+/// after `(KHTML, like Gecko)`, and many sites reject it. WebKit appends the application name,
+/// so the WebKit and OS parts stay those of the system. The name must be set here: WebKit
+/// reads it when it creates the webview. Wry adds the default data store to this
+/// configuration, as it does to its own.
+fn configuration() -> Result<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>, String> {
+    use objc2_foundation::{NSBundle, NSProcessInfo, NSString};
+    let mtm = objc2::MainThreadMarker::new().ok_or("Web pages need the main thread")?;
+    // Safari ships together with the system WebKit, so its version is the honest value.
+    let safari = NSBundle::bundleWithPath(&NSString::from_str("/Applications/Safari.app"))
+        .and_then(|bundle| {
+            bundle.objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString"))
+        })
+        .and_then(|version| version.downcast::<NSString>().ok())
+        .map(|version| version.to_string());
+    let os = NSProcessInfo::processInfo().operatingSystemVersion();
+    let name = safari_application_name(safari.as_deref(), os.majorVersion, os.minorVersion);
+    // SAFETY: `mtm` proves the main thread, and the setter copies the string.
+    unsafe {
+        let configuration = objc2_web_kit::WKWebViewConfiguration::new(mtm);
+        configuration.setApplicationNameForUserAgent(Some(&NSString::from_str(&name)));
+        Ok(configuration)
+    }
+}
+
+/// The part that Safari adds to the User-Agent: `Version/<n> Safari/605.1.15`. `<n>` is the
+/// version of the installed Safari. Without a usable one, `<n>` comes from the macOS version:
+/// they are the same from macOS 26 on, and Safari was three ahead from macOS 11 to 15.
+/// `605.1.15` is not a version to update: Safari has frozen it, as WebKit has for `AppleWebKit/`.
+fn safari_application_name(safari: Option<&str>, os_major: isize, os_minor: isize) -> String {
+    let usable = |version: &&str| {
+        version.len() <= 16
+            && version
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    };
+    let version = match safari.filter(usable) {
+        Some(version) => version.to_string(),
+        None if os_major >= 26 => format!("{os_major}.{os_minor}"),
+        None => format!("{}.0", os_major + 3),
+    };
+    format!("Version/{version} Safari/605.1.15")
+}
+
 fn allowed_url(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {
         scheme.eq_ignore_ascii_case("http")
@@ -893,6 +939,53 @@ mod tests {
         assert_eq!(super::native_modifiers("+"), (Flags::empty(), "+"));
         assert_eq!(super::native_modifiers("Alt+"), (Flags::empty(), "Alt+"));
         assert_eq!(native_key(""), None);
+    }
+
+    #[test]
+    fn user_agent_name_has_the_safari_form() {
+        use super::safari_application_name;
+        assert_eq!(
+            safari_application_name(Some("26.5"), 26, 5),
+            "Version/26.5 Safari/605.1.15"
+        );
+        // The installed Safari wins: it can be newer than the one that came with macOS.
+        assert_eq!(
+            safari_application_name(Some("18.6.1"), 14, 7),
+            "Version/18.6.1 Safari/605.1.15"
+        );
+        // No Safari: the macOS version decides.
+        assert_eq!(
+            safari_application_name(None, 26, 1),
+            "Version/26.1 Safari/605.1.15"
+        );
+        assert_eq!(
+            safari_application_name(None, 15, 6),
+            "Version/18.0 Safari/605.1.15"
+        );
+        assert_eq!(
+            safari_application_name(None, 12, 0),
+            "Version/15.0 Safari/605.1.15"
+        );
+        // A version that is not plain numbers never reaches the header.
+        let long = "1".repeat(17);
+        for bad in [
+            "",
+            ".",
+            "26.",
+            ".5",
+            "26..5",
+            "26.5 beta",
+            "26.5\r\nX: y",
+            "٢٦.٥",
+            &long,
+        ] {
+            assert_eq!(
+                safari_application_name(Some(bad), 26, 5),
+                "Version/26.5 Safari/605.1.15",
+                "{bad:?}"
+            );
+        }
+        assert!(!safari_application_name(None, 26, 5).contains("Felinaut"));
     }
 
     #[test]
