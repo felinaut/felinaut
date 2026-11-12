@@ -39,7 +39,8 @@ impl NativePage {
         let title_sender = sender.clone();
         let link_sender = sender.clone();
         let failure_sender = sender.clone();
-        let mut builder = WebViewBuilder::new();
+        let mut builder =
+            WebViewBuilder::new().with_incognito(crate::comparison::policy().enabled());
         if agent_enabled() {
             builder =
                 builder.with_initialization_script_for_main_only(include_str!("agent.js"), true);
@@ -87,6 +88,7 @@ impl NativePage {
             .with_url(url)
             .build_as_child(window)
             .map_err(|error| error.to_string())?;
+        verify_comparison_store(&webview)?;
         let failure_key = watch_failures(&webview, failure_sender);
         {
             use wry::WebViewExtMacOS;
@@ -107,6 +109,7 @@ impl NativePage {
         check_url(url)?;
         let (sender, events) = mpsc::channel();
         let webview = WebViewBuilder::new()
+            .with_incognito(crate::comparison::policy().enabled())
             .with_visible(false)
             .with_focused(false)
             // A real viewport: rows that never get a layout may render empty.
@@ -124,6 +127,7 @@ impl NativePage {
             .with_url(url)
             .build_as_child(window)
             .map_err(|error| error.to_string())?;
+        verify_comparison_store(&webview)?;
         {
             // A page nobody sees must never save a file.
             use wry::WebViewExtMacOS;
@@ -765,17 +769,38 @@ pub fn pointer(_: &gpui::Window) -> Option<gpui::Point<f32>> {
     None
 }
 
+fn verify_comparison_store(webview: &WebView) -> Result<(), String> {
+    if crate::comparison::policy().enabled() {
+        use wry::WebViewExtMacOS;
+        // SAFETY: the newly created view and its configuration are live on the main thread.
+        let persistent = unsafe {
+            webview
+                .webview()
+                .configuration()
+                .websiteDataStore()
+                .isPersistent()
+        };
+        if persistent {
+            return Err("Comparison page unexpectedly selected a persistent website store".into());
+        }
+    }
+    Ok(())
+}
+
 fn allowed_url(url: &str) -> bool {
-    url.split_once(':').is_some_and(|(scheme, _)| {
-        scheme.eq_ignore_ascii_case("http")
-            || scheme.eq_ignore_ascii_case("https")
-            || scheme.eq_ignore_ascii_case("about")
-    })
+    crate::comparison::policy().allows_url(url)
+        && url.split_once(':').is_some_and(|(scheme, _)| {
+            scheme.eq_ignore_ascii_case("http")
+                || scheme.eq_ignore_ascii_case("https")
+                || scheme.eq_ignore_ascii_case("about")
+        })
 }
 
 fn check_url(url: &str) -> Result<(), String> {
     if allowed_url(url) {
         Ok(())
+    } else if crate::comparison::policy().enabled() {
+        Err("Comparison navigation is limited to literal loopback HTTP(S) and about:blank".into())
     } else {
         Err("Only http, https, and about navigation is allowed".into())
     }

@@ -1,5 +1,8 @@
 use std::{path::PathBuf, process::Command};
 
+#[path = "src/engine_build.rs"]
+pub mod engine_build;
+
 fn git(args: &[&str]) -> Option<String> {
     let output = Command::new("git").args(args).output().ok()?;
     output
@@ -51,6 +54,11 @@ fn build_version() -> Result<String, String> {
 
 fn main() -> Result<(), String> {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/engine_build.rs");
+    engine_build::validate(
+        &std::env::var("CARGO_CFG_TARGET_OS").map_err(|error| error.to_string())?,
+        &engine_build::compiled_ids(),
+    )?;
     println!("cargo:rerun-if-env-changed=FELINAUT_RELEASE_VERSION");
     println!(
         "cargo:rustc-env=FELINAUT_BUILD_VERSION={}",

@@ -5,8 +5,14 @@
 #[path = "../src/audio.rs"]
 mod audio;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/comparison.rs"]
+mod comparison;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/downloads.rs"]
 mod downloads;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/engine_build.rs"]
+mod engine_build;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/icons.rs"]
 mod icons;

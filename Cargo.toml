@@ -6,17 +6,30 @@ description = "A lightweight Rust browser with GPUI chrome and native WebKit pag
 license = "MIT"
 default-run = "felinaut"
 
+[features]
+default = ["engine-webkit-system"]
+engine-webkit-system = ["_cocoa-webkit"]
+engine-webkit-upstream = ["_cocoa-webkit"]
+_cocoa-webkit = ["dep:wry", "dep:objc2-web-kit"]
+# Explicit requests fail in build.rs until real adapters pass their native gates.
+engine-cef = []
+engine-gecko = []
+engine-servo = []
+engine-ladybird = []
+engine-ultralight = []
+engine-wpe = []
+
 [dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"] }
-wry = { version = "=0.57.1", default-features = false, features = [
-    "os-webview",
-] }
 url = "2.5"
 unicode-segmentation = "1.12"
 # Already used by GPUI; the agent control socket speaks JSON lines.
 serde_json = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+wry = { version = "=0.57.1", optional = true, default-features = false, features = [
+    "os-webview",
+] }
 # Already used by Wry; read the live native Reduce Motion setting without polling a subprocess,
 # and the pointer position while it is over a native page (sidebar edge peek).
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
@@ -53,7 +66,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSURLRequest",
     "NSURLResponse",
 ] }
-objc2-web-kit = { version = "0.3.2", default-features = false, features = [
+objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, features = [
     "std",
     "block2",
     "objc2-app-kit",
@@ -67,6 +80,7 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = [
 [[test]]
 name = "native_webview"
 harness = false
+required-features = ["engine-webkit-system"]
 
 [[test]]
 name = "brand_ui"
@@ -75,6 +89,7 @@ harness = false
 [[test]]
 name = "native_audio"
 harness = false
+required-features = ["engine-webkit-system"]
 
 [profile.dev]
 debug = 0

@@ -16,7 +16,14 @@ class BuildMetadataTests(unittest.TestCase):
         cls.workspace = tempfile.TemporaryDirectory()
         cls.binary = Path(cls.workspace.name) / "build-metadata"
         subprocess.run(
-            ["rustc", "--edition=2024", str(ROOT / "build.rs"), "-o", str(cls.binary)],
+            [
+                "rustc",
+                "--edition=2024",
+                '--cfg=feature="engine-webkit-system"',
+                str(ROOT / "build.rs"),
+                "-o",
+                str(cls.binary),
+            ],
             check=True,
             env=cls.build_env({"CARGO_PKG_VERSION": None}),
             timeout=60,
@@ -59,6 +66,7 @@ class BuildMetadataTests(unittest.TestCase):
         env["GIT_CONFIG_GLOBAL"] = os.devnull
         env.pop("FELINAUT_RELEASE_VERSION", None)
         env["CARGO_PKG_VERSION"] = "0.1.0"
+        env["CARGO_CFG_TARGET_OS"] = "macos"
         for key, value in (overrides or {}).items():
             if value is None:
                 env.pop(key, None)

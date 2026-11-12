@@ -4,9 +4,11 @@ mod appearance;
 mod art;
 mod audio;
 mod brand;
+mod comparison;
 mod download_panel;
 mod downloads;
 mod engine;
+mod engine_build;
 mod history;
 mod icons;
 mod input;
@@ -4133,11 +4135,12 @@ impl Render for Browser {
                                     .whitespace_nowrap()
                                     .child(status),
                             )
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .child(format!("FELINAUT  /  {DISPLAY_VERSION}")),
-                            ),
+                            .child(div().flex_shrink_0().child(
+                                comparison::policy().label().map_or_else(
+                                    || format!("FELINAUT  /  {DISPLAY_VERSION}"),
+                                    str::to_owned,
+                                ),
+                            )),
                     ),
             )
     }
@@ -4173,6 +4176,40 @@ fn open_links(window: WindowHandle<Browser>, cx: &mut impl AppContext, urls: Vec
 }
 
 fn main() {
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.iter().any(|arg| arg == "--list-engines") {
+        if arguments.len() != 1 {
+            eprintln!("Usage: felinaut --list-engines");
+            std::process::exit(2);
+        }
+        let compiled = engine_build::compiled_ids();
+        let engines: Vec<_> = engine_build::BACKENDS
+            .iter()
+            .map(|backend| {
+                serde_json::json!({
+                    "id": backend.id,
+                    "feature": backend.feature,
+                    "family": backend.family,
+                    "built": compiled.contains(&backend.id),
+                    "adapter_implemented": backend.adapter_implemented,
+                    "requires_isolated_launcher": backend.requires_isolated_launcher,
+                    "limitation": backend.limitation,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({"schema_version": 1, "engines": engines})
+        );
+        return;
+    }
+    if let Err(error) = engine_build::validate(std::env::consts::OS, &engine_build::compiled_ids())
+        .and_then(|()| comparison::initialize())
+        .and_then(|()| comparison::policy().verify_runtime(&page::backend_info()))
+    {
+        eprintln!("Felinaut backend launch refused: {error}");
+        std::process::exit(1);
+    }
     let handoff = Rc::new(RefCell::new(UrlHandoff::default()));
     let opener = handoff.clone();
     let app = Application::new().with_assets(brand::BrandAssets);
