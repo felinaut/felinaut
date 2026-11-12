@@ -44,7 +44,7 @@ pub fn open(cx: &mut App) {
         cx.global_mut::<SettingsWindow>().handle = None;
     }
 
-    let bounds = Bounds::centered(None, size(px(460.), px(620.)), cx);
+    let bounds = Bounds::centered(None, size(px(460.), px(760.)), cx);
     match cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -197,6 +197,7 @@ impl Render for Settings {
         let p = theme::palette(cx);
         let settings = cx.global::<ThemeSettings>();
         let (search, language) = (settings.search, settings.language);
+        let native_full_screen = settings.native_full_screen;
         let launch = cx
             .try_global::<LaunchLanguage>()
             .map_or(language, |launch| launch.0);
@@ -266,6 +267,26 @@ impl Render for Settings {
                             ),
                     )
                 }),
+            )
+            .child(
+                section(p, "FULL SCREEN", "What ⌃⌘F does.").children(
+                    choice_rows(&[true, false], native_full_screen)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (native, active))| {
+                            let label = if native {
+                                "Use native full screen"
+                            } else {
+                                "Fill the current desktop"
+                            };
+                            choice_row(p, "full-screen", index, label, active, move |cx| {
+                                cx.update_global::<ThemeSettings, _>(|settings, _| {
+                                    settings.native_full_screen = native;
+                                    settings.save();
+                                })
+                            })
+                        }),
+                ),
             )
     }
 }

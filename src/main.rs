@@ -343,6 +343,47 @@ struct ActivateTab(usize);
 #[action(namespace = felinaut, no_json)]
 struct Zoom(i8);
 const LAST_TAB: usize = usize::MAX;
+actions!(felinaut, [ToggleFullScreen]);
+
+/// The menus with View's full screen item named for `full_screen`, or `None` if it already is.
+fn full_screen_menus(menus: Vec<OwnedMenu>, full_screen: bool) -> Option<Vec<Menu>> {
+    let label = if full_screen {
+        "Exit Full Screen"
+    } else {
+        "Enter Full Screen"
+    };
+    let mut changed = false;
+    fn rebuild(menu: OwnedMenu, label: &'static str, changed: &mut bool) -> Menu {
+        let items = menu.items.into_iter().map(|item| match item {
+            OwnedMenuItem::Action {
+                name,
+                action,
+                os_action,
+            } => {
+                let toggle = action.partial_eq(&ToggleFullScreen) && name != label;
+                *changed |= toggle;
+                let name = if toggle { label.into() } else { name.into() };
+                MenuItem::Action {
+                    name,
+                    action,
+                    os_action,
+                }
+            }
+            OwnedMenuItem::Separator => MenuItem::Separator,
+            OwnedMenuItem::Submenu(menu) => MenuItem::Submenu(rebuild(menu, label, changed)),
+            OwnedMenuItem::SystemMenu(menu) => MenuItem::os_submenu(menu.name, menu.menu_type),
+        });
+        Menu {
+            name: menu.name,
+            items: items.collect(),
+        }
+    }
+    let menus = menus
+        .into_iter()
+        .map(|menu| rebuild(menu, label, &mut changed))
+        .collect();
+    changed.then_some(menus)
+}
 
 struct Tab {
     id: u64,
@@ -708,6 +749,14 @@ impl Browser {
         // key); only a real move or resize should close the list.
         let mut last_bounds = window.bounds();
         let bounds_observer = cx.observe_window_bounds(window, move |this, window, cx| {
+            // Native full screen and filling the screen both resize the window.
+            if window.is_window_active()
+                && let Some(menus) = cx.get_menus().and_then(|menus| {
+                    full_screen_menus(menus, window.is_fullscreen() || webview::is_filled(window))
+                })
+            {
+                cx.set_menus(menus);
+            }
             let bounds = window.bounds();
             if bounds != last_bounds {
                 last_bounds = bounds;
@@ -756,7 +805,9 @@ impl Browser {
         })
         .detach();
         let weak = cx.weak_entity();
-        window.on_window_should_close(cx, move |_, cx| {
+        window.on_window_should_close(cx, move |window, cx| {
+            // Brings back the menu bar and Dock if the window fills the screen.
+            webview::fill_screen(window, cx, false, false);
             // Otherwise the dropdown outlives us and the app never quits.
             suggestions::close(cx);
             let _ = weak.update(cx, |this, _| {
@@ -4317,6 +4368,13 @@ impl Render for Browser {
             }))
             .on_action(cx.listener(Self::forget_certificate_exceptions))
             .on_action(cx.listener(Self::explain_not_secure))
+            .on_action(|_: &ToggleFullScreen, window, cx| {
+                let fill = !cx.global::<ThemeSettings>().native_full_screen;
+                let animate = theme::motion_allowed(cx);
+                if window.is_fullscreen() || !webview::fill_screen(window, cx, fill, animate) {
+                    window.toggle_fullscreen()
+                }
+            })
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(
@@ -4646,6 +4704,7 @@ fn main() {
             KeyBinding::new("cmd-g", Find(1), None),
             KeyBinding::new("cmd-shift-g", Find(-1), None),
             KeyBinding::new("shift-enter", FindPreviousFromBar, Some("FindBar")),
+            KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
         ]);
         // Native menu equivalents remain available while WKWebView owns keyboard focus.
         cx.set_menus(vec![
@@ -4705,6 +4764,7 @@ fn main() {
                     MenuItem::action("Actual Size", Zoom(0)),
                     MenuItem::separator(),
                     MenuItem::action("Developer Tools", DevTools),
+                    MenuItem::action("Enter Full Screen", ToggleFullScreen),
                 ])
                 .collect(),
             },
@@ -4767,8 +4827,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        FETCH_TIMEOUT, FindRequest, Tab, drop_index, live_refresh_can_poll, live_refresh_result,
-        restore_tabs, session::SavedTab,
+        FETCH_TIMEOUT, FindRequest, Menu, MenuItem, OwnedMenuItem, Tab, ToggleFullScreen, Zoom,
+        drop_index, full_screen_menus, live_refresh_can_poll, live_refresh_result, restore_tabs,
+        session::SavedTab,
     };
     use std::time::{Duration, Instant};
 
@@ -4873,6 +4934,50 @@ mod tests {
 
     fn failed(url: &str) -> super::LoadFailure {
         super::load_error::failure("NSURLErrorDomain", -1003, url, "Not found").unwrap()
+    }
+
+    #[test]
+    fn full_screen_menu_item_is_renamed_only_when_it_changes() {
+        let menus = || {
+            let items = vec![
+                MenuItem::action("Zoom In", Zoom(1)),
+                MenuItem::separator(),
+                MenuItem::action("Enter Full Screen", ToggleFullScreen),
+            ];
+            let view = Menu {
+                name: "View".into(),
+                items,
+            };
+            let items = vec![MenuItem::submenu(view)];
+            vec![
+                Menu {
+                    name: "App".into(),
+                    items,
+                }
+                .owned(),
+            ]
+        };
+        let names = |menus: Vec<Menu>| {
+            let Some(OwnedMenuItem::Submenu(view)) =
+                menus.into_iter().next().unwrap().owned().items.pop()
+            else {
+                panic!()
+            };
+            view.items
+                .into_iter()
+                .map(|item| match item {
+                    OwnedMenuItem::Action { name, .. } => name,
+                    _ => "-".into(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(full_screen_menus(menus(), false).is_none());
+        let exit = full_screen_menus(menus(), true).unwrap();
+        assert_eq!(names(exit), ["Zoom In", "-", "Exit Full Screen"]);
+        let exit = full_screen_menus(menus(), true).unwrap();
+        let exit = exit.into_iter().map(Menu::owned).collect();
+        assert!(full_screen_menus(exit, true).is_none());
+        assert!(full_screen_menus(Vec::new(), true).is_none());
     }
 
     #[test]

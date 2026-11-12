@@ -212,6 +212,8 @@ pub struct ThemeSettings {
     pub search: SearchEngine,
     /// The language asked of websites and search engines, chosen in Settings (⌘,).
     pub language: WebLanguage,
+    /// ⌃⌘F opens a new Space; otherwise it fills the current desktop.
+    pub native_full_screen: bool,
 }
 
 pub const SIDEBAR_MIN: f32 = 200.;
@@ -228,6 +230,7 @@ impl Default for ThemeSettings {
             sidebar_width: 240.,
             search: SearchEngine::default(),
             language: WebLanguage::default(),
+            native_full_screen: true,
         }
     }
 }
@@ -253,6 +256,7 @@ impl ThemeSettings {
                 }
                 ("animate", value) => settings.animate = value != "false",
                 ("sidebar", value) => settings.sidebar = value != "false",
+                ("native_full_screen", value) => settings.native_full_screen = value != "false",
                 ("sidebar_width", value) => {
                     if let Ok(width) = value.parse::<f32>()
                         && width.is_finite()
@@ -285,14 +289,15 @@ impl ThemeSettings {
 
     pub fn serialize(&self) -> String {
         format!(
-            "theme={}\nanimate={}\naddress={}\nsidebar={}\nsidebar_width={:.0}\nsearch={}\nlanguage={}\n",
+            "theme={}\nanimate={}\naddress={}\nsidebar={}\nsidebar_width={:.0}\nsearch={}\nlanguage={}\nnative_full_screen={}\n",
             self.theme.key(),
             self.animate,
             self.address.key(),
             self.sidebar,
             self.sidebar_width,
             self.search.key(),
-            self.language.key()
+            self.language.key(),
+            self.native_full_screen
         )
     }
 
@@ -369,12 +374,18 @@ mod tests {
             sidebar_width: 312.4,
             search: SearchEngine::Ecosia,
             language: WebLanguage::French,
+            native_full_screen: false,
         };
         let text = settings.serialize();
         assert_eq!(
             text,
-            "theme=alpine-pop\nanimate=false\naddress=domain\nsidebar=false\nsidebar_width=312\nsearch=ecosia\nlanguage=fr\n"
+            "theme=alpine-pop\nanimate=false\naddress=domain\nsidebar=false\nsidebar_width=312\nsearch=ecosia\nlanguage=fr\nnative_full_screen=false\n"
         );
+        assert!(!ThemeSettings::parse(&text).native_full_screen);
+        let older =
+            "theme=alpine-pop\nanimate=false\naddress=domain\nsidebar=false\nsidebar_width=312\n";
+        assert!(ThemeSettings::parse(older).native_full_screen);
+        assert!(ThemeSettings::parse("native_full_screen=yes").native_full_screen);
         assert_eq!(ThemeSettings::parse(&text).sidebar_width, 312.);
         for (text, width) in [("sidebar_width=10", 200.), ("sidebar_width=9999", 400.)] {
             assert_eq!(ThemeSettings::parse(text).sidebar_width, width);
