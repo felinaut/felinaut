@@ -347,6 +347,42 @@ impl Browser {
         cx.notify();
     }
 
+    /// Agent control's `permissions`: the request on display, the active site's stored
+    /// decisions and the active tab's capture, after an answer or a reset if asked. An agent
+    /// can refuse, block and reset. It cannot allow: only the user grants.
+    pub(crate) fn agent_permissions(
+        &mut self,
+        command: &serde_json::Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<serde_json::Value, String> {
+        let choice = match command["answer"].as_str() {
+            None => None,
+            Some("deny") => Some(Choice::NotNow),
+            Some("block") => Some(Choice::Never),
+            Some(_) => return Err("An agent can only deny or block a request".into()),
+        };
+        if let Some(choice) = choice {
+            if self.permission_prompt.is_none() {
+                return Err("No site asks for a permission".into());
+            }
+            self.choose(choice, window, cx);
+        }
+        if command["reset"].as_bool() == Some(true) {
+            self.reset_site_permissions(&ResetSitePermissions, window, cx);
+        }
+        let (camera, microphone) = self.tabs[self.active].capture;
+        Ok(serde_json::json!({
+            "request": self.permission_prompt.as_ref().map(|prompt| serde_json::json!({
+                "origin": prompt.request.origin,
+                "wants": permissions::describe(prompt.request.kinds),
+            })),
+            "site": self.active_origin().and_then(|origin| self.permissions.summary(&origin)),
+            "camera": camera,
+            "microphone": microphone,
+        }))
+    }
+
     /// A tab's camera or microphone icon while its page captures. A click stops the capture.
     pub(crate) fn capture_control(
         &self,

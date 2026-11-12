@@ -1207,6 +1207,7 @@ impl Browser {
                 }
                 download_panel::agent(&mut self.downloads, command)
             }
+            "permissions" => self.agent_permissions(command, window, cx),
             "navigate" => {
                 self.navigate(command["url"].as_str().unwrap_or_default(), window, cx);
                 let tab = &self.tabs[self.active];

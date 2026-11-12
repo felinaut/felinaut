@@ -236,6 +236,7 @@ cargo run --bin felinaut-ctl -- snapshot   # or: target/debug/felinaut-ctl snaps
 | `eval <expression>`                                 | Evaluate one JavaScript expression                                                |
 | `screenshot [path]`                                 | Save WebKit's own PNG snapshot of the page                                        |
 | `downloads`, `downloads show`, `downloads cancel <id>` | List the downloads (name, state, bytes, path), open or close the list, or stop a running download |
+| `permissions`, `permissions deny`, `permissions block`, `permissions reset` | Show the camera or microphone request of the active tab, refuse it once or for each later time, or stop the use and forget the site's decisions. There is no command that allows a request |
 
 `click`, `type` and `press` send synthetic JavaScript events by default. Some sites ignore these events (`isTrusted` is false). Add `--native` to send a real mouse or keyboard event to the WKWebView.
 

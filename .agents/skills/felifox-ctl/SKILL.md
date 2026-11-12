@@ -63,6 +63,9 @@ The references are valid only until the next snapshot. A snapshot does not show 
 | `downloads` | Lists the downloads as JSON: id, name, host, state (`running`, `done`, `failed`, `cancelled`, `interrupted`), received, total, path |
 | `downloads show` | Opens or closes the downloads list |
 | `downloads cancel <id>` | Stops a running download and deletes its partial file |
+| `permissions` | Shows the camera or microphone request of the active tab, the stored decisions of its site, and what the tab uses now |
+| `permissions deny` / `permissions block` | Refuses the request this time, or for each later time. No command allows a request: only the user can. |
+| `permissions reset` | Stops the use and forgets the decisions of the active site |
 
 The exit status is 0 on success and 1 on an error. The error text goes to stderr.
 
