@@ -159,6 +159,21 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 
 **Testing:** open https://webauthn.io, enter any user name and click **Register**; macOS should show its passkey sheet (Touch ID or the account password) and the site should then **Authenticate** with the new passkey. For Gmail, open https://accounts.google.com, enter the address and choose **Try another way → Use your passkey** (or let the conditional-UI prompt appear in the address field) with a passkey that already exists in iCloud Keychain. Until the entitlement is granted both report that no passkey is available; the Google sign-in page falls back to the password.
 
+## Cookies and staying signed in
+
+**Sign-ins survive a restart when the site's cookie has an expiry.** Felinaut's pages (and the hidden live-folder page) use WebKit's default, persistent website data store, and WebKit writes its cookies to disk itself. Measured with a loopback server in a development build on macOS 26: a cookie with `Max-Age` came back after a normal quit, after a quit within a second of being set, and after `kill -9`; a cookie without `Expires`/`Max-Age` (a session cookie) did not. That second part is by design: session cookies end when the browser quits. Felinaut does not keep them, so a site that signs you in with a session cookie (often when "Remember me" is off) asks again after a restart, even though the tab is restored. WebKit also caps long lifetimes (the fixture's two-year cookie was stored with 400 days).
+
+Two things are separate from persistence. A site can refuse or limit sign-in in an embedded WebKit view: Felinaut sends WebKit's default user agent, which lacks Safari's `Version/… Safari/…` token (untested against Google; passkeys are covered above). And each build has its own storage: WebKit keys it by bundle identifier, or by executable name for an unbundled `cargo run` binary, so the packaged app and a development build do not share sign-ins.
+
+**The Cookies window** (`⌥⌘K`, **Felinaut → Cookies…**) reads the same store through `WKHTTPCookieStore`:
+
+- An interactive graph: **All cookies → site → host → cookie**, with a cookie count on every branch and a domain filter. [egui_graphs](https://github.com/blitzarx1/egui_graphs) lays it out with a force-directed simulation; a store of up to 60 nodes opens fully, a larger one starts with its sites closed, and one with more than 200 sites as the root alone (a ring marks a closed branch). The simulation compares every pair of nodes, so thousands of open nodes animate slowly. Click a node to select it and open it, and again to close it. Drag a node to move it, drag the background to pan, scroll to zoom; **Fit** brings the whole graph back into view. `↑ ↓` move the selection through the tree, `← →` close and open, Return toggles, `⌘F` goes to the filter, `⌘R` or **Refresh** reads the store again (it also refreshes whenever the window becomes active). The layout moves only while the window is active; with Reduce Motion, or **Animate artwork** off, it settles at once instead.
+- Selecting a cookie shows its name, host (and whether subdomains get it), path, expiry or "Session", Secure, HttpOnly and SameSite. **The value stays hidden until you click Reveal.** Selecting a branch shows its totals.
+- **Delete** works at every level: one cookie at once; a host, a site or everything after one confirmation that names how many cookies go. `⌘⌫` deletes the selection, Return confirms, Escape cancels. With a filter on, only the cookies shown are deleted. Deleting a site's cookies signs you out there.
+- Sites are grouped by a small heuristic, not the Public Suffix List: the last two labels of the host, or three for common country registries (`bbc.co.uk`). Hosts under a shared suffix such as `github.io` therefore appear as one site. This only affects grouping; a delete removes exactly the listed cookies.
+
+Felinaut stores no cookie data of its own, logs none, and agent control (`felinaut-ctl`) has no cookie command. WebKit keeps the cookies in `~/Library/HTTPStorages/io.github.casaroli.felifox.binarycookies` (`felinaut.binarycookies` for a development binary) and other website data in `~/Library/WebKit/` under the same name. To clear cookies, select **All cookies** in the Cookies window and delete; local storage and caches are not shown there.
+
 ## Controls
 
 - Native address input with Unicode, IME, selection and clipboard.
@@ -176,6 +191,7 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 - Native menus keep browser shortcuts available while the webview has focus.
 - **Per-tab volume** from 0 % to 600 %, with mute and sound presets (see below).
 - **Downloads** are saved to `~/Downloads` and listed under the toolbar's **↓** button, with progress, cancel, open and show in Finder (see below).
+- **Cookies window** (`⌥⌘K`, or **Felinaut → Cookies…**): every stored cookie in a site → host → cookie graph, with details and delete at each level (see [Cookies and staying signed in](#cookies-and-staying-signed-in)).
 
 | Shortcut         | Action                                                          |
 | ---------------- | --------------------------------------------------------------- |
@@ -191,6 +207,7 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | `⌘⇧J`            | Show / hide the downloads list                                  |
 | `⌘S`             | Show / hide the tab sidebar (remembered)                        |
 | `⌘D`             | Pin / unpin active tab                                          |
+| `⌥⌘K`            | Open the Cookies window                                         |
 | `⌘1`–`⌘8` / `⌘9` | Go to tab 1–8 / last tab                                        |
 | `⌃Tab` / `⌃⇧Tab` | Next / previous tab (also `⌘⇧]` / `⌘⇧[`)                        |
 | `⌘Q`             | Quit                                                            |
@@ -306,6 +323,7 @@ Keep it small: no bookmarks manager, extensions, permission UI, tracker-blocker 
 - Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
 - This is an early browser shell, not a security-audited Safari replacement. WebKit's engine security updates come from macOS updates.
+- Cookies persist in WebKit's own store and can be inspected and deleted in the Cookies window; session cookies are not kept across a restart (see [Cookies and staying signed in](#cookies-and-staying-signed-in)).
 - Only macOS is configured and tested. Windows and Linux backends are not configured.
 
 ## Validate
@@ -321,11 +339,15 @@ FELINAUT_NATIVE_TEST=1 cargo test --test native_webview
 FELINAUT_NATIVE_TEST=1 cargo test --test brand_ui
 # Per-tab audio in real WebKit (plays a quiet tone from two loopback origins):
 FELINAUT_NATIVE_TEST=1 cargo test --test native_audio
+# Cookie persistence across a restart, and the Cookies window against real WebKit (loopback only):
+FELINAUT_NATIVE_TEST=1 cargo test --test native_cookies
 ```
 
 Add `-F gpui/runtime_shaders` to these commands on machines without full Xcode.
 
 The native webview test verifies actual WebKit JavaScript execution, DOM title changes, localStorage, native history, URL polling of a tab whose host never resolved, and injected DOM-event handling for hover, Cmd-click, middle-click and the right-click menu. It also downloads a loopback attachment whose name points outside the downloads folder (into a temporary home, never the real `~/Downloads`) and checks that the file stays inside it and that a hidden page's download is refused. The brand UI test also verifies that the actual artwork timer advances when enabled and stops when disabled (or when macOS Reduce Motion applies). Geometry tests cover distinct scenes, tessellation and changes over time for all six themes. Native tests use programmatically dispatched DOM events or shared UI handlers, not physical mouse automation. It is skipped by default because WebKit needs a macOS desktop session and main-thread event loop.
+
+The native cookie test runs itself twice as a child process: the first sets cookies from two loopback hosts, checks that the Cookies window lists them, that the menu action reuses the one window, that a site is only deleted after the confirmation and that a single cookie is deleted at once; the second, a fresh process, must get the cookie with an expiry back and not the session cookie. It uses the test binary's own WebKit storage, not Felinaut's, and removes its cookies afterwards.
 
 ## Source
 
@@ -344,8 +366,14 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/brand.rs` and `assets/`: embedded original SVG mascot, symbol and monochrome UI icons.
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.
+- `src/cookies.rs`: the cookie tree model: grouping by site and host, visible rows, filtering, subtree deletion, totals.
+- `src/cookie_store.rs`: reads and deletes cookies in WebKit's default data store (`WKHTTPCookieStore`).
+- `src/cookie_graph.rs`: the cookie tree as an `egui_graphs` graph: node and edge shapes, force-directed layout, sync with the model's visible rows.
+- `src/egui_host.rs`: runs egui inside a GPUI element. egui computes shapes from pointer input; GPUI paints them and draws all text. No second window toolkit or renderer is involved.
+- `src/cookie_window.rs`: the Cookies window.
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.
 - `tests/native_audio.rs`: opt-in WebKit check of audio routing, cross-origin fallback and reset.
+- `tests/native_cookies.rs`: opt-in check of cookie persistence across a restart and of the Cookies window's list and delete.
 
 Felinaut source is MIT licensed. Dependencies retain their own licenses, including GPUI (Apache-2.0) and Wry (Apache-2.0 OR MIT).

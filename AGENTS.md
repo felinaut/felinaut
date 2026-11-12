@@ -9,6 +9,8 @@ Felinaut is a small macOS browser: Rust edition 2024, GPUI 0.2.2 chrome, and Wry
 - `src/live.rs`, `src/live/`: live-folder model and declarative integrations.
 - `src/session.rs`, `src/history.rs`, `src/theme.rs`: persisted state and preferences.
 - `src/downloads.rs`, `src/downloads/native.rs`, `src/download_panel.rs`: download list model and file naming, the WebKit download delegate, and the list popover.
+- `src/cookies.rs`, `src/cookie_store.rs`, `src/cookie_window.rs`: cookie tree model, WebKit cookie store access, and the Cookies window.
+- `src/cookie_graph.rs`, `src/egui_host.rs`: the cookie graph (`egui_graphs`) and the egui pass that GPUI paints. egui only computes shapes there; do not add an egui window, renderer or fonts.
 - `src/agent.rs`, `tools/`: local browser automation and distribution tools.
 - `scripts/package_macos.py`: app bundle, signing, and interactive DMG packaging.
 
@@ -38,6 +40,7 @@ Use `-F gpui/runtime_shaders` for browser checks if full Xcode/Metal is unavaila
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_webview
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test brand_ui
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_audio
+FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_cookies
 ```
 
 Never claim native tests ran just because the default skipped harness exited successfully. Use the browser-control skill (`felifox-ctl`, the retained skill identifier; its executable is now `felinaut-ctl`) when validating the real browser; do not operate logged-in services or mutate user data unnecessarily.

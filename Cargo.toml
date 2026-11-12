@@ -15,6 +15,11 @@ url = "2.5"
 unicode-segmentation = "1.12"
 # Already used by GPUI; the agent control socket speaks JSON lines.
 serde_json = "1"
+# The cookie graph. egui_graphs is an egui widget, so egui's core runs inside one GPUI element
+# (src/egui_host.rs): no fonts, no window backend, no renderer. petgraph names its node indices.
+egui = { version = "0.36", default-features = false }
+egui_graphs = "0.32"
+petgraph = { version = "0.8", default-features = false, features = ["stable_graph"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Already used by Wry; read the live native Reduce Motion setting without polling a subprocess,
@@ -40,10 +45,14 @@ block2 = "0.6"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "objc2-core-foundation",
+    # The Cookies window reads WebKit's cookie store.
+    "NSArray",
     "NSData",
+    "NSDate",
     "NSDictionary",
     "NSError",
     "NSGeometry",
+    "NSHTTPCookie",
     "NSProcessInfo",
     # Downloads: the destination, the response's length and byte progress.
     "NSProgress",
@@ -62,6 +71,9 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = [
     # Felinaut is its own download delegate, for progress and cancelling.
     "WKDownload",
     "WKDownloadDelegate",
+    # The Cookies window: the data store the pages use, and its cookies.
+    "WKHTTPCookieStore",
+    "WKWebsiteDataStore",
 ] }
 
 [[test]]
@@ -74,6 +86,10 @@ harness = false
 
 [[test]]
 name = "native_audio"
+harness = false
+
+[[test]]
+name = "native_cookies"
 harness = false
 
 [profile.dev]
