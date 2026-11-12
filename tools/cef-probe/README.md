@@ -74,6 +74,18 @@ Acquired/verified on this host: **134,979,837 compressed bytes**, **353,085,527 
 
 Read-only signature inspection found linker-generated ad-hoc signatures without Team IDs. Sandbox-dylib strict verification passed; framework-bundle strict verification failed with “code has no resources but signature indicates they must be present.” No binaries/signatures/xattrs or system protections were changed. This is not a signed distribution package or permission to bypass a runtime failure. CEF has not been loaded or launched by the acquisition step.
 
+## Isolated helper and developer bundle
+
+The standalone workspace includes `felinaut-cef-probe-helper`, with no GPUI or Wry dependency. Its pinned CEF/sys pair uses sandbox support. It validates its child-process arguments and bundle layout, initializes the CEF sandbox before dynamically loading the framework, negotiates the API hash and executes the child role. Sandbox-bypass switches are refused; initialization requests alone do not establish effective confinement.
+
+```sh
+# Set CEF_PATH to the exact absolute path printed by prepare_runtime.py.
+cargo build --locked --manifest-path tools/cef-probe/Cargo.toml --target-dir target -p felinaut-cef-probe-helper
+python3 tools/cef-probe/bundle_probe.py --help
+```
+
+`bundle_probe.py` performs explicit, offline assembly only beneath ignored `target/`, refusing existing destinations and redirected inputs. It verifies the prepared SDK, thin arm64 executable headers, copied hashes, framework links, all five CEF helper layouts and bundled license/credits files. It preserves framework bytes/signatures and performs no signing, installation, security changes or launch. Preparation/bundling behavioral tests cover invalid and hostile inputs as well as success; helper tests cover role arguments and sandbox-bypass rejection.
+
 ## Not proved yet
 
 No actual `CefAppProtocol` conformance, framework load, CEF initialization/pumping, helper sandbox, page rendering, input/IME, resize, WebKit coexistence, per-tab selection, packaging or distribution support is established by these SDK-free lifecycle/scheduler checks. A separately built official CEF example would not by itself prove GPUI coexistence either.
