@@ -15,6 +15,11 @@ url = "2.5"
 unicode-segmentation = "1.12"
 # Already used by GPUI; the agent control socket speaks JSON lines.
 serde_json = "1"
+# The cookie graph. egui_graphs is an egui widget, so egui's core runs inside one GPUI element
+# (src/egui_host.rs): no fonts, no window backend, no renderer. petgraph names its node indices.
+egui = { version = "0.36", default-features = false }
+egui_graphs = "0.32"
+petgraph = { version = "0.8", default-features = false, features = ["stable_graph"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Already used by Wry; read the live native Reduce Motion setting without polling a subprocess,

@@ -166,7 +166,7 @@ pub struct Tree {
     pub sites: Vec<Site>,
 }
 
-/// One drawn line of the tree. `rails` and `last` describe the connecting lines.
+/// One visible node of the tree, in top-to-bottom order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub node: Node,
@@ -179,11 +179,8 @@ pub struct Row {
     pub count: usize,
     /// `None` for a cookie, which has nothing to expand.
     pub expanded: Option<bool>,
-    /// For each ancestor below the root, whether its vertical line continues past this row
-    /// (that ancestor has a later sibling).
-    pub rails: Vec<bool>,
-    /// The last child of its parent: its connector is an elbow, not a tee.
-    pub last: bool,
+    /// The index of the parent's row; `None` for the root. The graph draws an edge to it.
+    pub parent: Option<usize>,
 }
 
 /// What the details panel says about a branch.
@@ -344,6 +341,28 @@ impl Tree {
         }
     }
 
+    /// What to open at first. The root opens while there are at most `site_limit` sites to
+    /// show; every site, and then every host, opens as long as the number of visible nodes
+    /// stays within `limit`. A small store shows everything at once, a large one starts as
+    /// its sites, and a huge one as the root alone.
+    pub fn opened_within(&self, limit: usize, site_limit: usize) -> HashSet<Node> {
+        let sites = self.sites.len();
+        let hosts = self.hosts().count();
+        let mut open = HashSet::new();
+        if sites > site_limit {
+            return open;
+        }
+        open.insert(Node::All);
+        if 1 + sites + hosts > limit {
+            return open;
+        }
+        open.extend(self.sites.iter().map(|site| Node::Site(site.name.clone())));
+        if 1 + sites + hosts + self.count() <= limit {
+            open.extend(self.hosts().map(|host| Node::Host(host.name.clone())));
+        }
+        open
+    }
+
     /// The visible rows, top to bottom: a node's children follow it only while it is in
     /// `expanded`.
     pub fn rows(&self, expanded: &HashSet<Node>) -> Vec<Row> {
@@ -355,16 +374,15 @@ impl Tree {
             note: None,
             count: self.count(),
             expanded: Some(open(&Node::All)),
-            rails: Vec::new(),
-            last: true,
+            parent: None,
         }];
         if !open(&Node::All) {
             return rows;
         }
-        for (index, site) in self.sites.iter().enumerate() {
-            let last_site = index + 1 == self.sites.len();
+        for site in &self.sites {
             let node = Node::Site(site.name.clone());
             let site_open = open(&node);
+            let site_row = rows.len();
             rows.push(Row {
                 node,
                 depth: 1,
@@ -372,16 +390,15 @@ impl Tree {
                 note: None,
                 count: site.count(),
                 expanded: Some(site_open),
-                rails: Vec::new(),
-                last: last_site,
+                parent: Some(0),
             });
             if !site_open {
                 continue;
             }
-            for (index, host) in site.hosts.iter().enumerate() {
-                let last_host = index + 1 == site.hosts.len();
+            for host in &site.hosts {
                 let node = Node::Host(host.name.clone());
                 let host_open = open(&node);
+                let host_row = rows.len();
                 rows.push(Row {
                     node,
                     depth: 2,
@@ -389,13 +406,12 @@ impl Tree {
                     note: None,
                     count: host.cookies.len(),
                     expanded: Some(host_open),
-                    rails: vec![!last_site],
-                    last: last_host,
+                    parent: Some(site_row),
                 });
                 if !host_open {
                     continue;
                 }
-                for (index, cookie) in host.cookies.iter().enumerate() {
+                for cookie in &host.cookies {
                     rows.push(Row {
                         node: Node::Cookie(cookie.key()),
                         depth: 3,
@@ -403,8 +419,7 @@ impl Tree {
                         note: (cookie.path != "/").then(|| display(&cookie.path, 60)),
                         count: 1,
                         expanded: None,
-                        rails: vec![!last_site, !last_host],
-                        last: index + 1 == host.cookies.len(),
+                        parent: Some(host_row),
                     });
                 }
             }
@@ -753,63 +768,84 @@ mod tests {
     }
 
     #[test]
-    fn rows_follow_expansion_and_describe_their_connectors() {
+    fn rows_follow_expansion_and_point_at_their_parent() {
         let tree = Tree::build(&[
             cookie("a.example.com", "one"),
             cookie("a.example.com", "two"),
             cookie("example.com", "root"),
             cookie("other.org", "x"),
         ]);
-        let shape = |rows: &[Row]| -> Vec<(usize, String, usize, Vec<bool>, bool)> {
+        let shape = |rows: &[Row]| -> Vec<(usize, String, usize, Option<usize>)> {
             rows.iter()
-                .map(|row| {
-                    (
-                        row.depth,
-                        row.label.clone(),
-                        row.count,
-                        row.rails.clone(),
-                        row.last,
-                    )
-                })
+                .map(|row| (row.depth, row.label.clone(), row.count, row.parent))
                 .collect()
         };
-        let row = |depth, label: &str, count, rails: &[bool], last| {
-            (depth, label.to_string(), count, rails.to_vec(), last)
-        };
+        let row = |depth, label: &str, count, parent| (depth, label.to_string(), count, parent);
 
         assert_eq!(
             shape(&tree.rows(&HashSet::new())),
-            [row(0, "All cookies", 4, &[], true)]
+            [row(0, "All cookies", 4, None)]
         );
         assert_eq!(
             shape(&tree.rows(&HashSet::from([Node::All]))),
             [
-                row(0, "All cookies", 4, &[], true),
-                row(1, "example.com", 3, &[], false),
-                row(1, "other.org", 1, &[], true),
+                row(0, "All cookies", 4, None),
+                row(1, "example.com", 3, Some(0)),
+                row(1, "other.org", 1, Some(0)),
             ]
         );
         let rows = tree.rows(&all_open(&tree));
         assert_eq!(
             shape(&rows),
             [
-                row(0, "All cookies", 4, &[], true),
-                row(1, "example.com", 3, &[], false),
-                row(2, "example.com", 1, &[true], false),
-                row(3, "root", 1, &[true, true], true),
-                row(2, "a.example.com", 2, &[true], true),
-                row(3, "one", 1, &[true, false], false),
-                row(3, "two", 1, &[true, false], true),
-                row(1, "other.org", 1, &[], true),
-                row(2, "other.org", 1, &[false], true),
-                row(3, "x", 1, &[false, false], true),
+                row(0, "All cookies", 4, None),
+                row(1, "example.com", 3, Some(0)),
+                row(2, "example.com", 1, Some(1)),
+                row(3, "root", 1, Some(2)),
+                row(2, "a.example.com", 2, Some(1)),
+                row(3, "one", 1, Some(4)),
+                row(3, "two", 1, Some(4)),
+                row(1, "other.org", 1, Some(0)),
+                row(2, "other.org", 1, Some(7)),
+                row(3, "x", 1, Some(8)),
             ]
         );
+        // A parent always comes before its children, one level up.
+        for row in &rows[1..] {
+            let parent = &rows[row.parent.unwrap()];
+            assert_eq!(parent.depth + 1, row.depth);
+        }
         assert_eq!(rows[1].expanded, Some(true));
         assert_eq!(rows[3].expanded, None);
         // A host stays hidden while its site is closed, even if the host itself is open.
         let open = HashSet::from([Node::All, Node::Host("a.example.com".into())]);
         assert_eq!(tree.rows(&open).len(), 3);
+    }
+
+    #[test]
+    fn the_first_view_opens_as_much_as_fits() {
+        let tree = Tree::build(&[
+            cookie("a.example.com", "one"),
+            cookie("a.example.com", "two"),
+            cookie("example.com", "root"),
+            cookie("other.org", "x"),
+        ]);
+        // 1 root + 2 sites + 3 hosts + 4 cookies.
+        assert_eq!(tree.opened_within(10, 2), all_open(&tree));
+        assert_eq!(tree.rows(&tree.opened_within(10, 2)).len(), 10);
+        let sites_open = tree.opened_within(9, 2);
+        assert_eq!(tree.rows(&sites_open).len(), 6, "hosts shown, cookies not");
+        assert!(!sites_open.contains(&Node::Host("other.org".into())));
+        // Too many nodes for the hosts: the sites show, closed.
+        assert_eq!(tree.opened_within(5, 2), HashSet::from([Node::All]));
+        assert_eq!(tree.opened_within(0, 2), HashSet::from([Node::All]));
+        // Too many sites: the root alone, closed.
+        assert_eq!(tree.opened_within(10, 1), HashSet::new());
+        assert_eq!(tree.rows(&tree.opened_within(10, 1)).len(), 1);
+        assert_eq!(
+            Tree::default().opened_within(60, 0),
+            HashSet::from([Node::All])
+        );
     }
 
     #[test]

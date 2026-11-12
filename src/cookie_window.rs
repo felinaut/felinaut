@@ -1,24 +1,23 @@
-//! The Cookies window: WebKit's stored cookies as a site → host → cookie tree, with details
+//! The Cookies window: WebKit's stored cookies as a site → host → cookie graph, with details
 //! and delete at every level. One window, independently closable. The host calls `init`.
 //!
-//! The tree and every decision about it live in `cookies.rs`; this file draws its rows and
-//! asks `cookie_store.rs` for the real cookies. Cookie values stay hidden until revealed and
+//! The tree and every decision about it live in `cookies.rs`; `cookie_graph.rs` draws its
+//! visible rows as a graph, and this file asks `cookie_store.rs` for the real cookies. Cookie values stay hidden until revealed and
 //! are never logged or offered to agent control.
 
 use std::collections::HashSet;
-use std::ops::Range;
 use std::rc::Rc;
 use std::sync::mpsc::{self, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, Entity, FocusHandle, Focusable, Global, KeyBinding,
-    ScrollStrategy, SharedString, Stateful, Subscription, Task, TitlebarOptions,
-    UniformListScrollHandle, Window, WindowBounds, WindowHandle, WindowOptions, actions, div,
-    prelude::*, px, rgb, size, uniform_list,
+    App, Bounds, Context, Div, Entity, FocusHandle, Focusable, Global, KeyBinding, SharedString,
+    Stateful, Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowHandle,
+    WindowOptions, actions, div, prelude::*, px, rgb, size,
 };
 
 use crate::{
+    cookie_graph::CookieGraph,
     cookie_store,
     cookies::{self, Cookie, Key, Node, Row, Tree},
     input::{AddressEvent, AddressInput},
@@ -43,9 +42,10 @@ actions!(
 );
 
 const CONTEXT: &str = "FelinautCookies";
-const ROW_HEIGHT: f32 = 32.;
-/// The width of one tree level: a connector column, and the box around a node's dot.
-const COLUMN: f32 = 22.;
+/// The most nodes the graph opens by itself when the window first shows the cookies.
+const FIRST_VIEW: usize = 60;
+/// The most sites it shows at first; beyond that it starts as the root alone.
+const FIRST_VIEW_SITES: usize = 200;
 /// How long WebKit may take to answer before the window says so.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -139,7 +139,7 @@ pub fn update_for_test<R>(
 pub struct CookieManager {
     focus: FocusHandle,
     search: Entity<AddressInput>,
-    scroll: UniformListScrollHandle,
+    graph: CookieGraph,
     /// Everything WebKit reported last.
     tree: Tree,
     /// `tree` through the domain filter: what the rows, the selection and delete work on.
@@ -186,7 +186,7 @@ impl CookieManager {
         let mut manager = Self {
             focus,
             search,
-            scroll: UniformListScrollHandle::new(),
+            graph: CookieGraph::default(),
             tree: Tree::default(),
             shown: Tree::default(),
             rows: Rc::from([]),
@@ -258,6 +258,9 @@ impl CookieManager {
 
     fn load(&mut self, cookies: &[Cookie], cx: &mut Context<Self>) {
         self.tree = Tree::build(cookies);
+        if !self.loaded {
+            self.expanded = self.tree.opened_within(FIRST_VIEW, FIRST_VIEW_SITES);
+        }
         self.loaded = true;
         self.error = None;
         self.rebuild(cx);
@@ -278,6 +281,7 @@ impl CookieManager {
             self.confirming = None;
         }
         self.rows = self.shown.rows(&self.expanded).into();
+        self.graph.sync(&self.rows, &self.selection);
         cx.notify();
     }
 
@@ -299,6 +303,7 @@ impl CookieManager {
             self.selection = node;
             self.revealed = false;
             self.confirming = None;
+            self.graph.sync(&self.rows, &self.selection);
         }
         cx.notify();
     }
@@ -320,7 +325,6 @@ impl CookieManager {
     fn select_row(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(row) = self.rows.get(index) {
             self.select(row.node.clone(), cx);
-            self.scroll.scroll_to_item(index, ScrollStrategy::Center);
         }
     }
 
@@ -439,141 +443,19 @@ impl CookieManager {
         self.wait(sent, answer, window, cx);
     }
 
-    fn row(&self, index: usize, p: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let row = &self.rows[index];
-        // The click acts on the node drawn here, even if a refresh has moved the rows since.
-        let node = row.node.clone();
-        let selected = row.node == self.selection;
-        let color = node_color(row.depth, p);
-        let mut line = div()
-            .id(("cookie-row", index))
-            .h(px(ROW_HEIGHT))
-            .w_full()
-            .flex()
-            .items_center()
-            .cursor_pointer();
-        for rail in &row.rails {
-            line = line.child(connector(
-                if *rail {
-                    Connector::Rail
-                } else {
-                    Connector::None
-                },
-                p,
-            ));
+    /// A click on a graph node selects it and opens a closed branch. An open branch closes
+    /// on a second click, so that selecting it, to read its totals or delete it, leaves it
+    /// open.
+    fn click(&mut self, node: &Node, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus);
+        if !self.shown.contains(node) {
+            return;
         }
-        if row.depth > 0 {
-            line = line.child(connector(
-                if row.last {
-                    Connector::Elbow
-                } else {
-                    Connector::Tee
-                },
-                p,
-            ));
+        let reselected = self.selection == *node;
+        self.select(node.clone(), cx);
+        if reselected || !self.expanded.contains(node) {
+            self.toggle(node, cx);
         }
-        let dot = if row.expanded.is_some() { 12. } else { 8. };
-        let pill = div()
-            .h(px(26.))
-            .min_w_0()
-            .pl(px(4.))
-            .pr(px(8.))
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .rounded_full()
-            .border_1()
-            .border_color(rgb(if selected { p.primary } else { p.border }))
-            .bg(rgb(if selected { p.elevated } else { p.surface }))
-            .hover(move |style| style.bg(rgb(p.elevated)))
-            .child(
-                div()
-                    .size(px(14.))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(div().size(px(dot)).rounded_full().bg(rgb(color))),
-            )
-            .when_some(row.expanded, |pill, open| {
-                pill.child(
-                    div()
-                        .flex_shrink_0()
-                        .w(px(9.))
-                        .text_size(px(9.))
-                        .text_color(rgb(p.muted))
-                        .child(if open { "▼" } else { "▶" }),
-                )
-            })
-            .child(
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .text_size(px(13.))
-                    .when(row.depth < 2, |label| {
-                        label.font_weight(gpui::FontWeight::MEDIUM)
-                    })
-                    .child(SharedString::from(row.label.clone())),
-            )
-            .when_some(row.note.clone(), |pill, note| {
-                pill.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(11.))
-                        .text_color(rgb(p.muted))
-                        .child(SharedString::from(note)),
-                )
-            })
-            .when(row.expanded.is_some(), |pill| {
-                pill.child(
-                    div()
-                        .flex_shrink_0()
-                        .px(px(6.))
-                        .rounded_full()
-                        // Outlined, not filled: the level colors are bright in some themes
-                        // and dark in others, and the count must stay readable on all.
-                        .border_1()
-                        .border_color(rgb(color))
-                        .text_size(px(11.))
-                        .line_height(px(16.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(SharedString::from(row.count.to_string())),
-                )
-            });
-        line.child(
-            div()
-                .relative()
-                .h_full()
-                .min_w_0()
-                .flex()
-                .items_center()
-                // The line down to the children starts behind the node's dot.
-                .when(row.expanded == Some(true) && row.count > 0, |node| {
-                    node.child(
-                        div()
-                            .absolute()
-                            .left(px(COLUMN / 2.))
-                            .top(px(ROW_HEIGHT / 2.))
-                            .bottom_0()
-                            .w(px(1.))
-                            .bg(rgb(p.border)),
-                    )
-                })
-                .child(pill),
-        )
-        .on_click(cx.listener(move |this, _, window, cx| {
-            window.focus(&this.focus);
-            // A click opens a closed branch. An open one closes on a second click, so that
-            // selecting it, to read its totals or delete it, leaves it open.
-            let reselected = this.selection == node;
-            this.select(node.clone(), cx);
-            if reselected || !this.expanded.contains(&node) {
-                this.toggle(&node, cx);
-            }
-        }))
-        .into_any_element()
     }
 
     fn details(&self, p: Palette, cx: &mut Context<Self>) -> Div {
@@ -726,58 +608,6 @@ impl CookieManager {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Connector {
-    None,
-    /// An ancestor's line passing this row on its way to a later sibling.
-    Rail,
-    /// To this node, with more siblings below.
-    Tee,
-    /// To this node, the last of its siblings.
-    Elbow,
-}
-
-/// One tree level of connecting line, `COLUMN` wide and exactly one row tall, so that the
-/// lines of consecutive rows meet.
-fn connector(kind: Connector, p: Palette) -> Div {
-    let column = div()
-        .relative()
-        .w(px(COLUMN))
-        .h(px(ROW_HEIGHT))
-        .flex_shrink_0();
-    let middle = px(COLUMN / 2.);
-    let line = || div().absolute().left(middle).bg(rgb(p.border));
-    match kind {
-        Connector::None => column,
-        Connector::Rail => column.child(line().top_0().bottom_0().w(px(1.))),
-        Connector::Tee => column
-            .child(line().top_0().bottom_0().w(px(1.)))
-            .child(line().top(px(ROW_HEIGHT / 2. - 1.)).right_0().h(px(1.))),
-        Connector::Elbow => column.child(
-            div()
-                .absolute()
-                .left(middle)
-                .top_0()
-                .right_0()
-                .h(px(ROW_HEIGHT / 2.))
-                .border_l_1()
-                .border_b_1()
-                .border_color(rgb(p.border))
-                .rounded_bl(px(8.)),
-        ),
-    }
-}
-
-/// Each level of the graph has its own theme color.
-fn node_color(depth: usize, p: Palette) -> u32 {
-    match depth {
-        0 => p.accent,
-        1 => p.primary,
-        2 => p.secondary,
-        _ => p.highlight,
-    }
-}
-
 fn heading(kind: &'static str, name: &str, p: Palette) -> Div {
     div()
         .flex()
@@ -854,8 +684,18 @@ fn button(id: &'static str, label: impl Into<SharedString>, p: Palette) -> State
 }
 
 impl Render for CookieManager {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::palette(cx);
+        // The graph first: a click in it changes what the rest of this frame shows.
+        let active = window.is_window_active();
+        let graph = self.graph.show(p, theme::motion_allowed(cx), active);
+        if let Some(node) = &graph.clicked {
+            self.click(node, window, cx);
+        }
+        // The layout animates only while its window is active.
+        if graph.animating && active {
+            window.request_animation_frame();
+        }
         let total = self.tree.count();
         let query = self.search.read(cx).text().trim().to_string();
         let summary = if !self.loaded {
@@ -958,31 +798,30 @@ impl Render for CookieManager {
                     .flex()
                     .child(
                         div()
+                            .relative()
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .flex()
-                            .flex_col()
-                            .p_3()
+                            .child(self.graph.element(graph.frame, cx.entity_id()).size_full())
                             .child(
-                                uniform_list(
-                                    "cookie-tree",
-                                    self.rows.len(),
-                                    cx.processor(move |this, range: Range<usize>, _, cx| {
-                                        range
-                                            .map(|index| this.row(index, p, cx))
-                                            .collect::<Vec<_>>()
-                                    }),
-                                )
-                                .track_scroll(self.scroll.clone())
-                                .flex_1()
-                                .min_h_0(),
+                                button("fit-graph", "Fit", p)
+                                    .absolute()
+                                    .top_3()
+                                    .right_3()
+                                    .h(px(26.))
+                                    .px_2()
+                                    .text_size(px(12.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.graph.fit();
+                                        cx.notify();
+                                    })),
                             )
-                            .when_some(empty, |tree, message| {
-                                tree.child(
+                            .when_some(empty, |panel, message| {
+                                panel.child(
                                     div()
-                                        .flex_shrink_0()
-                                        .p_3()
+                                        .absolute()
+                                        .left_4()
+                                        .bottom_3()
                                         .text_size(px(13.))
                                         .text_color(rgb(p.muted))
                                         .child(SharedString::from(message)),
@@ -1014,8 +853,8 @@ impl Render for CookieManager {
                     .text_color(rgb(p.muted))
                     .child(match &self.error {
                         Some(error) => error.clone(),
-                        None => "Cookies with an expiry keep you signed in across restarts. \
-                                 Session cookies end when Felinaut quits."
+                        None => "Click a node to open it · drag to move it or the view · scroll \
+                                 to zoom. Session cookies end when Felinaut quits."
                             .into(),
                     }),
             )

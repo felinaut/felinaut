@@ -167,7 +167,7 @@ Two things are separate from persistence. A site can refuse or limit sign-in in 
 
 **The Cookies window** (`⌥⌘K`, **Felinaut → Cookies…**) reads the same store through `WKHTTPCookieStore`:
 
-- A tree drawn as a graph: **All cookies → site → host → cookie**, with connecting lines, a cookie count on every branch, and a domain filter. Click a branch to open it and again to close it; `↑ ↓ ← →` and Return work from the keyboard, `⌘F` goes to the filter, `⌘R` or **Refresh** reads the store again (it also refreshes whenever the window becomes active).
+- An interactive graph: **All cookies → site → host → cookie**, with a cookie count on every branch and a domain filter. [egui_graphs](https://github.com/blitzarx1/egui_graphs) lays it out with a force-directed simulation; a store of up to 60 nodes opens fully, a larger one starts with its sites closed, and one with more than 200 sites as the root alone (a ring marks a closed branch). The simulation compares every pair of nodes, so thousands of open nodes animate slowly. Click a node to select it and open it, and again to close it. Drag a node to move it, drag the background to pan, scroll to zoom; **Fit** brings the whole graph back into view. `↑ ↓` move the selection through the tree, `← →` close and open, Return toggles, `⌘F` goes to the filter, `⌘R` or **Refresh** reads the store again (it also refreshes whenever the window becomes active). The layout moves only while the window is active; with Reduce Motion, or **Animate artwork** off, it settles at once instead.
 - Selecting a cookie shows its name, host (and whether subdomains get it), path, expiry or "Session", Secure, HttpOnly and SameSite. **The value stays hidden until you click Reveal.** Selecting a branch shows its totals.
 - **Delete** works at every level: one cookie at once; a host, a site or everything after one confirmation that names how many cookies go. `⌘⌫` deletes the selection, Return confirms, Escape cancels. With a filter on, only the cookies shown are deleted. Deleting a site's cookies signs you out there.
 - Sites are grouped by a small heuristic, not the Public Suffix List: the last two labels of the host, or three for common country registries (`bbc.co.uk`). Hosts under a shared suffix such as `github.io` therefore appear as one site. This only affects grouping; a delete removes exactly the listed cookies.
@@ -191,7 +191,7 @@ Felinaut stores no cookie data of its own, logs none, and agent control (`felina
 - Native menus keep browser shortcuts available while the webview has focus.
 - **Per-tab volume** from 0 % to 600 %, with mute and sound presets (see below).
 - **Downloads** are saved to `~/Downloads` and listed under the toolbar's **↓** button, with progress, cancel, open and show in Finder (see below).
-- **Cookies window** (`⌥⌘K`, or **Felinaut → Cookies…**): every stored cookie as a site → host → cookie tree, with details and delete at each level (see [Cookies and staying signed in](#cookies-and-staying-signed-in)).
+- **Cookies window** (`⌥⌘K`, or **Felinaut → Cookies…**): every stored cookie in a site → host → cookie graph, with details and delete at each level (see [Cookies and staying signed in](#cookies-and-staying-signed-in)).
 
 | Shortcut         | Action                                                          |
 | ---------------- | --------------------------------------------------------------- |
@@ -366,8 +366,10 @@ The native cookie test runs itself twice as a child process: the first sets cook
 - `src/brand.rs` and `assets/`: embedded original SVG mascot, symbol and monochrome UI icons.
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.
-- `src/cookies.rs`: the cookie tree model: grouping by site and host, rows and connectors, filtering, subtree deletion, totals.
+- `src/cookies.rs`: the cookie tree model: grouping by site and host, visible rows, filtering, subtree deletion, totals.
 - `src/cookie_store.rs`: reads and deletes cookies in WebKit's default data store (`WKHTTPCookieStore`).
+- `src/cookie_graph.rs`: the cookie tree as an `egui_graphs` graph: node and edge shapes, force-directed layout, sync with the model's visible rows.
+- `src/egui_host.rs`: runs egui inside a GPUI element. egui computes shapes from pointer input; GPUI paints them and draws all text. No second window toolkit or renderer is involved.
 - `src/cookie_window.rs`: the Cookies window.
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.

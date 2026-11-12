@@ -11,6 +11,9 @@
 #[allow(dead_code, unused_imports)]
 #[path = "../src/audio.rs"]
 mod audio;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/cookie_graph.rs"]
+mod cookie_graph;
 #[allow(dead_code)]
 #[path = "../src/cookie_store.rs"]
 mod cookie_store;
@@ -23,6 +26,9 @@ mod cookies;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/downloads.rs"]
 mod downloads;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/egui_host.rs"]
+mod egui_host;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/icons.rs"]
 mod icons;
@@ -252,8 +258,19 @@ async fn set(cx: &mut AsyncWindowContext, pages: [Rc<NativePage>; 2], port: u16)
     // One cookie goes at once, found by opening the site and its host.
     cx.update(|_, cx| {
         cookie_window::update_for_test(cx, |manager, window, cx| {
-            manager.toggle(&Node::Site("127.0.0.1".into()), cx);
-            manager.toggle(&Node::Host("127.0.0.1".into()), cx);
+            // A small store opens fully by itself; open what is still closed.
+            for branch in [
+                Node::Site("127.0.0.1".into()),
+                Node::Host("127.0.0.1".into()),
+            ] {
+                let closed = manager
+                    .rows()
+                    .iter()
+                    .any(|row| row.node == branch && row.expanded == Some(false));
+                if closed {
+                    manager.toggle(&branch, cx);
+                }
+            }
             let extra = manager
                 .rows()
                 .iter()
