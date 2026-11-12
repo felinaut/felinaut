@@ -74,6 +74,8 @@ xcrun notarytool store-credentials felinaut-notary --apple-id <apple-id> --team-
 FELINAUT_SIGN_IDENTITY="Developer ID Application: <name> (<team-id>)" FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 ```
 
+The bundle's `Info.plist` carries `NSCameraUsageDescription` and `NSMicrophoneUsageDescription`, so macOS can ask for the camera and the microphone on behalf of Felinaut (see _Camera and microphone_). A Developer ID signature uses the hardened runtime, which refuses both devices without the `com.apple.security.device.camera` and `com.apple.security.device.audio-input` entitlements; the packager claims them from `assets/Felinaut-capture.entitlements`. Ad-hoc signatures have no hardened runtime and claim nothing. This entitlement path was not tested with a real Developer ID certificate.
+
 This signs the app (hardened runtime, secure timestamp) and the DMG, submits the DMG to Apple, staples the tickets, and checks both with `spctl`. Local `cargo dist` packaging still targets the host architecture; the automated GitHub releases below instead combine two native builds into a universal app. A macOS 12.0 minimum deployment target is configured, but compatibility has not been tested across every macOS version.
 
 The build preserves Cargo's procedural-macro metadata (`CARGO_PROFILE_RELEASE_STRIP=none`) to avoid a stripping issue on the current toolchain, then strips only the finished copied executable before signing. This leaves the normal Cargo profile unchanged. Embedded SVGs and Metal shaders require no separate runtime asset downloads.
@@ -147,7 +149,7 @@ Request steps (once, by the **Account Holder** of the Apple Developer team that 
 1. Ship a build that meets Apple's browser criteria: `http`/`https` in `CFBundleURLTypes` (done; Felinaut can be chosen as the default browser in **System Settings → Desktop & Dock** and opens links handed over by macOS), an address bar on launch, and direct navigation to the requested URL.
 2. Fill in the [macOS Browsers Passkeys request form](https://developer.apple.com/contact/request/macos-browsers-passkeys/) while signed in as the Account Holder. Apple reviews it against the criteria above and, if accepted, adds the capability to the team.
 3. In **Certificates, Identifiers & Profiles → Identifiers**, open the App ID `io.github.casaroli.felifox`, enable the _Web Browser Public Key Credential_ capability, then create a **Developer ID Application** provisioning profile for that App ID (Profiles → + → Developer ID) and download it.
-4. Package with the profile. The packager embeds it as `Contents/embedded.provisionprofile`, checks that it actually grants every key in `assets/Felinaut.entitlements`, and signs with those entitlements:
+4. Package with the profile. The packager embeds it as `Contents/embedded.provisionprofile`, checks that it actually grants every restricted key in `assets/Felinaut.entitlements` (the camera and microphone keys in that file need no profile), and signs with those entitlements:
 
 ```sh
 FELINAUT_PROVISIONING_PROFILE=~/Downloads/Felinaut.provisionprofile \
@@ -155,7 +157,7 @@ FELINAUT_SIGN_IDENTITY="Developer ID Application: <name> (<team-id>)" \
 FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 ```
 
-`FELINAUT_PROVISIONING_PROFILE` requires `FELINAUT_SIGN_IDENTITY`; a Developer ID profile does not match an _Apple Development_ certificate. Without the variable nothing changes: the app is signed exactly as before.
+`FELINAUT_PROVISIONING_PROFILE` requires `FELINAUT_SIGN_IDENTITY`; a Developer ID profile does not match an _Apple Development_ certificate. Without the variable the app never claims the passkey entitlement.
 
 **Testing:** open https://webauthn.io, enter any user name and click **Register**; macOS should show its passkey sheet (Touch ID or the account password) and the site should then **Authenticate** with the new passkey. For Gmail, open https://accounts.google.com, enter the address and choose **Try another way → Use your passkey** (or let the conditional-UI prompt appear in the address field) with a passkey that already exists in iCloud Keychain. Until the entitlement is granted both report that no passkey is available; the Google sign-in page falls back to the password.
 
