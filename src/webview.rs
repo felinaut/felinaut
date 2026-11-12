@@ -245,6 +245,17 @@ impl NativePage {
 
     /// Bounds are window-relative logical pixels, as supplied by the GPUI canvas.
     pub fn set_bounds(&self, bounds: Bounds<Pixels>) -> Result<(), String> {
+        use objc2::{runtime::NSObjectProtocol, sel};
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // While a page element is full screen, WebKit owns the view's frame in its own window.
+        // SAFETY: a property read on a live WKWebView on the main thread, checked for macOS 13+.
+        if view.respondsToSelector(sel!(fullscreenState))
+            && unsafe { view.fullscreenState() }
+                != objc2_web_kit::WKFullscreenState::NotInFullscreen
+        {
+            return Ok(());
+        }
         self.webview
             .set_bounds(wry::Rect {
                 position: wry::dpi::LogicalPosition::new(
@@ -661,7 +672,8 @@ fn parse_icon_event(message: &str) -> Option<Event> {
 
 /// Gives Command+arrow keys to the focused page. AppKit offers each Command key to GPUI as a
 /// key equivalent first, and the text input context of GPUI consumes the arrows. Thus WebKit
-/// did not move the caret to the start or the end of a line. Call this once, on the main thread.
+/// did not move the caret to the start or the end of a line. It also gives Escape to full
+/// screen. Call this once, on the main thread.
 #[cfg(target_os = "macos")]
 pub fn forward_command_arrows() {
     use objc2::{ClassType, runtime::NSObjectProtocol};
@@ -672,6 +684,15 @@ pub fn forward_command_arrows() {
         let Some(mtm) = objc2::MainThreadMarker::new() else {
             return event.as_ptr();
         };
+        // Escape (53) leaves Felinaut's full screen; a page's, in WebKit's own window, is left
+        // to WebKit.
+        if key.keyCode() == 53
+            && let Some(window) = key.window(mtm)
+            && window.class().name().to_bytes() == b"GPUIWindow"
+            && exit_full_screen(&window)
+        {
+            return std::ptr::null_mut();
+        }
         // Key codes 123 to 126 are the arrows.
         if (123..=126).contains(&key.keyCode())
             && key.modifierFlags().contains(NSEventModifierFlags::Command)
@@ -778,6 +799,96 @@ pub fn pointer(window: &gpui::Window) -> Option<gpui::Point<f32>> {
     };
     ((0.0..=size.width).contains(&point.x) && (0.0..=size.height).contains(&y))
         .then(|| gpui::point(point.x as f32, y as f32))
+}
+thread_local! {
+    /// While a window fills the screen: its earlier frame, whether to animate, and its number.
+    static FILLED: std::cell::Cell<Option<(objc2_foundation::NSRect, bool, isize)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Takes the saved frame if `window` is the one filling the screen.
+fn take_filled(window: &objc2_app_kit::NSWindow) -> Option<(objc2_foundation::NSRect, bool)> {
+    match FILLED.take() {
+        Some((frame, animate, number)) if number == window.windowNumber() => Some((frame, animate)),
+        other => {
+            FILLED.set(other);
+            None
+        }
+    }
+}
+
+/// Fills the current screen with the window, without a new Space, or restores its frame.
+/// Returns `false` when there is nothing to restore and `fill` is off.
+#[cfg(target_os = "macos")]
+pub fn fill_screen(window: &gpui::Window, cx: &gpui::App, fill: bool, animate: bool) -> bool {
+    let Some(window) = ns_window(window) else {
+        return false;
+    };
+    let target = match take_filled(&window) {
+        Some(restore) => Some(restore),
+        None if fill && FILLED.get().is_none() => window.screen().map(|screen| {
+            FILLED.set(Some((window.frame(), animate, window.windowNumber())));
+            (screen.frame(), animate)
+        }),
+        None => None,
+    };
+    let Some((frame, animate)) = target else {
+        return false;
+    };
+    // Resize after this action: AppKit's resize callbacks update the GPUI window.
+    cx.foreground_executor()
+        .spawn(async move { resize(&window, frame, animate) })
+        .detach();
+    true
+}
+
+/// Whether `window` is filling the screen without a new Space.
+pub fn is_filled(window: &gpui::Window) -> bool {
+    ns_window(window).is_some_and(|window| {
+        FILLED
+            .get()
+            .is_some_and(|(_, _, number)| number == window.windowNumber())
+    })
+}
+
+fn ns_window(window: &gpui::Window) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    use objc2_app_kit::NSView;
+    use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let RawWindowHandle::AppKit(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw()
+    else {
+        return None;
+    };
+    // SAFETY: GPUI hands out its live content view, and we are on the main thread.
+    let view: &NSView = unsafe { handle.ns_view.cast().as_ref() };
+    view.window()
+}
+
+/// Leaves either kind of full screen, for Escape; false if the window isn't full screen.
+fn exit_full_screen(window: &objc2_app_kit::NSWindow) -> bool {
+    if let Some((frame, animate)) = take_filled(window) {
+        resize(window, frame, animate);
+    } else if window
+        .styleMask()
+        .contains(objc2_app_kit::NSWindowStyleMask::FullScreen)
+    {
+        window.toggleFullScreen(None);
+    } else {
+        return false;
+    }
+    true
+}
+
+/// Sets the window's frame, hiding the menu bar and Dock only while it fills the screen.
+fn resize(window: &objc2_app_kit::NSWindow, frame: objc2_foundation::NSRect, animate: bool) {
+    use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions as Options};
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    NSApplication::sharedApplication(mtm).setPresentationOptions(match FILLED.get() {
+        Some(_) => Options::HideDock | Options::HideMenuBar,
+        None => Options::Default,
+    });
+    window.setFrame_display_animate(frame, true, animate);
 }
 #[cfg(not(target_os = "macos"))]
 pub fn pointer(_: &gpui::Window) -> Option<gpui::Point<f32>> {

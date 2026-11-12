@@ -190,6 +190,7 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | `⌘⇧M`            | Mute / unmute active tab                                        |
 | `⌘⇧J`            | Show / hide the downloads list                                  |
 | `⌘S`             | Show / hide the tab sidebar (remembered)                        |
+| `⌃⌘F` / `Esc`    | Enter / exit full screen                                        |
 | `⌘D`             | Pin / unpin active tab                                          |
 | `⌘1`–`⌘8` / `⌘9` | Go to tab 1–8 / last tab                                        |
 | `⌃Tab` / `⌃⇧Tab` | Next / previous tab (also `⌘⇧]` / `⌘⇧[`)                        |
@@ -285,6 +286,8 @@ Address-bar searches use **DuckDuckGo** by default. Choose another in **Felinaut
 
 Sites that decide by location alone may still ignore the browser language. Cookie-consent pages appear once per site regardless of language.
 
+**Full screen** (also in Settings, saved as `native_full_screen=true|false`): **Use native full screen**, the default, opens a new Space; **Fill the current desktop** makes `⌃⌘F` fill the current screen (animated) and hide the menu bar and Dock. Escape leaves either kind, and the View menu item reads Exit Full Screen meanwhile.
+
 - **Original embedded SVG artwork:** a happy orange-and-cream astronaut cat exploring colorful yarn planets, a simplified helmet symbol, and a floating cardboard exploration box on New Tab. She has one clear smile, a cyan bubble visor, and a white/lavender suit. No fox emoji, external assets or large background bitmaps.
 - **Six distinct procedural scenes:** Milky Way has layered galactic nebulae, subtle stars, moons and cross-wound yarn planets. All themes share restrained orbital threads and wool-planet discoveries; Midnight Party has tumbling confetti, streamers, golden stars and neon ribbons; Confetti Sunset has a golden sun, peach/coral hills and falling confetti; Alpine Pop has snowcapped ice mountains, glacier facets, drifting snow and ridge glints; Neon Wool has rolling yarn balls and flowing loose threads; Forest Carnival has swaying foliage, citrus, cherries, flowers and fluttering petals.
 - **Visible native animation:** backgrounds are drawn from responsive GPUI paths, with perceptible movement within a second rather than tiny nearly-static color shifts. The mascot also gently bobs; no background image frames or new animation dependencies are used.
@@ -354,7 +357,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/brand.rs` and `assets/`: embedded original SVG mascot, symbol and monochrome UI icons.
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.
-- `src/settings.rs`: the Settings window (`⌘,`): search engine and website language.
+- `src/settings.rs`: the Settings window (`⌘,`): search engine, website language and full screen.
 - `src/language.rs`: the website language choice and how it reaches WebKit at launch.
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.
