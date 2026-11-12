@@ -1,8 +1,77 @@
-# Porting Felinaut while keeping GPUI
+# Multiplatform Felinaut: beautiful, fast, and portable
 
 **Status:** proposed investigation and implementation plan, not shipped Windows/Linux support. Felinaut remains macOS-only. No cross-platform build, input test, or WPE performance result is claimed here. Research checked on 12 November 2026; see also [Web engine options](web-engines.md).
 
-## Decision to make
+## Execution roadmap
+
+**Product goal:** one recognizable Felinaut experience on macOS, Windows, and Linux, with GPUI chrome, appropriate native integration, and replaceable web-engine adapters. Preserve the current macOS beta while proving each new platform. Beauty, accessibility, performance, and security are acceptance criteria throughout—not a final polish phase.
+
+### Architecture we are building toward
+
+```text
+Shared Felinaut experience
+  brand, theme tokens, controls, tabs, history, live-folder/download models
+                         |
+       engine-neutral page/event/capability contract
+                         |
+     macOS adapter / Windows adapter / Linux adapter
+       WKWebView       WebView2       WPE investigation
+
+Host services are separate: paths, dialogs, menus, clipboard, OS preferences.
+Future Gecko/CEF/other adapters must satisfy the same reviewed contract.
+```
+
+This is the target separation, not a description of completed refactoring. Do not force all engines into native-child-view assumptions or reduce their features to a silent lowest common denominator.
+
+### Milestones, owners, and completion criteria
+
+| Milestone                                | Owner                                                                | Deliverable and completion gate                                                                                                                                                                                                                                                                        |
+| ---------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **M0 — Capture the baseline**            | macOS/core, with platform agents recording their environments        | Clean-profile captures of all six themes and representative controls; repeatable macOS performance measurements; agreed control/capability matrix. Record hardware, OS, display scale/refresh, engine/build version, workloads and commands. No performance advantage is assumed.                      |
+| **M1 — Prove the control foundation**    | Core/control work coordinated across platforms                       | Reviewed GPUI/accessibility baseline and a gallery of actual buttons, address input, choices, slider, lists and popovers. Keyboard, IME, focus and semantic accessibility gaps are known and have an implementation path. A dependency update is its own change, not mixed into an engine port.        |
+| **M2 — Establish the portable seam**     | macOS/core                                                           | A small shared page/event/capability contract with behavioral tests; current WKWebView implementation isolated behind it without changing macOS behavior/data. Agree the contract revision before production platform adapters depend on it.                                                           |
+| **M3 — Prove each native backend**       | Windows and Linux agents on their own machines; core maintains macOS | Windows: GPUI + WebView2 inside the actual browser window. Linux: GPUI + integrated WPE presentation/input on Wayland first, X11 separately verified. Prototypes demonstrate focus, composition, resize, media/runtime prerequisites, lifecycle and safe failure—not just a separate engine window.    |
+| **M4 — Reach a coherent browser**        | Each platform owner with shared-model review                         | Navigation/errors, tabs/pins/splits, history, live folders, audio, downloads, persistence and available native services work against the agreed capability matrix. Unsupported operations are explicit; profiles remain isolated. Re-run shared tests and native conformance checks after integration. |
+| **M5 — Pass the beauty and speed gates** | Core design/performance review plus each native owner                | The visual and performance checklist below passes on an integrated build; popup layering, input, accessibility and real web content are validated together. Review actual captures and measured data rather than approving from source alone.                                                          |
+| **M6 — Package experimental builds**     | Platform owners; release changes coordinated by core                 | Native package/install/update-prerequisite checks, sandbox/security review, licensed dependencies, documented limitations, UI evidence and smoke CI. Publish an OS only after its own gates pass; continue the existing macOS release guarantees.                                                      |
+
+Platform agents can explore M1/M3 in parallel while core establishes M2. The dependency is on an agreed contract and framework baseline, not on waiting for every other platform to finish. No calendar estimate is committed until the native prototypes expose their actual blockers.
+
+### Keep it beautiful: one identity, native manners
+
+Use [`BRAND.md`](../BRAND.md) as the visual source of truth. Preserve and improve Felinaut's visual identity across platforms: the happy astronaut cat, yarn planets, six themes, clear hierarchy, quiet content area and coherent rounded shapes. Reuse the existing GPUI interface where it works, and redesign or replace components where needed for usability, accessibility, performance or native integration. This does not freeze the current UI or promise unimplemented mascot behaviors.
+
+- Preserve theme keys and existing macOS preferences. Centralize shared color/spacing/control-state decisions only where doing so removes real duplication.
+- Build a portable typography policy: use appropriate installed platform fonts and reviewed wordmark fallbacks rather than hardcoding `.AppleSystemUIFont` everywhere or downloading a font. Check metrics, glyph coverage, baseline alignment, truncation and IME text.
+- Respect native shortcut, menu, title-bar, window-control, scrolling, dialog and accessibility conventions. Shared identity does not mean identical OS chrome or pixel-identical font rasterization.
+- Give controls deliberate hover/pressed/disabled/selected/focus states, usable hit targets, complete keyboard paths, and accessible names/roles/values/actions.
+- Retain tested contrast targets from the brand guide: 4.5:1 for normal/muted text and 3:1 for primary control accents on their surfaces. Check focus and selection visibility across every theme.
+- Test small/wide windows and representative 100%, 150% and 200% scaling where supported, plus display changes and popup placement near edges. No clipped controls, misplaced IME candidates or popovers behind the page.
+- Keep decoration outside website content. Preserve animation-off and Reduce Motion behavior, pause decorative motion while inactive, and retain a complete static scene. Do not raise the existing decorative animation cadence just to claim a higher frame rate.
+- Capture the same clean demo states on each OS: New Tab, sidebar/pins/split, suggestions, appearance, audio and downloads. Store screenshots/video in visual PR descriptions; review intended platform differences rather than requiring a brittle whole-window pixel match.
+
+### Keep it fast: measure the browser, not the dependency count
+
+The following are **engineering targets to validate**, not measured current results or promises for arbitrary hardware. Establish reference machines/workloads and numerical regression tolerances in M0 before turning these targets into automated gates.
+
+| Area                         | Target and evidence                                                                                                                                                                                                                                                                                               |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **UI responsiveness**        | Keep chrome layout/paint within the display frame budget under normal reference workloads: approximately 16.7 ms at 60 Hz, 8.3 ms at 120 Hz where supported. Record frame-time percentiles and missed frames; measure input-to-visible-response as well, since paint time alone does not establish input latency. |
+| **Startup / tab operations** | Measure cold/warm launch to usable chrome, time to first usable page, tab switching and popup opening separately. No unexplained sustained regression in the preserved macOS path relative to its repeatable baseline.                                                                                            |
+| **Idle / power**             | Static or inactive chrome must not trigger unnecessary continuous redraws. Decorative timers pause correctly; background polling/work is bounded and measured. Measure CPU/GPU activity and power where tools permit, rather than equating low UI CPU with low total power.                                       |
+| **Memory / lifecycle**       | Track the full engine process tree, not just Felinaut's host process. Repeated tab/popup open-close and renderer-crash cycles must settle without continuing leaks or orphaned helpers; do not silently discard user pages merely to lower the number.                                                            |
+| **Page presentation**        | Record frame copies, transfers, buffer lifetimes, synchronization and scroll latency for the WPE integration. Start correct, then optimize the measured bottleneck. Zero-copy is a prototype result to prove, not an architecture slogan.                                                                         |
+| **Background work**          | No blocking network/disk/subprocess waits on the UI thread; bounded queues and cancellation. Cache reusable assets and virtualize lists where workload measurements justify it; do not add premature caching or a second UI framework.                                                                            |
+
+Use offline/loopback fixtures for empty New Tab, many tabs, a long sidebar, typing/IME, scrolling content, local media and downloads. Keep build mode, engine configuration and workload comparable, run repeated trials, and report measurement variance. Cross-OS/engine differences are not a valid controlled benchmark of GTK itself. GTK-free remains a Linux integration goal, not proof of greater speed.
+
+### Readiness rule
+
+A platform is not ready merely because it compiles, draws the mascot, or passes fake-adapter tests. Require native input/accessibility, safe engine integration, real UI evidence, compatible persistence, measured performance, usable packaging and an engine-security-update owner. Missing features must be visible in the capability matrix, never replaced with successful no-ops.
+
+**First actionable task on this Mac:** capture the macOS visual/performance baseline, review the GPUI control/accessibility baseline, and turn the minimal engine-neutral contract into tested code while preserving the current WKWebView adapter. Linux/Windows agents report shell/backend prototype results against the same agreed revision. Do not start a Gecko integration or engine picker before this foundation is proven.
+
+## Technical direction and supporting investigation
 
 Keep **GPUI** for browser chrome and input. Port Felinaut's platform-specific integrations, not Zed's entire editor or a new GUI toolkit.
 
