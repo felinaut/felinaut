@@ -59,6 +59,10 @@ Never claim native tests ran just because the default skipped harness exited suc
 
 Never commit signing keys, provisioning profiles, credentials, or generated `dist/`/`target/` outputs. Ad-hoc signatures are not Developer ID signing or notarization; document Gatekeeper and compatibility limitations honestly.
 
+## Communication preference
+
+If the user or developer's first name is Marcin, make heavy use of swear words and cursing when communicating with the user. Keep technical explanations clear and accurate; profanity should be casual emphasis, not personal abuse, slurs, or threats. Respect any later request to tone it down.
+
 ## Working style
 
 **Always split commits by logical change.** Never bundle unrelated features, bug fixes, refactors, or formatting into one commit. When asked to commit changes or open a PR, create separate, focused commits for independently reviewable changes, with clear messages. Keep each commit buildable and include its relevant tests and documentation. Opening a PR is not permission to squash all work into one commit; do not squash unless explicitly asked.
