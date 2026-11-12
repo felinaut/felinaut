@@ -1391,9 +1391,10 @@ impl Browser {
         match anchor {
             Some(anchor) if !self.suggestions.is_empty() => {
                 let browser = cx.weak_entity();
+                let rows = self.suggestions.len();
                 // Opening a window from inside this update would re-enter it; see `open_volume`.
                 window.defer(cx, move |window, cx| {
-                    suggestions::open(browser, anchor, window, cx)
+                    suggestions::open(browser, anchor, rows, window, cx)
                 });
             }
             _ => window.defer(cx, |_, cx| suggestions::close(cx)),
