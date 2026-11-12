@@ -93,6 +93,7 @@ extern "C" int felinaut_cef_bootstrap_application() {
 }
 
 extern "C" bool felinaut_cef_verify_application() {
+    if (!pthread_main_np()) return false;
     if (!owns_application()) {
         fprintf(stderr, "Probe application identity mismatch: %s\n", NSApp ? object_getClassName(NSApp) : "nil");
         return false;

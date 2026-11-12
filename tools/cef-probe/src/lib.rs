@@ -1,9 +1,12 @@
 //! Opt-in application-lifecycle probe; no CEF engine is linked in this checkpoint.
 
+pub mod pump;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Lifecycle,
     ExistingApplication,
+    Pump,
 }
 
 impl Mode {
@@ -11,7 +14,10 @@ impl Mode {
         match arguments {
             [argument] if argument == "--run-lifecycle" => Ok(Self::Lifecycle),
             [argument] if argument == "--check-existing-app" => Ok(Self::ExistingApplication),
-            _ => Err("Usage: felinaut-cef-probe --run-lifecycle | --check-existing-app"),
+            [argument] if argument == "--check-pump" => Ok(Self::Pump),
+            _ => Err(
+                "Usage: felinaut-cef-probe --run-lifecycle | --check-existing-app | --check-pump",
+            ),
         }
     }
 }
@@ -81,6 +87,7 @@ mod tests {
         for (argument, expected) in [
             ("--run-lifecycle", Mode::Lifecycle),
             ("--check-existing-app", Mode::ExistingApplication),
+            ("--check-pump", Mode::Pump),
         ] {
             assert_eq!(Mode::parse(&[argument.to_owned()]), Ok(expected));
         }

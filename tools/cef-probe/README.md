@@ -12,7 +12,8 @@ cargo clippy --locked --manifest-path tools/cef-probe/Cargo.toml --target-dir ta
 cargo test --locked --manifest-path tools/cef-probe/Cargo.toml --target-dir target
 cargo build --locked --manifest-path tools/cef-probe/Cargo.toml --target-dir target
 
-# Separate fresh processes; the first creates no window.
+# Separate fresh processes; the first two create no window.
+target/debug/felinaut-cef-probe --check-pump
 target/debug/felinaut-cef-probe --check-existing-app
 target/debug/felinaut-cef-probe --run-lifecycle
 ```
@@ -47,6 +48,14 @@ On **12 November 2026**, macOS **27.0 (26A428), arm64**, Xcode **27.0 (27A266a)*
 
 ![Actual GPUI-only lifecycle-probe window, explicitly labelled as having no web engine loaded.](../../docs/screenshots/macos-cef-lifecycle-probe.png)
 
+## External-pump scheduling checkpoint
+
+`--check-pump` runs bounded native tests before creating an application singleton. The scheduler accepts CEF-style deadline notifications from any thread, serializes/coalesces them, and invokes a process-lifetime callback only from deferred main-run-loop work. The latest notification replaces the previous deadline; nonpositive delays are prompt/asynchronous and positive delays saturate at 24 hours. Common and event-tracking modes are supported without a periodic idle timer.
+
+The callback runs outside the scheduler mutex and outside GPUI rendering; nested loops cannot recursively invoke it. Stop invalidates timers, sources, callback ownership and stale queued generations before engine shutdown. A stopped callback may finish, so its owner must wait for that call to return before destroying state or unloading an engine. Old producers must be quiesced before a restart because the upstream scheduling callback carries no producer token.
+
+The integrated native check passed on this host: coalescing/replacement, immediate/positive/extreme delays, worker wakeup, tracking mode, nested-loop non-reentrancy, stop during callback, stale work and restart. Development validation also passed 10 fresh native runs and AddressSanitizer/UndefinedBehaviorSanitizer. This proves scheduler behavior, **not actual CEF initialization or page rendering**. The future Rust trampoline must catch panics; no callback may unwind/throw through the native ABI.
+
 ## Pinned SDK preparation
 
 Acquisition is explicit and separate from Cargo/the default browser. The matching published binding is `cef 156.4.0+156.0.26`; its runtime is CEF `156.0.26+g8ea0c73+chromium-156.0.8078.88`, macOS arm64 minimal distribution.
@@ -65,6 +74,6 @@ Read-only signature inspection found linker-generated ad-hoc signatures without 
 
 ## Not proved yet
 
-No actual `CefAppProtocol` conformance, framework load, CEF initialization, message pumping, helper sandbox, page rendering, input/IME, resize, WebKit coexistence, per-tab selection, packaging or distribution support is established by this SDK-free checkpoint. A separately built official CEF example would not by itself prove GPUI coexistence either.
+No actual `CefAppProtocol` conformance, framework load, CEF initialization/pumping, helper sandbox, page rendering, input/IME, resize, WebKit coexistence, per-tab selection, packaging or distribution support is established by these SDK-free lifecycle/scheduler checks. A separately built official CEF example would not by itself prove GPUI coexistence either.
 
 Next: use a matching pinned macOS arm64 CEF runtime/binding pair, implement real protocol conformance and bounded external-pump scheduling, initialize sandboxed helpers correctly, and render a trusted loopback page in the GPUI content area. Do not enable the browser's CEF flag or bypass sandbox checks merely because the application subclass works. See [the CEF feasibility report](../../docs/macos-cef-gecko.md).

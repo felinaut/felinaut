@@ -28,6 +28,15 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if mode == Mode::Pump {
+        if !native::pump::self_test() {
+            fail("Bounded native external-pump scheduler checks failed");
+        }
+        println!(
+            "PASS: bounded native pump coalescing, deadlines, worker wakeups, tracking mode, non-reentrancy and shutdown cancellation; no CEF engine loaded"
+        );
+        return ExitCode::SUCCESS;
+    }
     if mode == Mode::ExistingApplication {
         if !native::create_conflicting_application() {
             fail("Could not establish the deliberately conflicting application");

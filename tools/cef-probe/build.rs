@@ -5,9 +5,11 @@ fn main() {
         "The CEF application probe requires native macOS"
     );
     println!("cargo:rerun-if-changed=native/application.mm");
+    println!("cargo:rerun-if-changed=native/pump.mm");
     cc::Build::new()
         .cpp(true)
         .file("native/application.mm")
+        .file("native/pump.mm")
         .flag("-std=c++17")
         .flag("-fblocks")
         .flag("-fno-objc-arc")
