@@ -109,14 +109,30 @@ pub fn failure(domain: &str, code: i64, url: &str, description: &str) -> Option<
     })
 }
 
-/// Certificates the user accepted despite an error, by `https` host and port, until quit.
-/// An exception covers that exact certificate only: a different bad certificate warns again.
+/// The error page for a forgotten site, whose "Visit this site anyway" accepts it again.
+pub fn forgotten(url: &str, certificate: Vec<u8>) -> Option<LoadFailure> {
+    let note = "You forgot the exception for this site's invalid certificate.";
+    let mut failure = failure("NSURLErrorDomain", -1202, url, note)?;
+    failure.certificate = Some(certificate);
+    Some(failure)
+}
+
+/// Certificates the user accepted despite an error, by `https` host and port, until forgotten or
+/// quit. An exception covers that exact certificate only: a different bad certificate warns again.
+/// Forgetting keeps the record of accepted certificates: WebKit can reuse their connections.
 #[derive(Debug, Default)]
-pub struct Exceptions(HashMap<(String, u16), HashSet<Vec<u8>>>);
+pub struct Exceptions(
+    HashMap<(String, u16), HashSet<Vec<u8>>>,
+    HashSet<Vec<u8>>,
+    /// Forgotten sites and a certificate each: blocked until "Visit this site anyway" again.
+    HashMap<(String, u16), Vec<u8>>,
+);
 
 impl Exceptions {
     pub fn allow(&mut self, url: &str, certificate: Vec<u8>) {
         if let Some(site) = site(url).filter(|_| can_override(url)) {
+            self.1.insert(certificate.clone());
+            self.2.remove(&site);
             self.0.entry(site).or_default().insert(certificate);
         }
     }
@@ -127,11 +143,23 @@ impl Exceptions {
             .is_some_and(|certificates| certificates.contains(certificate))
     }
 
-    /// Whether the user accepted `certificate` for any site.
+    /// Whether the user accepted `certificate` this session, even if since forgotten.
     pub fn accepted(&self, certificate: &[u8]) -> bool {
-        self.0
-            .values()
-            .any(|certificates| certificates.contains(certificate))
+        self.1.contains(certificate)
+    }
+
+    /// A forgotten site's certificate: its loads are refused before WebKit could reuse the
+    /// connection it trusted.
+    pub fn blocked(&self, url: &str) -> Option<Vec<u8>> {
+        self.2.get(&site(url)?).cloned()
+    }
+
+    pub fn forget(&mut self) {
+        for (site, certificates) in self.0.drain() {
+            if let Some(certificate) = certificates.into_iter().next() {
+                self.2.insert(site, certificate);
+            }
+        }
     }
 }
 
@@ -239,7 +267,40 @@ mod tests {
         assert!(!exceptions.allows("expired.badssl.com", 443, &[9]));
         assert!(!exceptions.allows("expired.badssl.com", 8443, &[1, 2, 3]));
         assert!(!exceptions.allows("self-signed.badssl.com", 443, &[1, 2, 3]));
+
+        exceptions.allow("https://self-signed.badssl.com/", vec![4]);
+        assert_eq!(exceptions.blocked("https://expired.badssl.com/"), None);
+        exceptions.forget();
+        assert_eq!(
+            exceptions.blocked("https://expired.badssl.com/x"),
+            Some(vec![1, 2, 3])
+        );
+        assert_eq!(
+            exceptions.blocked("https://self-signed.badssl.com/"),
+            Some(vec![4])
+        );
+        assert_eq!(exceptions.blocked("https://other.example/"), None);
+        assert_eq!(exceptions.blocked("http://expired.badssl.com/"), None);
+        // Visiting anyway again unblocks that site only.
+        exceptions.allow("https://expired.badssl.com/", vec![1, 2, 3]);
+        assert_eq!(exceptions.blocked("https://expired.badssl.com/"), None);
+        assert!(
+            exceptions
+                .blocked("https://self-signed.badssl.com/")
+                .is_some()
+        );
+        assert!(failure_for_forgotten_site_offers_the_certificate());
+        exceptions.forget();
+        assert!(!exceptions.allows("expired.badssl.com", 443, &[1, 2, 3]));
+        assert!(!exceptions.allows("self-signed.badssl.com", 443, &[4]));
+        assert!(exceptions.accepted(&[1, 2, 3]) && exceptions.accepted(&[4]));
         assert!(!exceptions.accepted(&[9]));
+        exceptions.forget();
+    }
+
+    fn failure_for_forgotten_site_offers_the_certificate() -> bool {
+        let failure = forgotten("https://expired.badssl.com/", vec![7]).unwrap();
+        failure.kind == Kind::Secure && failure.certificate == Some(vec![7])
     }
 
     #[test]

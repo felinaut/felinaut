@@ -296,7 +296,7 @@ actions!(
         ShowDownloads
     ]
 );
-actions!(felinaut, [ExplainNotSecure]);
+actions!(felinaut, [ForgetCertificateExceptions, ExplainNotSecure]);
 
 /// What ⌘⇧T needs to bring a closed tab back where it was.
 struct ClosedTab {
@@ -1557,6 +1557,9 @@ impl Browser {
         for request in requests {
             self.handle_agent(request, window, cx);
         }
+        if webview::take_forget_chosen() {
+            self.forget_certificate_exceptions(&ForgetCertificateExceptions, window, cx);
+        }
         let mut changed = false;
         let mut address_changed = false;
         let mut open = Vec::new();
@@ -2198,6 +2201,34 @@ impl Browser {
                 None => page.reload().err(),
             };
             tab.loading |= tab.error.is_none();
+        }
+        cx.notify();
+    }
+    /// Reloads every tab on an accepted certificate, so its warning shows again.
+    fn forget_certificate_exceptions(
+        &mut self,
+        _: &ForgetCertificateExceptions,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let used: Vec<usize> = (0..self.tabs.len())
+            .filter(|&index| {
+                let page = self.tabs[index].page.as_deref();
+                page.is_some_and(NativePage::uses_accepted_certificate)
+            })
+            .collect();
+        webview::forget_certificate_exceptions();
+        // WebKit keeps the trusted connection open, so a reload would show the page again:
+        // show the certificate error instead.
+        for index in used {
+            let tab = &mut self.tabs[index];
+            if let Some(page) = &tab.page {
+                let _ = page.set_visible(false);
+            }
+            let certificate = webview::blocked_certificate(&tab.url);
+            if let Some(failure) = certificate.and_then(|c| load_error::forgotten(&tab.url, c)) {
+                tab.show_failure(failure);
+            }
         }
         cx.notify();
     }
@@ -4010,6 +4041,7 @@ impl Render for Browser {
             .on_action(cx.listener(Self::reopen_tab))
             .on_action(cx.listener(Self::new_live_folder))
             .on_action(cx.listener(Self::show_downloads))
+            .on_action(cx.listener(Self::forget_certificate_exceptions))
             .on_action(cx.listener(Self::explain_not_secure))
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
@@ -4279,6 +4311,8 @@ fn main() {
                     MenuItem::action("Forward", Forward),
                     MenuItem::action("Reload", Reload),
                     MenuItem::action("Home", Home),
+                    MenuItem::separator(),
+                    MenuItem::action("Forget Certificate Exceptions", ForgetCertificateExceptions),
                 ],
             },
             Menu {

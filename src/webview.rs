@@ -58,6 +58,7 @@ impl NativePage {
         let title_sender = sender.clone();
         let link_sender = sender.clone();
         let failure_sender = sender.clone();
+        let blocked_sender = sender.clone();
         let mut builder = WebViewBuilder::new();
         if agent_enabled() {
             builder =
@@ -83,7 +84,16 @@ impl NativePage {
             })
             .with_visible(false)
             .with_focused(false)
-            .with_navigation_handler(|url| allowed_url(&url))
+            .with_navigation_handler(move |url| {
+                // A forgotten site is refused before any request: WebKit would reuse the
+                // connection it trusted.
+                let blocked = EXCEPTIONS.with_borrow(|exceptions| exceptions.blocked(&url));
+                if let Some(failure) = blocked.and_then(|c| crate::load_error::forgotten(&url, c)) {
+                    let _ = blocked_sender.send(Event::Failed(failure));
+                    return false;
+                }
+                allowed_url(&url)
+            })
             .with_new_window_req_handler(move |url, _| {
                 if allowed_url(&url) {
                     let _ = sender.send(Event::Open(url));
@@ -218,13 +228,17 @@ impl NativePage {
 
     /// Whether the page came with a certificate the user accepted, even over a reused connection.
     pub fn uses_accepted_certificate(&self) -> bool {
+        self.served_certificate()
+            .is_some_and(|leaf| EXCEPTIONS.with_borrow(|exceptions| exceptions.accepted(&leaf)))
+    }
+
+    fn served_certificate(&self) -> Option<Vec<u8>> {
         use wry::WebViewExtMacOS;
         // SAFETY: a property read on a live WKWebView owned by this page, on the main thread;
         // the trust (or null) belongs to the view and is only read before this returns.
         let trust: *mut SecTrust =
             unsafe { objc2::msg_send![&*self.webview.webview(), serverTrust] };
         leaf_certificate(trust)
-            .is_some_and(|leaf| EXCEPTIONS.with_borrow(|exceptions| exceptions.accepted(&leaf)))
     }
 
     /// The URL and title on display; none after a failed first load.
@@ -448,15 +462,24 @@ thread_local! {
     /// Each page's event channel, by its WKWebView's address.
     static FAILURES: RefCell<HashMap<usize, Sender<Event>>> = RefCell::default();
     static EXCEPTIONS: RefCell<Exceptions> = RefCell::default();
+    static FORGET_CHOSEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub fn allow_certificate(url: &str, certificate: Vec<u8>) {
     EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.allow(url, certificate));
 }
 
+pub fn blocked_certificate(url: &str) -> Option<Vec<u8>> {
+    EXCEPTIONS.with_borrow(|exceptions| exceptions.blocked(url))
+}
+
+pub fn forget_certificate_exceptions() {
+    EXCEPTIONS.with_borrow_mut(Exceptions::forget);
+}
+
 /// Explains the Not secure mark in a sheet, which is drawn above the native pages.
 pub fn explain_not_secure(window: &gpui::Window, host: &str) {
-    use objc2_app_kit::{NSAlert, NSView};
+    use objc2_app_kit::{NSAlert, NSAlertSecondButtonReturn, NSView};
     use objc2_foundation::{NSString, ns_string};
     use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
@@ -479,7 +502,17 @@ pub fn explain_not_secure(window: &gpui::Window, host: &str) {
          Felinaut quits. Anyone on your network could read or change what you send, including \
          passwords."
     )));
-    alert.beginSheetModalForWindow_completionHandler(&ns_window, None);
+    alert.addButtonWithTitle(ns_string!("Keep"));
+    alert.addButtonWithTitle(ns_string!("Forget Certificate Exceptions"));
+    // AppKit calls this on the main thread; `take_forget_chosen` hands it to the UI drain.
+    let chosen = block2::RcBlock::new(|response| {
+        FORGET_CHOSEN.set(response == NSAlertSecondButtonReturn);
+    });
+    alert.beginSheetModalForWindow_completionHandler(&ns_window, Some(&chosen));
+}
+
+pub fn take_forget_chosen() -> bool {
+    FORGET_CHOSEN.take()
 }
 
 /// `SecTrustRef`'s pointee, so `msg_send!` can check the Objective-C type encoding.

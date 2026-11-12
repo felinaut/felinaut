@@ -36,6 +36,8 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     # The Not secure mark's explanation sheet.
     "NSAlert",
     "NSApplication",
+    "NSButton",
+    "NSControl",
 ] }
 # Also already used by Wry; agent control calls WKWebView directly.
 objc2 = "0.6"
