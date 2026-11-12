@@ -1316,6 +1316,7 @@ impl Browser {
     fn title_chip(
         &self,
         display: AddressDisplay,
+        not_secure: bool,
         p: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1345,6 +1346,7 @@ impl Browser {
             .on_click(
                 cx.listener(|this, _, window, cx| this.focus_address(&FocusAddress, window, cx)),
             )
+            .when(not_secure, |chip| chip.child(input::not_secure_badge(p)))
             .child(self.site_icon(&host, 16., p))
             .child(
                 div()
@@ -2449,7 +2451,38 @@ impl Browser {
                             }))
                             .child("Try Again  ⌘R"),
                     )
-                    .child(note(failure.detail.clone().into()).text_xs()),
+                    .child(note(failure.detail.clone().into()).text_xs())
+                    .when(failure.certificate.is_some(), |page| {
+                        page.child(
+                            div()
+                                .id("error-bypass")
+                                .mt_2()
+                                .text_sm()
+                                .whitespace_nowrap()
+                                .underline()
+                                .cursor_pointer()
+                                .text_color(rgb(p.text))
+                                .hover(move |s| s.text_color(rgb(p.primary)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if let Some(failure) = &this.tabs[index].failure
+                                        && let Some(certificate) = failure.certificate.clone()
+                                    {
+                                        webview::allow_certificate(&failure.url, certificate);
+                                    }
+                                    this.activate_half(index, cx);
+                                    this.reload(&Reload, window, cx);
+                                }))
+                                .child("Visit this site anyway"),
+                        )
+                        .child(
+                            note(
+                                "Until Felinaut quits. Anyone on your network could read or change \
+                                 what you send, even passwords."
+                                    .into(),
+                            )
+                            .text_xs(),
+                        )
+                    }),
             )
             .into_any_element()
     }
@@ -3825,6 +3858,10 @@ impl Render for Browser {
         let toolbar_toggle = sidebar_width < 88.;
         let tab = &self.tabs[self.active];
         let show_chip = !tab.home && !address_focused && display != AddressDisplay::Url;
+        let not_secure =
+            !tab.home && tab.failure.is_none() && webview::has_certificate_exception(&tab.url);
+        self.address
+            .update(cx, |input, _| input.set_not_secure(not_secure));
         let back_enabled = tab.can_go_back();
         let forward_enabled = tab.can_go_forward();
         // A hovered sidebar row shows its full title and address, which the row truncates.
@@ -3950,7 +3987,7 @@ impl Render for Browser {
                                 cx.listener(|this, _, window, cx| this.home(&Home, window, cx)),
                             ))
                             .child(div().flex_1().min_w_0().child(if show_chip {
-                                self.title_chip(display, p, cx)
+                                self.title_chip(display, not_secure, p, cx)
                             } else {
                                 self.address.clone().into_any_element()
                             }))

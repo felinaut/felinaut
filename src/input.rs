@@ -104,6 +104,7 @@ pub struct AddressInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    not_secure: bool,
     _theme_observer: gpui::Subscription,
 }
 
@@ -122,9 +123,14 @@ impl AddressInput {
             ghost: None,
             last_layout: None,
             last_bounds: None,
+            not_secure: false,
             is_selecting: false,
             _theme_observer: cx.observe_global::<ThemeSettings>(|_, cx| cx.notify()),
         }
+    }
+
+    pub fn set_not_secure(&mut self, not_secure: bool) {
+        self.not_secure = not_secure;
     }
 
     /// Replace the contents and place the cursor at the end, clearing composition.
@@ -880,8 +886,28 @@ impl Render for AddressInput {
             // 24 + 2 × 4 + border = 34 pt, matching the toolbar buttons and the title chip.
             .py(px(4.))
             .overflow_hidden()
+            .items_center()
+            .when(self.not_secure, |field| {
+                field.child(not_secure_badge(p).mr_2())
+            })
             .child(TextElement { input: cx.entity() })
     }
+}
+
+/// Marks a page using a certificate the user accepted despite an error.
+pub fn not_secure_badge(p: theme::Palette) -> gpui::Div {
+    div()
+        .flex_shrink_0()
+        .px_1p5()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(p.highlight))
+        .text_size(px(11.))
+        .line_height(px(16.))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(rgb(p.text))
+        .whitespace_nowrap()
+        .child("⚠ Not secure")
 }
 
 impl Focusable for AddressInput {

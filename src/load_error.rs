@@ -1,5 +1,7 @@
 //! WebKit navigation errors, classified and worded for the error page.
 
+use std::collections::{HashMap, HashSet};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Offline,
@@ -62,6 +64,8 @@ pub struct LoadFailure {
     pub kind: Kind,
     /// WebKit's description with its error domain and code.
     pub detail: String,
+    /// The server's certificate (DER) when the user may choose to trust it anyway.
+    pub certificate: Option<Vec<u8>>,
 }
 
 /// Classifies a WebKit navigation error. `None` means it is not a failure to show: the load was
@@ -101,7 +105,40 @@ pub fn failure(domain: &str, code: i64, url: &str, description: &str) -> Option<
         url: url.to_owned(),
         kind: classify(domain, code)?,
         detail: format!("{} ({domain} {code})", description.trim()),
+        certificate: None,
     })
+}
+
+/// Certificates the user accepted despite an error, by `https` host and port, until quit.
+/// An exception covers that exact certificate only: a different bad certificate warns again.
+#[derive(Debug, Default)]
+pub struct Exceptions(HashMap<(String, u16), HashSet<Vec<u8>>>);
+
+impl Exceptions {
+    pub fn allow(&mut self, url: &str, certificate: Vec<u8>) {
+        if let Some(site) = site(url) {
+            self.0.entry(site).or_default().insert(certificate);
+        }
+    }
+
+    pub fn allows(&self, host: &str, port: u16, certificate: &[u8]) -> bool {
+        self.0
+            .get(&(host.to_ascii_lowercase(), port))
+            .is_some_and(|certificates| certificates.contains(certificate))
+    }
+
+    /// Whether a page at `url` may be using an accepted certificate, for the Not secure mark.
+    pub fn covers(&self, url: &str) -> bool {
+        !self.0.is_empty() && site(url).is_some_and(|site| self.0.contains_key(&site))
+    }
+}
+
+/// The host and port of an `https` URL; the URL parser lowercases the host.
+fn site(url: &str) -> Option<(String, u16)> {
+    let url = url::Url::parse(url)
+        .ok()
+        .filter(|url| url.scheme() == "https")?;
+    Some((url.host_str()?.to_owned(), url.port_or_known_default()?))
 }
 
 #[cfg(test)]
@@ -148,5 +185,25 @@ mod tests {
         assert_eq!(failure.detail, "Notfound. (NSURLErrorDomain -1003)");
         let long = super::failure("X", 1, "", &"c".repeat(1000)).unwrap();
         assert!(long.detail.len() < 320);
+    }
+
+    #[test]
+    fn exceptions_cover_one_certificate_on_one_https_site() {
+        let mut exceptions = Exceptions::default();
+        assert!(!exceptions.covers("https://expired.badssl.com/"));
+        exceptions.allow("https://Expired.badssl.com/a?b", vec![1, 2, 3]);
+        exceptions.allow("http://plain.example/", vec![1]);
+        assert!(exceptions.covers("https://expired.badssl.com/other"));
+        assert!(exceptions.allows("EXPIRED.badssl.com", 443, &[1, 2, 3]));
+        assert!(!exceptions.allows("expired.badssl.com", 443, &[9]));
+        assert!(!exceptions.allows("expired.badssl.com", 8443, &[1, 2, 3]));
+        assert!(!exceptions.allows("self-signed.badssl.com", 443, &[1, 2, 3]));
+        for url in [
+            "http://expired.badssl.com/",
+            "http://plain.example/",
+            "about:blank",
+        ] {
+            assert!(!exceptions.covers(url), "{url}");
+        }
     }
 }

@@ -2,13 +2,14 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use gpui::{Bounds, Pixels};
 use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
 use crate::audio::{AudioReport, TabAudio, parse_report};
-use crate::load_error::LoadFailure;
+use crate::load_error::{Exceptions, LoadFailure};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -416,10 +417,81 @@ thread_local! {
     /// The event channel of each page that reports load failures, by its WKWebView's address.
     /// Only the main thread touches WebKit, so the map lives there.
     static FAILURES: RefCell<HashMap<usize, Sender<Event>>> = RefCell::default();
+    static EXCEPTIONS: RefCell<Exceptions> = RefCell::default();
 }
 
-/// Wry's navigation delegate has no failure methods, so this adds them to its class and
-/// routes them to `sender`. Returns the page's key in `FAILURES`, or `None` if
+/// Trusts a certificate from a failed load for its site until quit.
+pub fn allow_certificate(url: &str, certificate: Vec<u8>) {
+    EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.allow(url, certificate));
+}
+
+/// Whether the page at `url` may be using a certificate the user accepted despite an error.
+pub fn has_certificate_exception(url: &str) -> bool {
+    EXCEPTIONS.with_borrow(|exceptions| exceptions.covers(url))
+}
+
+/// `SecTrustRef`'s pointee, so `msg_send!` can check the Objective-C type encoding.
+#[repr(C)]
+struct SecTrust {
+    _private: [u8; 0],
+}
+// SAFETY: matches the `^{__SecTrust=}` encoding of `serverTrust` and `credentialForTrust:`.
+unsafe impl objc2::RefEncode for SecTrust {
+    const ENCODING_REF: objc2::Encoding =
+        objc2::Encoding::Pointer(&objc2::Encoding::Struct("__SecTrust", &[]));
+}
+
+#[link(name = "Security", kind = "framework")]
+unsafe extern "C" {
+    fn SecTrustGetCertificateAtIndex(trust: *const SecTrust, index: isize) -> *const c_void;
+    fn SecCertificateCopyData(certificate: *const c_void) -> *mut objc2_foundation::NSData;
+}
+
+/// The server's leaf certificate (DER). Reads what the server sent without evaluating trust,
+/// which could fetch revocation data on this, the main, thread.
+fn leaf_certificate(trust: *const SecTrust) -> Option<Vec<u8>> {
+    // SAFETY: `trust` is a live SecTrustRef or null. The leaf is owned by the trust (Get rule);
+    // the copied CFData, toll-free bridged to NSData, is released when the `Retained` drops.
+    unsafe {
+        let leaf = SecTrustGetCertificateAtIndex(trust.as_ref()?, 0);
+        if leaf.is_null() {
+            return None;
+        }
+        objc2::rc::Retained::from_raw(SecCertificateCopyData(leaf)).map(|data| data.to_vec())
+    }
+}
+
+/// The credential that accepts a certificate the user trusted on an error page, or `None` for
+/// WebKit's default handling of every other challenge.
+fn accepted_credential(
+    challenge: &objc2::runtime::AnyObject,
+) -> Option<objc2::rc::Retained<objc2::runtime::AnyObject>> {
+    use objc2::{class, msg_send, rc::Retained, runtime::AnyObject};
+    use objc2_foundation::{NSString, ns_string};
+    // SAFETY: property reads on a live NSURLAuthenticationChallenge and its protection space,
+    // on the main thread, with the types Foundation declares.
+    unsafe {
+        let space: Retained<AnyObject> = msg_send![challenge, protectionSpace];
+        let method: Retained<NSString> = msg_send![&*space, authenticationMethod];
+        if &*method != ns_string!("NSURLAuthenticationMethodServerTrust") {
+            return None;
+        }
+        let host: Retained<NSString> = msg_send![&*space, host];
+        let port: isize = msg_send![&*space, port];
+        let trust: *mut SecTrust = msg_send![&*space, serverTrust];
+        let certificate = leaf_certificate(trust)?;
+        let allowed = EXCEPTIONS.with_borrow(|exceptions| {
+            exceptions
+                .allows(&host.to_string(), u16::try_from(port).ok()?, &certificate)
+                .then_some(())
+        });
+        allowed?;
+        msg_send![class!(NSURLCredential), credentialForTrust: trust]
+    }
+}
+
+/// Wry's navigation delegate has no failure or certificate methods, so this adds them to its
+/// class and routes failures to `sender`. Returns the page's key in `FAILURES`, or `None` if
 /// WebKit has no delegate to extend.
 fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     use objc2::runtime::{AnyObject, Imp, Sel};
@@ -444,6 +516,31 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
         // SAFETY: WebKit passes a live error, or null, on the main thread.
         report_failure(webview as usize, unsafe { error.as_ref() }, provisional);
     }
+    type Handler = block2::Block<dyn Fn(isize, *mut AnyObject)>;
+    type ChallengeCallback = unsafe extern "C-unwind" fn(
+        *mut AnyObject,
+        Sel,
+        *mut AnyObject,
+        *mut AnyObject,
+        *mut Handler,
+    );
+    unsafe extern "C-unwind" fn challenge(
+        _: *mut AnyObject,
+        _: Sel,
+        _: *mut AnyObject,
+        challenge: *mut AnyObject,
+        handler: *mut Handler,
+    ) {
+        // SAFETY: WebKit passes a live challenge and completion handler on the main thread,
+        // and expects the handler to be called exactly once.
+        let handler = unsafe { &*handler };
+        match unsafe { challenge.as_ref() }.and_then(accepted_credential) {
+            // NSURLSessionAuthChallengeUseCredential
+            Some(credential) => handler.call((0, Retained::as_ptr(&credential).cast_mut())),
+            // NSURLSessionAuthChallengePerformDefaultHandling
+            None => handler.call((1, std::ptr::null_mut())),
+        }
+    }
 
     let view = webview.webview();
     // SAFETY: a property read on a live WKWebView, on the main thread. Wry keeps the delegate
@@ -452,8 +549,9 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     let delegate = delegate?;
     let class = delegate.class();
     // SAFETY: `class` is Wry's registered delegate class. Adding a method only succeeds if the
-    // class lacks it, so Wry's own methods are never replaced and later pages add nothing. The
-    // function matches the `v@:@@@` encoding: void, self, _cmd, then three objects.
+    // class lacks it, so Wry's own methods are never replaced and later pages add nothing. Each
+    // function matches its type encoding: void, self, _cmd, then three objects (`@`), the last
+    // one a block (`@?`) for the challenge.
     unsafe {
         let class = class as *const _ as *mut _;
         let failed = std::mem::transmute::<Callback, Imp>(failed);
@@ -463,6 +561,12 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
         ] {
             objc2::ffi::class_addMethod(class, selector, failed, c"v@:@@@".as_ptr());
         }
+        objc2::ffi::class_addMethod(
+            class,
+            sel!(webView:didReceiveAuthenticationChallenge:completionHandler:),
+            std::mem::transmute::<ChallengeCallback, Imp>(challenge),
+            c"v@:@@@?".as_ptr(),
+        );
     }
     // WebKit caches which methods a delegate implements when it is set, so set it again.
     // SAFETY: the same live delegate, on the main thread.
@@ -483,12 +587,23 @@ fn report_failure(key: usize, error: Option<&objc2_foundation::NSError>, provisi
             .and_then(|url| url.absoluteString())
             .map(|url| url.to_string())
             .unwrap_or_default();
-        crate::load_error::failure(
-            &error.domain().to_string(),
-            error.code() as i64,
+        let domain = error.domain().to_string();
+        let code = error.code() as i64;
+        let mut failure = crate::load_error::failure(
+            &domain,
+            code,
             &url,
             &error.localizedDescription().to_string(),
-        )
+        )?;
+        // A bad date, issuer or name can be overridden; a failed handshake cannot.
+        if domain == "NSURLErrorDomain" && (-1204..=-1201).contains(&code) {
+            failure.certificate = info
+                .objectForKey(objc2_foundation::ns_string!(
+                    "NSURLErrorFailingURLPeerTrustErrorKey"
+                ))
+                .and_then(|trust| leaf_certificate(objc2::rc::Retained::as_ptr(&trust).cast()));
+        }
+        Some(failure)
     });
     let event = failure.map_or(Event::Stopped, Event::Failed);
     FAILURES.with_borrow(|pages| {
