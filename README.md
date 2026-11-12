@@ -271,6 +271,21 @@ How it works: Wry's download callbacks report neither progress nor the download 
 
 Limitations: there is no pause or resume, no "ask where to save", no per-site folder, and no retry; start the download again from its page. Felinaut does not check whether a listed file was moved or deleted afterwards, so **Open** and **Show in Finder** then do nothing. A download stops when Felinaut quits.
 
+## JavaScript dialogs
+
+A page's `alert()`, `confirm()` and `prompt()` show as a panel between the toolbar and the page. The page moves down while the panel is open, so the panel is always browser chrome: a page cannot draw there.
+
+- The **title** names the origin of the frame that asked (scheme, host and port), for example `https://example.com says`. A frame inside the page shows as `An embedded page at … says`. The title and the buttons hold no other text from the page.
+- The **message** is plain text, cut after 2,000 characters. `prompt()` has a text field that starts with the page's default text; the default text and the answer are cut after 2,000 characters.
+- Keyboard: `↩` is **OK**, `Esc` is **Cancel**. `alert()` has only **OK**.
+- From the second dialog of one document, the panel has a **Do not let this page show more dialogs** checkbox. With it checked, each later dialog of that document gets the default answer without a panel. The choice ends when the tab loads another document or closes.
+- A dialog belongs to its tab. A dialog of a tab in the background does not take the focus: its sidebar row shows a dot, and the panel shows when you select the tab.
+- A page that nobody can see never shows a dialog and gets the default answer at once: `alert()` returns, `confirm()` gives `false` and `prompt()` gives `null`. This applies to the hidden pages that read live folders, and to a tab under the New Tab page or an error page. Back, forward, reload, a new address and closing the tab give the same default answer to a dialog that is open.
+
+How it works: Wry's `WKUIDelegate` has no dialog methods, so Felinaut adds the three public ones to that class (`src/dialogs/native.rs`). A WebKit callback only puts the dialog in the queue of its page; the UI's 100 ms drain finds it there. Each completion handler is called exactly one time: a guard gives the default answer if a dialog goes away without one.
+
+Limitations: the "Leave the page?" question of `beforeunload` does not show, and the page is left without it. WKWebView's public API has no method for that question, and Felinaut uses no private WebKit API. Agent control cannot answer a dialog, and `eval`, `click` and `snapshot` get no answer from a page that waits for one; `navigate` ends the dialog. A click on the page while a dialog is open gives the keys to the page: click the panel to use `↩` and `Esc` again. The checkbox has no key. Pinned tiles and live folder rows do not show the dot.
+
 ## Artwork and appearance
 
 The toolbar's **Theme ▾** button opens six curated palettes: **Milky Way** (the new-profile default), Midnight Party, Confetti Sunset, Neon Wool, Alpine Pop, and Forest Carnival. Existing saved selections keep their original theme keys. Themes recolor Felinaut's chrome, address field, New Tab page and About window—not websites. Theme, animation and address-bar choices are saved to `~/Library/Application Support/Felifox/settings` (`key=value` lines, including sidebar choices) and restored on launch.
@@ -325,7 +340,7 @@ FELINAUT_NATIVE_TEST=1 cargo test --test native_audio
 
 Add `-F gpui/runtime_shaders` to these commands on machines without full Xcode.
 
-The native webview test verifies actual WebKit JavaScript execution, DOM title changes, localStorage, native history, URL polling of a tab whose host never resolved, and injected DOM-event handling for hover, Cmd-click, middle-click and the right-click menu. It also downloads a loopback attachment whose name points outside the downloads folder (into a temporary home, never the real `~/Downloads`) and checks that the file stays inside it and that a hidden page's download is refused. The brand UI test also verifies that the actual artwork timer advances when enabled and stops when disabled (or when macOS Reduce Motion applies). Geometry tests cover distinct scenes, tessellation and changes over time for all six themes. Native tests use programmatically dispatched DOM events or shared UI handlers, not physical mouse automation. It is skipped by default because WebKit needs a macOS desktop session and main-thread event loop.
+The native webview test verifies actual WebKit JavaScript execution, DOM title changes, localStorage, native history, URL polling of a tab whose host never resolved, and injected DOM-event handling for hover, Cmd-click, middle-click and the right-click menu. It also downloads a loopback attachment whose name points outside the downloads folder (into a temporary home, never the real `~/Downloads`) and checks that the file stays inside it and that a hidden page's download is refused. It then answers `alert()`, `confirm()` and `prompt()` through the dialog queue and checks the values JavaScript gets, the dialogs the user stopped, a dialog closed with its tab, a dialog ended by a reload, and the default answers of a hidden page. The brand UI test also verifies that the actual artwork timer advances when enabled and stops when disabled (or when macOS Reduce Motion applies). Geometry tests cover distinct scenes, tessellation and changes over time for all six themes. Native tests use programmatically dispatched DOM events or shared UI handlers, not physical mouse automation. It is skipped by default because WebKit needs a macOS desktop session and main-thread event loop.
 
 ## Source
 
@@ -336,6 +351,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/suggestions.rs`: the native, non-focusing history dropdown under the address bar.
 - `src/icons.rs`, `src/page_icon.js`: site icons handed over by the page as validated PNGs, stored per host, with monogram fallback.
 - `src/webview.rs`: Wry child views, native callbacks, history, bounds and focus.
+- `src/dialogs.rs`, `src/dialogs/native.rs`, `src/dialog_panel.rs`: the JavaScript dialog queue and text limits, the WebKit dialog methods, and the panel above the page.
 - `src/theme.rs`: shared palettes, contrast checks, native Reduce Motion support and the saved Appearance settings.
 - `src/art.rs` and `src/art/`: theme dispatch and six procedural scenes with shared orbital/yarn geometry; no textures or animation framework.
 - `src/link_interactions.js`: document-level link status, modifier-click and accessible context-menu handling.
