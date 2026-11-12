@@ -360,6 +360,8 @@ impl Tab {
             live: None,
         }
     }
+    /// An earlier failure stays until the new page commits or fails, so the page under the
+    /// error page never flashes.
     fn start_load(&mut self, url: String) {
         self.title = url::Url::parse(&url)
             .ok()
@@ -369,7 +371,6 @@ impl Tab {
         self.home = false;
         self.loading = true;
         self.error = None;
-        self.failure = None;
     }
     /// Shows a failed load's error page. Try Again needs a URL, so a failure without one
     /// keeps the URL the tab was loading.
@@ -3772,8 +3773,16 @@ impl Browser {
         if tab.home {
             return self.home_page(cx);
         }
-        if let Some(failure) = &tab.failure {
-            return self.error_page(index, failure, cx);
+        // While loading after a failure: a blank page, not the old error or the old document.
+        match &tab.failure {
+            Some(_) if tab.loading => {
+                return div()
+                    .size_full()
+                    .bg(rgb(theme::palette(cx).background))
+                    .into_any_element();
+            }
+            Some(failure) => return self.error_page(index, failure, cx),
+            None => {}
         }
         if let Some(page) = &tab.page {
             let page = page.clone();
@@ -4171,7 +4180,7 @@ mod tests {
     }
 
     #[test]
-    fn failures_stop_loading_and_retry_their_url() {
+    fn failures_stop_loading_and_stay_until_a_new_page_commits() {
         let mut tab = super::Tab::new(1);
         tab.start_load("https://typed.example/".into());
         // A failure without a URL retries the one the tab was loading.
@@ -4179,8 +4188,9 @@ mod tests {
         assert!(!tab.loading);
         assert_eq!(tab.title, "Can't find this site");
         assert_eq!(tab.failure.as_ref().unwrap().url, "https://typed.example/");
+        // Loading another address keeps the failure, so the old page stays hidden.
         tab.start_load("https://expired.badssl.com/".into());
-        assert!(tab.loading && tab.failure.is_none());
+        assert!(tab.loading && tab.failure.is_some());
         assert_eq!(tab.title, "expired.badssl.com");
         tab.show_failure(failed("https://expired.badssl.com/"));
         assert_eq!(tab.url, "https://expired.badssl.com/");
