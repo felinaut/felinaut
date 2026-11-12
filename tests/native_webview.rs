@@ -27,7 +27,7 @@ use std::{
     net::TcpListener,
     rc::Rc,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -36,9 +36,8 @@ use webview::{Event, NativePage};
 
 struct TestWindow {
     page: Rc<NativePage>,
-    _second_tab: NativePage,
     _failed_tab: Rc<NativePage>,
-    _hidden: NativePage,
+    _hidden: [NativePage; 2],
 }
 impl Render for TestWindow {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -77,6 +76,9 @@ fn main() {
     let base = format!("http://{}", listener.local_addr().unwrap());
     let download_requests = Arc::new(AtomicUsize::new(0));
     let served_downloads = download_requests.clone();
+    // What a hidden page got from its dialogs.
+    let hidden_answers = Arc::new(Mutex::new(String::new()));
+    let reported_answers = hidden_answers.clone();
     std::thread::spawn(move || {
         for connection in listener.incoming() {
             let Ok(mut stream) = connection else {
@@ -94,6 +96,15 @@ fn main() {
                 // The server asks for a name outside the downloads folder.
                 served_downloads.fetch_add(1, Ordering::SeqCst);
                 let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"../../fixture.bin\"\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture");
+                continue;
+            }
+            if let Some(answers) = request.strip_prefix("GET /hidden-result?") {
+                *reported_answers.lock().unwrap() =
+                    answers.split(' ').next().unwrap_or_default().to_owned();
+            }
+            if request.starts_with("GET /hidden-dialogs ") {
+                let body = "<!doctype html><script>alert('a'); fetch('/hidden-result?' + confirm('b') + '-' + prompt('c', 'd'));</script>";
+                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
                 continue;
             }
             let second = request.starts_with("GET /second ");
@@ -121,6 +132,9 @@ fn main() {
         let download_url = format!("{base}/download");
         let folder = folder.clone();
         let download_requests = download_requests.clone();
+        let hidden_answers = hidden_answers.clone();
+        let origin = base.clone();
+        let hidden_dialogs_url = format!("{base}/hidden-dialogs");
         let handle = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(800.), px(600.)), cx))),
@@ -136,6 +150,8 @@ fn main() {
                 let failed_page = failed_tab.clone();
                 // A page the user never sees asks for the same download; it must be refused.
                 let hidden = NativePage::hidden(window, &download_url).expect("create hidden page");
+                // Another one asks for dialogs; it must get the default answers at once.
+                let hidden_dialogs = NativePage::hidden(window, &hidden_dialogs_url).expect("create hidden page");
                 page.focus().unwrap();
                 page.focus_parent().unwrap();
                 let second_page = page.clone();
@@ -150,6 +166,8 @@ fn main() {
                         let mut foreground_open = false;
                         let mut failure = None;
                         let mut downloads = Vec::new();
+                        let mut background_tab = Some(second_tab);
+                        let mut dialogs_seen = Vec::new();
                         loop {
                             Timer::after(Duration::from_millis(50)).await;
                             downloads.extend(downloads::native::drain());
@@ -170,11 +188,34 @@ fn main() {
                                     _ => {},
                                 }
                             }
-                            assert!(start.elapsed() < Duration::from_secs(20), "native test timed out at stage {stage}; title={title:?}");
+                            // Answer the fixture's dialogs as a user would; 'leave?' stays on show.
+                            let dialog = second_page.dialog();
+                            if let Some(shown) = &dialog {
+                                let request = &shown.request;
+                                let reply = |accepted, text: &str| dialogs::Reply { accepted, text: text.into() };
+                                let answer = match request.message.as_str() {
+                                    "one" | "two" => Some((reply(true, ""), false)),
+                                    "three" | "five" => Some((reply(false, "ignored"), false)),
+                                    "four" => Some((reply(true, "typed"), false)),
+                                    "six" => Some((reply(true, &request.default_text), true)),
+                                    _ => None,
+                                };
+                                if let Some((reply, suppress)) = answer {
+                                    assert_eq!(request.title(), format!("{origin} says"));
+                                    dialogs_seen.push((request.kind, request.message.clone(), request.default_text.clone(), shown.can_suppress));
+                                    second_page.answer_dialog(shown.id, reply, suppress);
+                                }
+                            }
+                            let leave_shown = dialog.is_some_and(|shown| shown.request.message == "leave?");
+                            assert!(start.elapsed() < Duration::from_secs(30), "native test timed out at stage {stage}; title={title:?}; dialogs={dialogs_seen:?}");
                             if stage <= 4 && !finished { continue; }
                             if stage == 5 && (title != "LINK EVENTS OK" || failure.is_none()) { continue; }
                             let downloaded = downloads.iter().any(|event| matches!(event, downloads::Event::Finished { .. }));
                             if stage == 6 && !(downloaded && download_requests.load(Ordering::SeqCst) >= 2) { continue; }
+                            let background_dialog = background_tab.as_ref().and_then(|tab| tab.dialog());
+                            if stage == 7 && !(title.starts_with("DIALOGS ") && background_dialog.is_some()) { continue; }
+                            if (stage == 8 || stage == 10) && !finished { continue; }
+                            if stage == 9 && !leave_shown { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
@@ -245,7 +286,47 @@ fn main() {
                                     assert_eq!(std::fs::read(saved).unwrap(), b"fixture");
                                     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "the hidden page saved nothing");
                                     std::fs::remove_dir_all(folder.parent().unwrap()).unwrap();
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, and a download that stays in the downloads folder while a hidden page's is refused");
+                                    // One dialog of each kind and answer, then a dialog the user stopped.
+                                    second_page.evaluate_for_test(r#"
+                                        setTimeout(() => {
+                                          alert('one');
+                                          const answers = [confirm('two'), confirm('three'), prompt('four', 'start'), prompt('five', 'x'), prompt('six', 'kept'), confirm('seven')];
+                                          document.title = 'DIALOGS ' + JSON.stringify(answers);
+                                        }, 0);
+                                    "#).unwrap();
+                                    background_tab.as_ref().unwrap().evaluate_for_test("setTimeout(() => alert('background'), 0)").unwrap();
+                                }
+                                7 => {
+                                    assert_eq!(title, r#"DIALOGS [true,false,"typed",null,"kept",false]"#);
+                                    use dialogs::Kind::{Alert, Confirm, Prompt};
+                                    let expected = [
+                                        (Alert, "one", "", false),
+                                        (Confirm, "two", "", true),
+                                        (Confirm, "three", "", true),
+                                        (Prompt, "four", "start", true),
+                                        (Prompt, "five", "x", true),
+                                        (Prompt, "six", "kept", true),
+                                    ].map(|(kind, message, text, can_suppress)| (kind, message.to_owned(), text.to_owned(), can_suppress));
+                                    assert_eq!(dialogs_seen, expected, "'seven' came after the user stopped the dialogs");
+                                    // A tab in the background keeps its dialog until someone looks. Closing
+                                    // the tab must answer it: WebKit raises an exception for a lost handler.
+                                    assert_eq!(background_dialog.unwrap().request.message, "background");
+                                    background_tab = None;
+                                    second_page.reload().unwrap();
+                                }
+                                8 => {
+                                    second_page.evaluate_for_test("setTimeout(() => confirm('leave?'), 0)").unwrap();
+                                }
+                                9 => {
+                                    // The new document may show dialogs again, and counts them from one.
+                                    assert!(!second_page.dialog().unwrap().can_suppress);
+                                    // A navigation answers the waiting dialog, so the page can run it.
+                                    second_page.reload().unwrap();
+                                    assert_eq!(second_page.dialog(), None);
+                                }
+                                10 => {
+                                    assert_eq!(*hidden_answers.lock().unwrap(), "false-null", "a hidden page gets the default answers");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and alert, confirm and prompt answers, with dialogs stopped by the user, closed with their tab, ended by a navigation and refused for a hidden page");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;
@@ -255,7 +336,7 @@ fn main() {
                             stage += 1;
                         }
                     }).detach();
-                    TestWindow { page, _second_tab: second_tab, _failed_tab: failed_tab, _hidden: hidden }
+                    TestWindow { page, _failed_tab: failed_tab, _hidden: [hidden, hidden_dialogs] }
                 })
             },
         ).expect("native test window");
