@@ -45,6 +45,7 @@ impl Drop for NativePage {
         if let Some(key) = self.failure_key {
             FAILURES.with_borrow_mut(|pages| pages.remove(&key));
             crate::downloads::native::detach(key);
+            crate::dialogs::native::detach(key);
         }
     }
 }
@@ -110,6 +111,7 @@ impl NativePage {
         {
             use wry::WebViewExtMacOS;
             crate::downloads::native::attach(&webview.webview(), failure_key.is_some());
+            crate::dialogs::native::attach(&webview.webview(), failure_key.is_some());
         }
 
         Ok(Self {
@@ -147,6 +149,8 @@ impl NativePage {
             // A page nobody sees must never save a file.
             use wry::WebViewExtMacOS;
             crate::downloads::native::attach(&webview.webview(), false);
+            // Nor may it show a dialog: each one gets the default answer at once.
+            crate::dialogs::native::attach(&webview.webview(), false);
         }
         Ok(Self {
             webview,
@@ -182,22 +186,47 @@ impl NativePage {
         self.webview.zoom(zoom).map_err(|error| error.to_string())
     }
 
+    /// The JavaScript dialog this page shows now. The owner polls this on the UI thread.
+    pub fn dialog(&self) -> Option<crate::dialogs::Shown> {
+        crate::dialogs::native::shown(self.failure_key?)
+    }
+
+    /// Gives the user's answer to dialog `id`. With `suppress`, this document can show no
+    /// more dialogs.
+    pub fn answer_dialog(&self, id: u64, reply: crate::dialogs::Reply, suppress: bool) {
+        if let Some(key) = self.failure_key {
+            crate::dialogs::native::answer(key, id, reply, suppress);
+        }
+    }
+
+    /// Gives the default answer to this page's dialogs. A page that waits for an answer runs
+    /// no navigation, so each navigation the user starts calls this first.
+    pub fn dismiss_dialogs(&self) {
+        if let Some(key) = self.failure_key {
+            crate::dialogs::native::dismiss(key);
+        }
+    }
+
     pub fn navigate(&self, url: &str) -> Result<(), String> {
         check_url(url)?;
+        self.dismiss_dialogs();
         self.webview
             .load_url(url)
             .map_err(|error| error.to_string())
     }
 
     pub fn back(&self) -> Result<(), String> {
+        self.dismiss_dialogs();
         self.webview.go_back().map_err(|error| error.to_string())
     }
 
     pub fn forward(&self) -> Result<(), String> {
+        self.dismiss_dialogs();
         self.webview.go_forward().map_err(|error| error.to_string())
     }
 
     pub fn reload(&self) -> Result<(), String> {
+        self.dismiss_dialogs();
         self.webview.reload().map_err(|error| error.to_string())
     }
 
@@ -263,6 +292,14 @@ impl NativePage {
 
     pub fn drain_events(&self) -> Vec<Event> {
         let mut events: Vec<_> = self.events.try_iter().collect();
+        // A new document: the dialogs of the old one end, and so does the choice to stop them.
+        if let Some(key) = self.failure_key
+            && events
+                .iter()
+                .any(|event| matches!(event, Event::Started(_)))
+        {
+            crate::dialogs::native::reset(key);
+        }
         // Poll the committed native URL: the navigation-policy callback also sees
         // subframes and attempted navigations, and misses history.pushState changes.
         if let Some(url) = self.current_url() {

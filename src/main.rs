@@ -4,6 +4,8 @@ mod appearance;
 mod art;
 mod audio;
 mod brand;
+mod dialog_panel;
+mod dialogs;
 mod download_panel;
 mod downloads;
 mod engine;
@@ -335,6 +337,8 @@ struct Tab {
     split: Option<u64>,
     /// The live folder item this tab shows; such tabs are drawn in their folder, not the rows.
     live: Option<String>,
+    /// The JavaScript dialog this tab's page shows now.
+    dialog: Option<Entity<dialog_panel::Panel>>,
 }
 impl Tab {
     /// A saved tab (pinned unless the caller clears `pinned`); its page is created when it is
@@ -365,6 +369,7 @@ impl Tab {
             pinned: None,
             split: None,
             live: None,
+            dialog: None,
         }
     }
     /// An earlier failure stays until the new page commits or fails, so the page under the
@@ -1654,6 +1659,7 @@ impl Browser {
         for event in downloads::native::drain() {
             changed |= self.downloads.apply(event, history::now());
         }
+        changed |= dialog_panel::sync(self, window, cx);
         if let Some((path, contents)) = self.downloads.snapshot_due(Instant::now()) {
             cx.background_executor()
                 .spawn(async move {
@@ -1994,6 +2000,7 @@ impl Browser {
         self.hide_others();
         self.reveal_active();
         window.focus(&self.focus);
+        dialog_panel::focus(self, window, cx);
         self.sync_address(cx);
         cx.notify();
     }
@@ -2693,6 +2700,16 @@ impl Browser {
                     .text_sm()
                     .child(tab.display_title()),
             )
+            // The page waits for an answer to a JavaScript dialog.
+            .when(tab.dialog.is_some(), |row| {
+                row.child(
+                    div()
+                        .size(px(8.))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(rgb(p.primary)),
+                )
+            })
             .when(tab.sound.audible() || tab.audio.muted, |row| {
                 let muted = tab.audio.muted;
                 row.child(
@@ -3884,7 +3901,7 @@ impl Browser {
         }
         if let Some(page) = &tab.page {
             let page = page.clone();
-            return canvas(
+            let page = canvas(
                 move |bounds, _, _| {
                     if let Err(error) = page.set_bounds(bounds).and_then(|_| page.set_visible(true))
                     {
@@ -3893,8 +3910,18 @@ impl Browser {
                 },
                 |_, _, _, _| {},
             )
-            .size_full()
-            .into_any_element();
+            .size_full();
+            // A JavaScript dialog is a strip of chrome above the page, never over it.
+            return match &tab.dialog {
+                Some(panel) => div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(panel.clone())
+                    .child(div().flex_1().min_h_0().child(page))
+                    .into_any_element(),
+                None => page.into_any_element(),
+            };
         }
         div().size_full().into_any_element()
     }
@@ -4164,6 +4191,7 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.set_global(ThemeSettings::load());
         input::init(cx);
+        dialog_panel::init(cx);
         #[cfg(target_os = "macos")]
         webview::forward_command_arrows();
         cx.bind_keys([

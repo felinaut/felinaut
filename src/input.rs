@@ -133,6 +133,11 @@ impl AddressInput {
         }
     }
 
+    /// The text an empty field shows. A field that is not the address bar sets its own.
+    pub fn set_placeholder(&mut self, placeholder: &'static str) {
+        self.placeholder = placeholder.into();
+    }
+
     pub fn set_not_secure(&mut self, not_secure: bool) {
         self.not_secure = not_secure;
     }
