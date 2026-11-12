@@ -1,4 +1,4 @@
-//! The camera and microphone prompt.
+//! The camera and microphone prompt and the capture indicator of a tab.
 //!
 //! The prompt is a bar between the toolbar and the page. GPUI content drawn over the page
 //! would sit behind Wry's child NSView, so the bar takes a row of its own and the page moves
@@ -12,7 +12,7 @@ use gpui::{
 };
 
 use crate::{
-    Browser, history,
+    Browser, brand, history,
     permissions::{self, Answer, Decision, native},
     theme::Palette,
 };
@@ -92,11 +92,19 @@ pub fn init(cx: &mut App) {
 }
 
 impl Browser {
-    /// Answers the waiting requests that have a stored decision, picks the request to show
-    /// and saves changed decisions. Runs on the 100 ms poll.
+    /// Answers the waiting requests that have a stored decision, picks the request to show,
+    /// reads each tab's capture state and saves changed decisions. Runs on the 100 ms poll.
     /// True if something on display changed.
     pub(crate) fn poll_permissions(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let mut changed = false;
+        for tab in &mut self.tabs {
+            let capture = tab
+                .page
+                .as_ref()
+                .map_or((false, false), |page| page.capture());
+            changed |= tab.capture != capture;
+            tab.capture = capture;
+        }
         // Only a page on display gets a prompt. A request of another tab waits for its turn.
         let shown = [Some(self.active), self.partner(self.active)];
         let mut next = None;
@@ -268,6 +276,38 @@ impl Browser {
                         ))),
                 )
                 .children(buttons),
+        )
+    }
+
+    /// A tab's camera or microphone icon while its page captures. A click stops the capture.
+    pub(crate) fn capture_control(
+        &self,
+        index: usize,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<Stateful<Div>> {
+        let tab = &self.tabs[index];
+        let (hint, icon) = match tab.capture {
+            (true, true) => (
+                "Tab uses your camera and microphone · Click to stop",
+                brand::icon::CAMERA,
+            ),
+            (true, false) => ("Tab uses your camera · Click to stop", brand::icon::CAMERA),
+            (false, true) => (
+                "Tab uses your microphone · Click to stop",
+                brand::icon::MICROPHONE,
+            ),
+            (false, false) => return None,
+        };
+        let page = tab.page.clone()?;
+        Some(
+            Self::row_control(("tab-capture", tab.id), p)
+                .on_hover(Self::hint_on_hover(hint, cx))
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    page.stop_capture();
+                })
+                .child(brand::icon(icon).size(px(14.)).text_color(rgb(p.primary))),
         )
     }
 }

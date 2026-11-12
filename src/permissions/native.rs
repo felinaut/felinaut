@@ -232,6 +232,28 @@ pub fn detach(page: usize) {
     drop(denied);
 }
 
+/// Whether the page uses the camera and the microphone now.
+pub fn capture(view: &WKWebView) -> (bool, bool) {
+    // SAFETY: property reads on a live WKWebView, on the main thread (macOS 12 and later).
+    // `WKMediaCaptureStateNone` is 0; a muted capture still holds the device.
+    unsafe {
+        (
+            view.cameraCaptureState().0 != 0,
+            view.microphoneCaptureState().0 != 0,
+        )
+    }
+}
+
+/// Ends the page's use of the camera and the microphone.
+pub fn stop_capture(view: &WKWebView) {
+    use objc2_web_kit::WKMediaCaptureState;
+    // SAFETY: a live WKWebView on the main thread; the completion handler is optional.
+    unsafe {
+        view.setCameraCaptureState_completionHandler(WKMediaCaptureState::None, None);
+        view.setMicrophoneCaptureState_completionHandler(WKMediaCaptureState::None, None);
+    }
+}
+
 /// Calls the delegate method as WebKit does, but without an origin, and returns each decision
 /// the handler got. Felinaut's method denies such a request; Wry's own method would grant it.
 #[cfg(test)]

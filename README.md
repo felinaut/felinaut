@@ -283,6 +283,8 @@ A site gets the camera or the microphone only after you allow it. When a page as
 - The request is refused when you close the tab or the tab leaves the site. A request of a tab in the background waits until you select that tab.
 - macOS asks one time whether Felinaut itself may use the camera or the microphone. That question comes from macOS, after you allow a site.
 
+While a tab uses a device, its sidebar row or pinned tile shows a **camera** or **microphone** icon; click the icon to stop the use.
+
 Decisions are kept in `permissions.tsv` (see _Scope and limitations_), one line for each site and device: `allow` or `deny`, `camera` or `microphone`, and the origin. Delete the file to forget every decision. A line that Felinaut cannot read is ignored, and never becomes a permission.
 
 Refused without a question:
@@ -293,6 +295,8 @@ Refused without a question:
 - a kind of request that Felinaut does not know.
 
 How it works: Wry answers each camera or microphone request with a grant when no handler is set, and its handler can neither wait for an answer nor see the site. Felinaut therefore replaces the `requestMediaCapturePermissionForOrigin` method of Wry's UI delegate (`src/permissions/native.rs`), keeps WebKit's decision handler until you answer, and calls it exactly one time. An answer that nobody gives is a denial. Only public WebKit API is used.
+
+The capture icons read WKWebView's `cameraCaptureState` and `microphoneCaptureState` on the UI's 100 ms drain.
 
 **Not supported: location and notifications.** WKWebView on macOS has no public API to answer these requests, and Felinaut does not use the private one. WebKit therefore refuses them: `navigator.geolocation` reports "permission denied", and `Notification.requestPermission()` answers `denied`. The opt-in native test checks both. Screen sharing (`getDisplayMedia`) is not handled either: WebKit's default applies, and Felinaut has not tested it.
 
@@ -369,7 +373,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/audio.rs`, `src/audio_control.js`: per-tab volume model, slider mapping, the audio bridge and Web Audio routing.
 - `src/volume.rs`: the native volume popover.
 - `src/permissions.rs`, `src/permissions/native.rs`: camera and microphone decisions per origin and their file, and the replaced WebKit permission method.
-- `src/permission_ui.rs`: the prompt bar.
+- `src/permission_ui.rs`: the prompt bar and the tab's capture icon.
 - `src/brand.rs` and `assets/`: embedded original SVG mascot, symbol and monochrome UI icons.
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.

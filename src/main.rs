@@ -337,6 +337,8 @@ struct Tab {
     split: Option<u64>,
     /// The live folder item this tab shows; such tabs are drawn in their folder, not the rows.
     live: Option<String>,
+    /// Whether the page uses the camera and the microphone now.
+    capture: (bool, bool),
 }
 impl Tab {
     /// A saved tab (pinned unless the caller clears `pinned`); its page is created when it is
@@ -367,6 +369,7 @@ impl Tab {
             pinned: None,
             split: None,
             live: None,
+            capture: (false, false),
         }
     }
     /// An earlier failure stays until the new page commits or fails, so the page under the
@@ -2733,6 +2736,7 @@ impl Browser {
                         ),
                 )
             })
+            .children(self.capture_control(index, p, cx))
             .when(hovered || selected, |row| {
                 row.child(
                     Self::row_control(("close", id), p)
@@ -3019,7 +3023,11 @@ impl Browser {
                         Some(host) => self.site_icon(&host, 20., p),
                         None => brand::symbol().size(px(20.)).into_any_element(),
                     },
-                ));
+                ))
+                .children(
+                    self.capture_control(index, p, cx)
+                        .map(|control| div().absolute().top_0().right_0().child(control)),
+                );
         // Pin and unpin by dragging or ⌘D; ⌘W on a selected tile frees its page, keeping the pin.
         // A tab dropped on a tile takes its place: after it when dragged forward, before it
         // when dragged back.

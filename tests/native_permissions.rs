@@ -193,6 +193,7 @@ fn main() {
                             };
                             check_answers(true, shown_done);
                             check_answers(false, hidden_done);
+                            assert_eq!(shown.capture(), (false, false));
                             assert!(permissions::native::requests().is_empty());
                             println!(
                                 "PASS: no grant by default. Page: {shown_done}; hidden page: {hidden_done}; prompts for the page: {prompts}"

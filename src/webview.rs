@@ -189,6 +189,17 @@ impl NativePage {
         objc2::rc::Retained::as_ptr(&self.webview.webview()) as usize
     }
 
+    /// Whether the page uses the camera and the microphone now.
+    pub fn capture(&self) -> (bool, bool) {
+        use wry::WebViewExtMacOS;
+        crate::permissions::native::capture(&self.webview.webview())
+    }
+
+    pub fn stop_capture(&self) {
+        use wry::WebViewExtMacOS;
+        crate::permissions::native::stop_capture(&self.webview.webview());
+    }
+
     /// WebKit's page zoom; the page keeps it across navigations.
     pub fn zoom(&self) -> f64 {
         use wry::WebViewExtMacOS;
