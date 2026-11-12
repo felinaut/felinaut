@@ -18,7 +18,7 @@ use std::{
 
 use serde_json::{Value, json};
 
-use crate::webview::NativePage;
+use crate::page::PageBackend;
 
 /// A command for the UI thread. The answer line goes to `reply`.
 pub struct Request {
@@ -133,7 +133,7 @@ fn call(arguments: Value) -> String {
     format!("__felifox.apply(null,{arguments})")
 }
 
-/// WebKit gives the JSON text of the string that `__felifox` returned, or nothing.
+/// The page gives the JSON text of the string that `__felifox` returned, or nothing.
 fn decode(result: &str) -> String {
     serde_json::from_str(result).unwrap_or_else(|_| {
         response(Err(
@@ -144,38 +144,44 @@ fn decode(result: &str) -> String {
     })
 }
 
-/// Runs a page command on the UI thread. The answer comes immediately, or later from a
-/// WebKit callback.
-pub fn run(page: &NativePage, request: Request, queue: &Sender<Request>) {
+/// Runs a page command on the UI thread. The answer comes immediately, or later from an
+/// engine callback.
+pub fn run(page: &dyn PageBackend, request: Request, queue: &Sender<Request>) {
     let Request { command, reply } = request;
     let text = |key: &str| command[key].as_str().unwrap_or_default().to_owned();
     let native = command["native"] == true;
     // Gives the answer of the page to the client.
     let evaluate = |script: String| {
         let reply = reply.clone();
-        page.evaluate(&script, move |result| {
-            let _ = reply.send(decode(&result));
-        })
+        page.evaluate(
+            &script,
+            Box::new(move |result| {
+                let _ = reply.send(decode(&result));
+            }),
+        )
         .map(|()| None)
     };
     // JavaScript finds or focuses the element. Then `next` runs as a native step, with the
     // result of the script as `point`.
     let then = |script: String, next: Value| {
         let (reply, queue) = (reply.clone(), queue.clone());
-        page.evaluate(&script, move |result| {
-            let answer = decode(&result);
-            let parsed: Value = serde_json::from_str(&answer).unwrap_or_default();
-            if parsed["ok"] == true {
-                let mut command = next.clone();
-                command["point"] = parsed["value"].clone();
-                let _ = queue.send(Request {
-                    command,
-                    reply: reply.clone(),
-                });
-            } else {
-                let _ = reply.send(answer);
-            }
-        })
+        page.evaluate(
+            &script,
+            Box::new(move |result| {
+                let answer = decode(&result);
+                let parsed: Value = serde_json::from_str(&answer).unwrap_or_default();
+                if parsed["ok"] == true {
+                    let mut command = next.clone();
+                    command["point"] = parsed["value"].clone();
+                    let _ = queue.send(Request {
+                        command,
+                        reply: reply.clone(),
+                    });
+                } else {
+                    let _ = reply.send(answer);
+                }
+            }),
+        )
         .map(|()| None)
     };
     // `None`: a callback gives the answer.
@@ -197,12 +203,12 @@ pub fn run(page: &NativePage, request: Request, queue: &Sender<Request>) {
         "eval" => evaluate(format!("__felifox('eval',()=>({}\n))", text("code"))),
         "screenshot" => {
             let (reply, path) = (reply.clone(), text("path"));
-            page.screenshot(move |png| {
+            page.screenshot(Box::new(move |png| {
                 let saved = png.and_then(|bytes| {
                     fs::write(&path, bytes).map_err(|error| format!("{path}: {error}"))
                 });
                 let _ = reply.send(response(saved.map(|()| json!(path))));
-            });
+            }));
             Ok(None)
         }
         "_click" => {

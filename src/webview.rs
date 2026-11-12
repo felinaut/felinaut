@@ -8,28 +8,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use gpui::{Bounds, Pixels};
 use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
-use crate::audio::{AudioReport, TabAudio, parse_report};
-use crate::load_error::{Exceptions, LoadFailure};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Event {
-    Started(String),
-    Finished(String),
-    Title(String),
-    Url(String),
-    Open(String),
-    OpenInBackground(String),
-    Hover(Option<String>),
-    /// The user clicked into the page.
-    Focused,
-    Audio(AudioReport),
-    /// The site's icon as a small validated PNG.
-    Icon(Vec<u8>),
-    /// A top-level load failed before anything was shown; the previous document remains.
-    Failed(LoadFailure),
-    /// A load ended without finishing: cancelled, or failed after the page was shown.
-    Stopped,
-}
+use crate::audio::{TabAudio, parse_report};
+use crate::load_error::Exceptions;
+use crate::page::Event;
 
 /// One persistent native child view per tab; hiding it does not discard its history or document.
 /// The owner should poll `drain_events` on the UI thread, including for inactive tabs.

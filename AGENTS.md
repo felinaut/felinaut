@@ -5,7 +5,8 @@
 Felinaut is a small macOS browser: Rust edition 2024, GPUI 0.2.2 chrome, and Wry 0.57.1 native WebKit pages. Read `README.md` and the relevant modules before changing behavior. Read `BRAND.md` before changing branding, artwork, reference boards, themes, or mascot behavior; distinguish shipped features from future personality concepts. Keep features focused; do not add dependencies, frameworks, cross-platform claims, or unrelated refactors without a concrete need.
 
 - `src/main.rs`: browser state, sidebar, navigation, live-folder scheduling, and UI.
-- `src/webview.rs`: native child views, callbacks, focus, and navigation boundaries.
+- `src/page.rs`, `src/page/`: browser-facing page/event/capability seam and native adapters.
+- `src/webview.rs`: macOS native child views, callbacks, focus, and navigation boundaries.
 - `src/live.rs`, `src/live/`: live-folder model and declarative integrations.
 - `src/session.rs`, `src/history.rs`, `src/theme.rs`: persisted state and preferences.
 - `src/downloads.rs`, `src/downloads/native.rs`, `src/download_panel.rs`: download list model and file naming, the WebKit download delegate, and the list popover.

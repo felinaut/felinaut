@@ -16,12 +16,16 @@ mod icons;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/load_error.rs"]
 mod load_error;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/page.rs"]
+mod page;
 #[allow(dead_code)]
 #[path = "../src/webview.rs"]
 mod webview;
 
 use audio::{AudioReport, PageSound, Preset, TabAudio};
 use gpui::{prelude::*, *};
+use page::Event;
 use std::{
     cell::Cell,
     io::{Read, Write},
@@ -29,7 +33,7 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
-use webview::{Event, NativePage};
+use webview::NativePage;
 
 /// One second of a quiet 440 Hz sine as 8 kHz mono 16-bit PCM.
 fn tone() -> Vec<u8> {

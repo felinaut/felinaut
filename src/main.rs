@@ -12,6 +12,7 @@ mod icons;
 mod input;
 mod live;
 mod load_error;
+mod page;
 mod session;
 mod suggestions;
 mod theme;
@@ -24,6 +25,7 @@ use gpui::{prelude::*, *};
 use history::{History, Suggestion};
 use input::{AddressEvent, AddressInput, Submit};
 use load_error::LoadFailure;
+use page::{Event, Page};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -34,7 +36,6 @@ use std::{
     time::{Duration, Instant},
 };
 use theme::{AddressDisplay, Palette, ThemeSettings};
-use webview::{Event, NativePage};
 
 const HOME: &str = "felinaut://newtab";
 const SIDEBAR_SLIDE: Duration = Duration::from_millis(200);
@@ -106,7 +107,7 @@ struct TabMenu {
 struct Fetch {
     folder: usize,
     section: usize,
-    page: NativePage,
+    page: Page,
     started: Instant,
     loaded: bool,
 
@@ -321,7 +322,7 @@ struct Tab {
     error: Option<String>,
     load_failure: Option<LoadFailure>,
     hovered_link: Option<String>,
-    page: Option<Rc<NativePage>>,
+    page: Option<Page>,
     /// The user's settings for this tab; they persist across its navigations.
     audio: TabAudio,
     /// What the current document reports about its playback.
@@ -800,11 +801,14 @@ impl Browser {
             {
                 fetch.next_try = now + Duration::from_secs(1);
                 let result = fetch.result.clone();
-                let _ = fetch.page.evaluate(extractor, move |json| {
-                    if let Ok(mut answer) = result.lock() {
-                        *answer = Some(json);
-                    }
-                });
+                let _ = fetch.page.evaluate(
+                    extractor,
+                    Box::new(move |json| {
+                        if let Ok(mut answer) = result.lock() {
+                            *answer = Some(json);
+                        }
+                    }),
+                );
             }
             if done.is_none() && now.duration_since(fetch.started) >= FETCH_TIMEOUT {
                 done = Some(Err(format!(
@@ -843,7 +847,7 @@ impl Browser {
         else {
             return;
         };
-        match NativePage::hidden(window, self.live[index].sections[section].url) {
+        match page::create_hidden(window, self.live[index].sections[section].url) {
             Ok(page) => {
                 self.fetch = Some(Fetch {
                     folder: index,
@@ -926,9 +930,8 @@ impl Browser {
             self.select_tab(index, window, cx);
             return;
         }
-        match NativePage::new(window, &url) {
+        match page::create(window, &url) {
             Ok(page) => {
-                let page = Rc::new(page);
                 let mut tab = Tab::new(self.next_id);
                 self.next_id += 1;
                 tab.url = url.clone();
@@ -1142,9 +1145,9 @@ impl Browser {
         if tab.page.is_some() || tab.home {
             return;
         }
-        match NativePage::new(window, &tab.url) {
+        match page::create(window, &tab.url) {
             Ok(page) => {
-                tab.page = Some(Rc::new(page));
+                tab.page = Some(page);
                 tab.loading = true;
             }
             Err(error) => tab.error = Some(error),
@@ -1160,6 +1163,11 @@ impl Browser {
         use serde_json::{Value, json};
         let command = &request.command;
         let result = match command["cmd"].as_str().unwrap_or_default() {
+            "backend" => Ok(self.tabs[self.active]
+                .page
+                .as_ref()
+                .map_or_else(page::backend_info, |page| page.backend_info())
+                .json()),
             "tabs" => Ok(self
                 .tabs
                 .iter()
@@ -1197,7 +1205,7 @@ impl Browser {
                 let tab = &self.tabs[self.active];
                 match (&tab.page, &self.agent) {
                     (Some(page), Some((_, queue))) if !tab.home => {
-                        return agent::run(page, request, queue);
+                        return agent::run(page.as_ref(), request, queue);
                     }
                     _ => Err("The active tab has no page. Navigate first.".into()),
                 }
@@ -1690,8 +1698,8 @@ impl Browser {
         let result = if let Some(page) = &tab.page {
             page.navigate(&url)
         } else {
-            NativePage::new(window, &url).map(|page| {
-                tab.page = Some(Rc::new(page));
+            page::create(window, &url).map(|page| {
+                tab.page = Some(page);
             })
         };
         match result {
@@ -1708,9 +1716,8 @@ impl Browser {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match NativePage::new(window, url) {
+        match page::create(window, url) {
             Ok(page) => {
-                let page = Rc::new(page);
                 let mut tab = Tab::new(self.next_id);
                 self.next_id += 1;
                 tab.start_load(url.into());
@@ -1749,7 +1756,14 @@ impl Browser {
     fn zoom(&mut self, zoom: &Zoom, _: &mut Window, cx: &mut Context<Self>) {
         let tab = &mut self.tabs[self.active];
         if let Some(page) = tab.page.as_ref().filter(|_| !tab.home) {
-            let before = page.zoom();
+            let before = match page.zoom() {
+                Ok(zoom) => zoom,
+                Err(error) => {
+                    tab.error = Some(error);
+                    cx.notify();
+                    return;
+                }
+            };
             tab.error = page.set_zoom(zoom::step(before, zoom.0)).err();
             if before == 1.0 && theme::motion_allowed(cx) {
                 self.zoom_flash = Some(Instant::now());
@@ -1760,7 +1774,7 @@ impl Browser {
     /// The active page's zoom level, shown in the address bar while it isn't 100 %.
     fn zoom_label(&self) -> Option<(SharedString, f32)> {
         let tab = &self.tabs[self.active];
-        let label = zoom::label(tab.page.as_ref().filter(|_| !tab.home)?.zoom())?;
+        let label = zoom::label(tab.page.as_ref().filter(|_| !tab.home)?.zoom().ok()?)?;
         let flash = self
             .zoom_flash
             .map_or(1., |at| at.elapsed().as_secs_f32() / 0.4);
@@ -2047,8 +2061,8 @@ impl Browser {
         let Some(closed) = self.closed.pop() else {
             return;
         };
-        let page = match NativePage::new(window, &closed.url) {
-            Ok(page) => Rc::new(page),
+        let page = match page::create(window, &closed.url) {
+            Ok(page) => page,
             Err(error) => {
                 self.tabs[self.active].error = Some(error);
                 cx.notify();
@@ -2531,8 +2545,12 @@ impl Browser {
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     if let Some(failure) = &this.tabs[index].load_failure
                                         && let Some(certificate) = failure.certificate.clone()
+                                        && let Some(page) = &this.tabs[index].page
+                                        && let Err(error) = page.allow_certificate(&failure.url, certificate)
                                     {
-                                        webview::allow_certificate(&failure.url, certificate);
+                                        this.tabs[index].error = Some(error);
+                                        cx.notify();
+                                        return;
                                     }
                                     this.activate_half(index, cx);
                                     this.reload(&Reload, window, cx);
@@ -3923,8 +3941,12 @@ impl Render for Browser {
         let toolbar_toggle = sidebar_width < 88.;
         let tab = &self.tabs[self.active];
         let show_chip = !tab.home && !address_focused && display != AddressDisplay::Url;
-        let not_secure =
-            !tab.home && tab.load_failure.is_none() && webview::has_certificate_exception(&tab.url);
+        let not_secure = !tab.home
+            && tab.load_failure.is_none()
+            && tab
+                .page
+                .as_ref()
+                .is_some_and(|page| page.has_certificate_exception(&tab.url));
         self.address
             .update(cx, |input, _| input.set_not_secure(not_secure));
         let back_enabled = tab.can_go_back();

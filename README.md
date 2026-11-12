@@ -288,6 +288,8 @@ The theme chooser is a small native popup, so it appears correctly above the emb
 ```text
 GPUI: tabs, address bar, controls, new-tab page
                      │
+          PageBackend / macOS adapter
+                     │
               Wry native child view
                      │
          macOS WebKit + JavaScriptCore

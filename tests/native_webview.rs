@@ -13,11 +13,15 @@ mod icons;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/load_error.rs"]
 mod load_error;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/page.rs"]
+mod page;
 #[allow(dead_code)]
 #[path = "../src/webview.rs"]
 mod webview;
 
 use gpui::{prelude::*, *};
+use page::{Event, Page};
 use std::{
     cell::Cell,
     io::{Read, Write},
@@ -29,13 +33,12 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use webview::{Event, NativePage};
 
 struct TestWindow {
-    page: Rc<NativePage>,
-    _second_tab: NativePage,
-    _failed_tab: Rc<NativePage>,
-    _hidden: NativePage,
+    page: Page,
+    _second_tab: Page,
+    _failed_tab: Page,
+    _hidden: Page,
 }
 impl Render for TestWindow {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -124,15 +127,23 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let page = Rc::new(NativePage::new(window, &first_url).expect("create native page"));
-                let second_tab = NativePage::new(window, "about:blank").expect("create inactive tab");
+                assert!(page::create(window, "file:///etc/passwd").is_err());
+                assert!(page::create_hidden(window, "javascript:alert(1)").is_err());
+                let page = page::create(window, &first_url).expect("create native page through adapter");
+                let info = page.backend_info();
+                assert_eq!(info.id, "native-webkit");
+                assert_eq!(info.engine_family, "webkit");
+                assert!(info.runtime_version.as_ref().is_some_and(|version| !version.is_empty()));
+                assert!(info.capabilities.zoom && info.capabilities.trusted_input);
+                assert!(info.capabilities.snapshot && info.capabilities.audio_control);
+                let second_tab = page::create(window, "about:blank").expect("create inactive tab");
                 second_tab.set_visible(false).unwrap();
                 // A first load whose host never resolves (.invalid is reserved) leaves WKWebView
                 // without a URL; polling such a tab must not abort the app.
-                let failed_tab = Rc::new(NativePage::new(window, "http://felifox.invalid/").expect("create failing tab"));
+                let failed_tab = page::create(window, "http://felifox.invalid/").expect("create failing tab");
                 let failed_page = failed_tab.clone();
                 // A page the user never sees asks for the same download; it must be refused.
-                let hidden = NativePage::hidden(window, &download_url).expect("create hidden page");
+                let hidden = page::create_hidden(window, &download_url).expect("create hidden page");
                 page.focus().unwrap();
                 page.focus_parent().unwrap();
                 let second_page = page.clone();
@@ -175,6 +186,9 @@ fn main() {
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
+                                    second_page.set_zoom(1.25).unwrap();
+                                    assert!((second_page.zoom().unwrap() - 1.25).abs() < 0.001);
+                                    second_page.set_zoom(1.).unwrap();
                                     second_page.navigate(&second_url).unwrap();
                                 }
                                 1 => {
@@ -196,7 +210,7 @@ fn main() {
                                     second_page.set_visible(false).unwrap();
                                     second_page.set_bounds(Bounds::new(point(px(10.), px(20.)), size(px(640.), px(400.)))).unwrap();
                                     second_page.set_visible(true).unwrap();
-                                    second_page.evaluate_for_test(r#"
+                                    second_page.evaluate(r#"
                                         (() => {
                                           const child = document.getElementById('linkchild');
                                           child.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, composed: true }));
@@ -214,7 +228,7 @@ fn main() {
                                           child.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, composed: true, relatedTarget: document.body }));
                                           document.title = click.defaultPrevented && foreground.defaultPrevented && middle.defaultPrevented && menu.defaultPrevented && shown && dismissed ? 'LINK EVENTS OK' : 'LINK EVENTS FAILED';
                                         })();
-                                    "#).unwrap();
+                                    "#, Box::new(|_| {})).unwrap();
                                 }
                                 5 => {
                                     assert!(hover_seen && hover_cleared, "link hover status must set and clear");
@@ -242,7 +256,7 @@ fn main() {
                                     assert_eq!(std::fs::read(saved).unwrap(), b"fixture");
                                     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "the hidden page saved nothing");
                                     std::fs::remove_dir_all(folder.parent().unwrap()).unwrap();
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, and a download that stays in the downloads folder while a hidden page's is refused");
+                                    println!("PASS: native page adapter metadata, URL restrictions, zoom, JavaScript, DOM, storage, history, failed-load events, link interactions, and confined downloads with hidden-page denial");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;
