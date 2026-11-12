@@ -1,8 +1,8 @@
-# Working on Felifox
+# Working on Felinaut
 
 ## Scope and architecture
 
-Felifox is a small macOS browser: Rust edition 2024, GPUI 0.2.2 chrome, and Wry 0.57.1 native WebKit pages. Read `README.md` and the relevant modules before changing behavior. Keep features focused; do not add dependencies, frameworks, cross-platform claims, or unrelated refactors without a concrete need.
+Felinaut is a small macOS browser: Rust edition 2024, GPUI 0.2.2 chrome, and Wry 0.57.1 native WebKit pages. Read `README.md` and the relevant modules before changing behavior. Read `BRAND.md` before changing branding, artwork, reference boards, themes, or mascot behavior; distinguish shipped features from future personality concepts. Keep features focused; do not add dependencies, frameworks, cross-platform claims, or unrelated refactors without a concrete need.
 
 - `src/main.rs`: browser state, sidebar, navigation, live-folder scheduling, and UI.
 - `src/webview.rs`: native child views, callbacks, focus, and navigation boundaries.
@@ -34,12 +34,12 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 Use `-F gpui/runtime_shaders` for browser checks if full Xcode/Metal is unavailable. Native UI checks require a macOS desktop session:
 
 ```sh
-FELIFOX_NATIVE_TEST=1 cargo test --locked --test native_webview
-FELIFOX_NATIVE_TEST=1 cargo test --locked --test brand_ui
-FELIFOX_NATIVE_TEST=1 cargo test --locked --test native_audio
+FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_webview
+FELINAUT_NATIVE_TEST=1 cargo test --locked --test brand_ui
+FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_audio
 ```
 
-Never claim native tests ran just because the default skipped harness exited successfully. Use the `felifox-ctl` skill when validating the real browser; do not operate logged-in services or mutate user data unnecessarily.
+Never claim native tests ran just because the default skipped harness exited successfully. Use the browser-control skill (`felifox-ctl`, the retained skill identifier; its executable is now `felinaut-ctl`) when validating the real browser; do not operate logged-in services or mutate user data unnecessarily.
 
 ## Native correctness, security, and privacy
 
