@@ -10,6 +10,9 @@ mod audio;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/icons.rs"]
 mod icons;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/load_error.rs"]
+mod load_error;
 #[allow(dead_code)]
 #[path = "../src/webview.rs"]
 mod webview;

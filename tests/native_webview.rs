@@ -7,6 +7,9 @@ mod audio;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/icons.rs"]
 mod icons;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/load_error.rs"]
+mod load_error;
 #[allow(dead_code)]
 #[path = "../src/webview.rs"]
 mod webview;
@@ -114,9 +117,14 @@ fn main() {
                         let mut hover_cleared = false;
                         let mut background_opens = 0;
                         let mut foreground_open = false;
+                        let mut failure = None;
                         loop {
                             Timer::after(Duration::from_millis(50)).await;
-                            let _ = failed_page.drain_events();
+                            for event in failed_page.drain_events() {
+                                if let Event::Failed(value) = event {
+                                    failure = Some(value);
+                                }
+                            }
                             let mut finished = false;
                             for event in second_page.drain_events() {
                                 match event {
@@ -131,7 +139,7 @@ fn main() {
                             }
                             assert!(start.elapsed() < Duration::from_secs(20), "native test timed out at stage {stage}; title={title:?}");
                             if stage <= 4 && !finished { continue; }
-                            if stage == 5 && title != "LINK EVENTS OK" { continue; }
+                            if stage == 5 && (title != "LINK EVENTS OK" || failure.is_none()) { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
@@ -180,7 +188,10 @@ fn main() {
                                     assert!(hover_seen && hover_cleared, "link hover status must set and clear");
                                     assert_eq!(background_opens, 3, "Cmd-click, middle-click and context-menu item must each open one background tab");
                                     assert!(foreground_open, "Cmd-Shift-click opens a foreground tab");
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load URL polling, hover status, Cmd-click, middle-click and right-click menu bridge");
+                                    let failure = failure.take().unwrap();
+                                    assert_eq!(failure.kind, load_error::Kind::HostNotFound, "{failure:?}");
+                                    assert_eq!(failure.url, "http://felifox.invalid/");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;

@@ -9,6 +9,7 @@ mod history;
 mod icons;
 mod input;
 mod live;
+mod load_error;
 mod session;
 mod suggestions;
 mod theme;
@@ -19,6 +20,7 @@ use audio::{AudioReport, PageSound, TabAudio};
 use gpui::{prelude::*, *};
 use history::{History, Suggestion};
 use input::{AddressEvent, AddressInput, Submit};
+use load_error::LoadFailure;
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -309,6 +311,8 @@ struct Tab {
     home: bool,
     loading: bool,
     error: Option<String>,
+    /// The last load failed; its error page replaces the page until the next load.
+    failure: Option<LoadFailure>,
     hovered_link: Option<String>,
     page: Option<Rc<NativePage>>,
     /// The user's settings for this tab; they persist across its navigations.
@@ -345,6 +349,7 @@ impl Tab {
             home: true,
             loading: false,
             error: None,
+            failure: None,
             hovered_link: None,
             page: None,
             audio: TabAudio::default(),
@@ -354,6 +359,28 @@ impl Tab {
             split: None,
             live: None,
         }
+    }
+    fn start_load(&mut self, url: String) {
+        self.title = url::Url::parse(&url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .unwrap_or_else(|| "Loading…".into());
+        self.url = url;
+        self.home = false;
+        self.loading = true;
+        self.error = None;
+        self.failure = None;
+    }
+    /// Shows a failed load's error page. Try Again needs a URL, so a failure without one
+    /// keeps the URL the tab was loading.
+    fn show_failure(&mut self, mut failure: LoadFailure) {
+        if failure.url.is_empty() {
+            failure.url.clone_from(&self.url);
+        }
+        self.loading = false;
+        self.url.clone_from(&failure.url);
+        self.title = failure.kind.text().0.into();
+        self.failure = Some(failure);
     }
     /// Adds the current page to history once per URL per tab.
     fn record_visit(&mut self, history: &mut History) {
@@ -1500,7 +1527,7 @@ impl Browser {
         let mut focused_tab = None;
         let visible_partner = self.partner(self.active);
         for (index, tab) in self.tabs.iter_mut().enumerate() {
-            let Some(page) = &tab.page else {
+            let Some(page) = tab.page.clone() else {
                 continue;
             };
             for event in page.drain_events() {
@@ -1511,8 +1538,15 @@ impl Browser {
                         tab.hovered_link = None;
                         tab.loading = true;
                         tab.error = None;
+                        tab.failure = None;
                         tab.url = url;
                     }
+                    Event::Failed(failure) => {
+                        tab.show_failure(failure);
+                        let _ = page.set_visible(false);
+                        address_changed |= index == self.active;
+                    }
+                    Event::Stopped => tab.loading = page.is_loading(),
                     Event::Finished(url) => {
                         tab.loading = false;
                         finished.push(url.clone());
@@ -1614,16 +1648,7 @@ impl Browser {
             })
         };
         match result {
-            Ok(()) => {
-                tab.url = url;
-                tab.home = false;
-                tab.loading = true;
-                tab.error = None;
-                tab.title = url::Url::parse(&tab.url)
-                    .ok()
-                    .and_then(|u| u.host_str().map(str::to_owned))
-                    .unwrap_or_else(|| "Loading…".into());
-            }
+            Ok(()) => tab.start_load(url),
             Err(error) => tab.error = Some(error),
         }
         self.sync_address(cx);
@@ -2051,6 +2076,20 @@ impl Browser {
         if tab.home {
             return;
         }
+        // A failed load added no history entry: going back shows the page still underneath.
+        if tab.failure.is_some() {
+            match tab.page.as_ref().and_then(|page| page.document()) {
+                Some((url, title)) => {
+                    tab.failure = None;
+                    tab.url = url;
+                    tab.title = title;
+                    self.sync_address(cx);
+                    cx.notify();
+                }
+                None => self.home(&Home, window, cx),
+            }
+            return;
+        }
         if let Some(page) = &tab.page {
             if page.can_go_back() {
                 tab.error = page.back().err();
@@ -2068,6 +2107,7 @@ impl Browser {
                 tab.home = false;
                 tab.error = None;
             } else if page.can_go_forward() {
+                tab.failure = None;
                 tab.error = page.forward().err();
             }
         }
@@ -2079,7 +2119,12 @@ impl Browser {
         if !tab.home
             && let Some(page) = &tab.page
         {
-            tab.error = page.reload().err();
+            // Reloading would load the page underneath the error page, not the one that failed.
+            tab.error = match &tab.failure {
+                Some(failure) => page.navigate(&failure.url).err(),
+                None => page.reload().err(),
+            };
+            tab.loading |= tab.error.is_none();
         }
         cx.notify();
     }
@@ -2332,6 +2377,78 @@ impl Browser {
                                     ),
                             ),
                     ),
+            )
+            .into_any_element()
+    }
+    /// Replaces a page whose load failed. Try Again loads the failed URL again.
+    fn error_page(
+        &self,
+        index: usize,
+        failure: &LoadFailure,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = theme::palette(cx);
+        let address: String = failure.url.chars().take(160).collect();
+        let note = |text: SharedString| {
+            div()
+                .max_w(px(520.))
+                .text_center()
+                .text_color(rgb(p.muted))
+                .child(text)
+        };
+        div()
+            .id(("error-page", self.tabs[index].id))
+            .size_full()
+            .overflow_y_scroll()
+            .bg(rgb(p.background))
+            .child(
+                div()
+                    .min_h_full()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_3()
+                    .py_5()
+                    .px_6()
+                    .child(brand::mascot().w(px(160.)).h(px(120.)).flex_shrink_0())
+                    .child(
+                        div()
+                            .text_size(px(26.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(p.text))
+                            .child(failure.kind.text().0),
+                    )
+                    .child(note(failure.kind.text().1.into()))
+                    .child(
+                        div()
+                            .max_w(px(520.))
+                            .text_sm()
+                            .text_color(rgb(p.text))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(address),
+                    )
+                    .child(
+                        div()
+                            .id("error-retry")
+                            .mt_2()
+                            .px_4()
+                            .py_2()
+                            .rounded_lg()
+                            .cursor_pointer()
+                            .bg(rgb(p.primary))
+                            .text_color(rgb(p.background))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.activate_half(index, cx);
+                                this.reload(&Reload, window, cx);
+                            }))
+                            .child("Try Again  ⌘R"),
+                    )
+                    .child(note(failure.detail.clone().into()).text_xs()),
             )
             .into_any_element()
     }
@@ -3655,6 +3772,9 @@ impl Browser {
         if tab.home {
             return self.home_page(cx);
         }
+        if let Some(failure) = &tab.failure {
+            return self.error_page(index, failure, cx);
+        }
         if let Some(page) = &tab.page {
             let page = page.clone();
             return canvas(
@@ -4045,6 +4165,26 @@ mod tests {
         FETCH_TIMEOUT, drop_index, live_refresh_can_poll, restore_tabs, session::SavedTab,
     };
     use std::time::{Duration, Instant};
+
+    fn failed(url: &str) -> super::LoadFailure {
+        super::load_error::failure("NSURLErrorDomain", -1003, url, "Not found").unwrap()
+    }
+
+    #[test]
+    fn failures_stop_loading_and_retry_their_url() {
+        let mut tab = super::Tab::new(1);
+        tab.start_load("https://typed.example/".into());
+        // A failure without a URL retries the one the tab was loading.
+        tab.show_failure(failed(""));
+        assert!(!tab.loading);
+        assert_eq!(tab.title, "Can't find this site");
+        assert_eq!(tab.failure.as_ref().unwrap().url, "https://typed.example/");
+        tab.start_load("https://expired.badssl.com/".into());
+        assert!(tab.loading && tab.failure.is_none());
+        assert_eq!(tab.title, "expired.badssl.com");
+        tab.show_failure(failed("https://expired.badssl.com/"));
+        assert_eq!(tab.url, "https://expired.badssl.com/");
+    }
 
     #[test]
     fn rename_keeps_existing_profile_files_and_settings_together() {
