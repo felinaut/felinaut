@@ -195,7 +195,7 @@ The socket is `~/Library/Application Support/Felifox/agent.sock`. Each request i
 
 Every tab has its own volume, built in rather than added by an extension. Click the speaker button left of **Theme ▾** (or **Sound → Volume Controls…**) to open the popover:
 
-- **Slider from 0 % to 600 %.** The left half covers 0–100 % for fine control; the right "flame" half is the boost range. It snaps to the page's natural 100 %, and the knob is the flaming-yarn mark. Drag, click, scroll, or use the **−/+** and **200 %/400 %** chips.
+- **Slider from 0 % to 600 %.** The left half covers 0–100 % for fine control; the right colored half is the boost range. It snaps to the page's natural 100 %, and the knob is the astronaut-cat helmet. Drag, click, scroll, or use the **−/+** and **200 %/400 %** chips.
 - **Mute / Unmute**, and **Reset** back to the untouched default.
 - **Sound presets:** _Natural_ (as the site made it), _Voice_ (clearer dialogue) and _Bass_ (warmer low end).
 - **Tabs with sound** lists every tab that is playing or has custom settings; click a row to switch to it, or its speaker to mute it.
@@ -211,7 +211,7 @@ Limitation: media served from another origin without CORS would go silent in Web
 
 The toolbar's **Theme ▾** button opens five curated palettes: Midnight Party (default), Confetti Sunset, Neon Wool, Alpine Pop, and Forest Carnival. Themes recolor Felifox's chrome, address field, New Tab page and About window—not websites. Theme, animation and address-bar choices are saved to `~/Library/Application Support/Felifox/settings` (three `key=value` lines) and restored on launch.
 
-- **Original embedded SVG artwork:** a mischievous midnight-purple cat playing with a flaming wool ball, plus a simplified flaming-yarn symbol. No fox emoji, external assets or large background bitmaps.
+- **Original embedded SVG artwork:** a happy orange-and-cream astronaut cat exploring colorful yarn planets, a simplified helmet symbol, and a floating cardboard exploration box on New Tab. She has one clear smile, a cyan bubble visor, and a white/lavender suit. No fox emoji, external assets or large background bitmaps.
 - **Five distinct procedural scenes:** Midnight Party has tumbling confetti, streamers, golden stars and neon ribbons; Confetti Sunset has a golden sun, peach/coral hills and falling confetti; Alpine Pop has snowcapped ice mountains, glacier facets, drifting snow and ridge glints; Neon Wool has rolling yarn balls and flowing loose threads; Forest Carnival has swaying foliage, citrus, cherries, flowers and fluttering petals.
 - **Visible native animation:** backgrounds are drawn from responsive GPUI paths, with perceptible movement within a second rather than tiny nearly-static color shifts. The mascot also gently bobs; no background image frames or new animation dependencies are used.
 - **Motion:** the dropdown includes an Animate artwork checkbox. Animation stops while the window is inactive or web content replaces New Tab, and follows the live macOS Reduce Motion setting. Active animation is limited to about 30 fps; pausing does not affect website animation.

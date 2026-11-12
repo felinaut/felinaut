@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <title>Felinaut astronaut cat symbol</title>
+  <desc>Felinaut, the happy female orange-and-cream explorer cat, has pointed ears and joyful crescent eyes inside a round cyan astronaut helmet. One open smile and a tiny tongue keep her face welcoming. A white and lavender rim and compact neck seal preserve the silhouette at small sizes. Original vector artwork on transparency.</desc>
+  <defs>
+    <linearGradient id="rim" x1="17" y1="7" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/><stop offset="1" stop-color="#C5B6E9"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="22" y1="9" x2="42" y2="51" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#CEFAFF"/><stop offset="1" stop-color="#55C7D6"/>
+    </linearGradient>
+    <linearGradient id="fur" x1="25" y1="18" x2="39" y2="47" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFBF71"/><stop offset="1" stop-color="#F3944F"/>
+    </linearGradient>
+  </defs>
+  <!-- A separate optical drawing: large ears, broad eye arcs, no miniature suit. -->
+  <path d="M21 51H43L45 59C39 63 25 63 19 59Z" fill="#B5A1DD" stroke="#383353" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M23 56H41" stroke="#F8F5FF" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="32" cy="29" r="26" fill="url(#rim)" stroke="#383353" stroke-width="2.5"/>
+  <circle cx="32" cy="29" r="22" fill="url(#glass)" stroke="#438DA0" stroke-width="1.5"/>
+  <path d="M16 27C14 22 14 15 17 12C22 13 26 17 28 21C30 20 34 20 36 21C39 16 43 13 47 12C50 18 49 24 47 28C51 34 50 40 46 44C42 48 37 49 32 49C25 49 20 47 16 43C12 39 12 32 16 27Z" fill="url(#fur)" stroke="#79503B" stroke-width="1.8" stroke-linejoin="round"/>
+  <path d="M18 17L24 24L18 26ZM45 17L39 24L46 26Z" fill="#E89592"/>
+  <path d="M29 22L30 27M35 22L34 27" stroke="#D27A42" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M17 37C21 33 26 36 32 36C38 36 43 33 47 37C46 44 40 47 32 47C24 47 18 44 17 37Z" fill="#FFF0D1"/>
+  <path d="M20 32C22 28 26 28 28 32M36 32C38 28 42 28 44 32" stroke="#493B42" stroke-width="2.8" stroke-linecap="round"/>
+  <path d="M29 35Q32 33 35 35L32 38Z" fill="#93544D"/>
+  <path d="M26 39Q32 43 38 39Q36 46 32 45Q28 45 26 39Z" fill="#593D49"/>
+  <path d="M29 43Q32 41 35 43Q32 47 29 43Z" fill="#F5A7AC"/>
+  <path d="M16 37L21 38M43 38L48 37" stroke="#BD815E" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M15 22C17 16 22 11 28 10" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="7" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5"/>
+  <circle cx="57" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5"/>
+</svg>

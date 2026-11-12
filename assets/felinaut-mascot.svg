@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="420" viewBox="0 0 560 420" fill="none">
+  <title>Felinaut — curiosity, in orbit</title>
+  <desc>Felinaut is a happy female orange-and-cream tabby astronaut and curious explorer. She reaches a rounded padded paw toward a colorful cross-wound wool planet, while a second little yarn ball trails a thread toward her other paw. A round cyan bubble helmet frames visible ears, joyful crescent eyes and one open smile. Her white and lavender suit has a paw-and-star patch, rounded boots and a life-support pack; a striped tail, orbital threads and small stars complete the transparent illustration.</desc>
+  <defs>
+    <linearGradient id="shell" x1="192" y1="208" x2="330" y2="354" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/><stop offset=".54" stop-color="#F5F2FF"/><stop offset="1" stop-color="#D6CCF4"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="194" y1="49" x2="331" y2="250" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/><stop offset=".5" stop-color="#F0EDFF"/><stop offset="1" stop-color="#B7A6E2"/>
+    </linearGradient>
+    <linearGradient id="visor" x1="204" y1="61" x2="319" y2="242" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D6FDFF"/><stop offset=".5" stop-color="#89E4EE"/><stop offset="1" stop-color="#42BCCC"/>
+    </linearGradient>
+    <linearGradient id="fur" x1="219" y1="90" x2="297" y2="227" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFC16F"/><stop offset=".56" stop-color="#FFA252"/><stop offset="1" stop-color="#EB8149"/>
+    </linearGradient>
+    <linearGradient id="cream" x1="234" y1="177" x2="275" y2="234" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF9E9"/><stop offset="1" stop-color="#FFE4B9"/>
+    </linearGradient>
+    <linearGradient id="reflection" x1="190" y1="65" x2="309" y2="224" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity=".36"/><stop offset=".6" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="orbit" x1="80" y1="335" x2="480" y2="246" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A99BE5"/><stop offset=".5" stop-color="#79DCE7"/><stop offset="1" stop-color="#D4B1F3"/>
+    </linearGradient>
+    <linearGradient id="woolWarm" x1="426" y1="49" x2="480" y2="114" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD987"/><stop offset=".4" stop-color="#FF96AF"/><stop offset=".76" stop-color="#E46AC5"/><stop offset="1" stop-color="#9575DA"/>
+    </linearGradient>
+    <linearGradient id="woolCool" x1="72" y1="220" x2="113" y2="264" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C2FAE7"/><stop offset=".45" stop-color="#73D8E7"/><stop offset="1" stop-color="#9987E1"/>
+    </linearGradient>
+    <clipPath id="woolWarmClip"><circle cx="453" cy="81" r="38"/></clipPath>
+    <clipPath id="woolCoolClip"><circle cx="92" cy="242" r="28"/></clipPath>
+  </defs>
+
+  <!-- Broken orbital arcs leave the character's silhouette open and weightless. -->
+  <path d="M107 313C66 290 141 242 254 221C365 199 467 208 476 235C481 251 450 271 410 287" stroke="url(#orbit)" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M122 324C145 332 178 333 208 330" stroke="#C8BBED" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 9"/>
+
+  <!-- Cross-wound curved strands follow the spheres; neither planet is a flat disc. -->
+  <g id="yarn-planet-main">
+    <path d="M427 105C412 124 425 133 415 145" stroke="#684B8A" stroke-width="5" stroke-linecap="round"/>
+    <path d="M427 105C412 124 425 133 415 145" stroke="#FFB5D0" stroke-width="2.5" stroke-linecap="round"/>
+    <g clip-path="url(#woolWarmClip)">
+      <circle cx="453" cy="81" r="38" fill="url(#woolWarm)"/>
+      <path d="M474 46C493 74 482 107 451 120L479 126L501 77Z" fill="#76D7E3"/>
+      <path d="M416 65C437 58 464 72 484 94M415 76C437 68 463 82 480 106M416 87C436 79 456 90 469 110M423 103C446 90 460 68 462 42M434 116C458 103 475 75 474 49M448 122C473 106 485 83 485 64" stroke="#96538E" stroke-width="3.5" stroke-linecap="round"/>
+      <path d="M420 57C433 54 448 59 459 67M426 111C442 102 455 87 461 72" stroke="#FFE6A6" stroke-width="3" stroke-linecap="round"/>
+      <path d="M476 101C483 92 487 83 488 73" stroke="#DBFFF3" stroke-width="2.5" stroke-linecap="round"/>
+    </g>
+    <circle cx="453" cy="81" r="38.5" stroke="#574365" stroke-width="3"/>
+    <path d="M417 86C401 102 417 111 451 99C479 89 502 72 494 66" stroke="#B4A1EA" stroke-width="2.5" stroke-linecap="round"/>
+    <circle cx="493" cy="75" r="3" fill="#FFE1A0"/>
+  </g>
+  <g id="yarn-planet-companion">
+    <path d="M103 265C116 278 134 269 137 287C139 297 147 298 153 293" stroke="#78619E" stroke-width="4" stroke-linecap="round"/>
+    <path d="M103 265C116 278 134 269 137 287C139 297 147 298 153 293" stroke="#9EE8DF" stroke-width="2" stroke-linecap="round"/>
+    <g clip-path="url(#woolCoolClip)">
+      <circle cx="92" cy="242" r="28" fill="url(#woolCool)"/>
+      <path d="M65 236C85 222 112 226 122 240L126 254C109 235 84 233 65 246Z" fill="#FFD58C"/>
+      <path d="M66 227C84 225 105 238 115 252M64 238C81 235 101 247 110 261M67 250C82 245 95 256 101 269M76 265C96 249 102 229 98 214M88 272C109 252 114 235 108 217" stroke="#527D9E" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M72 223C82 220 90 222 96 225M82 260C89 252 93 244 95 235" stroke="#E9FFF4" stroke-width="2.5" stroke-linecap="round"/>
+    </g>
+    <circle cx="92" cy="242" r="28.5" stroke="#574365" stroke-width="3"/>
+  </g>
+
+  <!-- Life support, a curling tabby tail, and the far sleeve sit behind the suit. -->
+  <path d="M190 218L218 215L224 302L189 313C177 314 168 303 168 292L168 239C168 227 176 219 190 218Z" fill="#C0B1E5" stroke="#383353" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M177 241L188 237L190 289L177 294Z" fill="#ECE6FC"/>
+  <path d="M178 254L185 252M178 266L185 264M179 278L186 276" stroke="#8F7BB9" stroke-width="3" stroke-linecap="round"/>
+  <path d="M202 309C180 338 137 335 120 309C104 285 115 259 134 259C147 259 151 273 141 279C133 284 130 280 129 287C127 301 151 311 174 293Z" fill="url(#fur)" stroke="#383353" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M120 307C112 294 113 279 119 270C124 275 129 278 136 279C130 283 128 286 130 293C126 296 122 301 120 307Z" fill="#FFF0D2"/>
+  <path d="M142 328C143 320 146 314 151 309M161 331C161 322 163 316 166 311" stroke="#C9673C" stroke-width="7" stroke-linecap="round"/>
+  <path d="M205 254C188 246 174 255 161 273L150 289C146 296 150 306 157 309C166 314 175 311 180 305L203 282" fill="url(#shell)" stroke="#383353" stroke-width="5" stroke-linecap="round"/>
+  <path d="M159 276L179 290L173 300L152 286Z" fill="#BBA9E4" stroke="#383353" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M151 289C144 284 135 287 132 295C129 303 135 314 143 318C151 322 160 320 162 313C164 306 160 297 151 289Z" fill="#FFFCF5" stroke="#383353" stroke-width="4"/>
+  <path d="M137 299L143 302M142 293L148 297" stroke="#C7B8E7" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- A curious reaching paw has broad rounded toe lobes, not human fingers. -->
+  <path d="M317 254C336 254 343 240 349 224L363 190L390 202C384 227 378 250 360 268C347 281 334 284 321 278Z" fill="url(#shell)" stroke="#383353" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M346 230C356 234 366 239 372 244M342 239C351 243 358 248 363 252" stroke="#B8A7DE" stroke-width="3" stroke-linecap="round"/>
+  <path d="M362 190L368 177L398 189L392 204Z" fill="#AD9BD8" stroke="#383353" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M370 182L393 192" stroke="#F6F1FF" stroke-width="3" stroke-linecap="round"/>
+  <path d="M371 178C360 169 359 158 365 154C369 152 373 155 376 158C369 146 371 136 378 133C384 130 389 133 391 140C390 131 395 126 401 128C408 129 411 135 409 143C413 136 420 137 423 143C428 154 424 170 414 181C405 192 387 191 371 178Z" fill="url(#shell)" stroke="#383353" stroke-width="4.5" stroke-linejoin="round"/>
+  <path d="M388 157C395 151 405 155 406 162C411 164 409 172 404 174C398 178 389 174 386 170C382 166 383 160 388 157Z" fill="#EDA9AC"/>
+  <ellipse cx="382" cy="146" rx="3.5" ry="4" transform="rotate(-14 382 146)" fill="#F4BDC0"/>
+  <ellipse cx="399" cy="141" rx="3.5" ry="4.5" transform="rotate(8 399 141)" fill="#F4BDC0"/>
+  <ellipse cx="415" cy="149" rx="3.2" ry="4" transform="rotate(22 415 149)" fill="#F4BDC0"/>
+  <path d="M437 139L443 134M439 156L447 155" stroke="#E7B867" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Soft boots, dark outsoles, and articulated ankles give the suit structure. -->
+  <path d="M220 316L248 327L234 356C228 370 204 369 194 357L182 350C174 344 177 332 186 330L208 332Z" fill="url(#shell)" stroke="#383353" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M184 346C199 353 218 362 231 352L230 362C217 375 197 363 183 357C179 354 179 350 184 346Z" fill="#9481BC"/>
+  <path d="M214 329L236 339M210 337L231 347" stroke="#B4A2DA" stroke-width="3" stroke-linecap="round"/>
+  <path d="M281 326L309 317L324 339L343 344C353 347 354 360 345 366C329 375 304 374 295 364Z" fill="url(#shell)" stroke="#383353" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M298 357C315 364 335 365 349 355L349 365C337 378 309 376 299 369Z" fill="#9481BC"/>
+  <path d="M294 332L313 326M300 341L319 335" stroke="#B4A2DA" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- The torso is intentionally compact beneath the oversized bubble helmet. -->
+  <path d="M217 238C239 228 287 230 309 245C325 257 333 291 321 318C314 338 294 345 267 343L229 340C211 338 197 324 197 305L199 268C199 254 205 244 217 238Z" fill="url(#shell)" stroke="#383353" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M304 252C314 274 318 300 305 320C296 333 281 338 261 342C295 349 319 334 325 312C331 289 319 261 304 252Z" fill="#C6B8E8"/>
+  <path d="M211 275L208 303C209 316 215 323 225 326" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round"/>
+  <path d="M207 314C234 325 290 328 318 313L315 326C286 340 238 338 213 328Z" fill="#A896D3" stroke="#383353" stroke-width="3" stroke-linejoin="round"/>
+  <rect x="252" y="319" width="23" height="14" rx="4" fill="#F7F4FF" stroke="#655581" stroke-width="2.5"/>
+  <path d="M260 326H268" stroke="#6BCFDC" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- A tiny original paw-and-star mission patch: all geometry, no lettering. -->
+  <circle cx="248" cy="283" r="23" fill="#FCFAFF" stroke="#B3A0D8" stroke-width="3"/>
+  <circle cx="248" cy="283" r="18.5" fill="#393455"/>
+  <path d="M238 293C242 288 249 284 255 275" stroke="#74DCE7" stroke-width="2" stroke-linecap="round"/>
+  <path d="M254 269L256 273L261 274L257 277L257 282L253 279L249 281L250 276L247 273L252 273Z" fill="#FFE0A0"/>
+  <path d="M244 282C246 280 249 282 250 285C253 286 253 290 250 291L244 292C240 291 241 287 243 286Z" fill="#FFB971"/>
+  <circle cx="240" cy="282" r="2" fill="#FFB971"/><circle cx="244" cy="278" r="2" fill="#FFB971"/>
+  <path d="M235 290C240 296 252 299 261 286" stroke="#B5A3DD" stroke-width="1.5" stroke-linecap="round"/>
+  <rect x="282" y="272" width="23" height="25" rx="6" fill="#D9CFF0" stroke="#9A87BC" stroke-width="2"/>
+  <rect x="287" y="277" width="13" height="6" rx="2" fill="#484263"/>
+  <path d="M290 280H296" stroke="#85E1E8" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="289" cy="290" r="2" fill="#F1B468"/><circle cx="298" cy="290" r="2" fill="#FFFFFF"/>
+
+  <!-- Layered neck seals connect the round helmet to the suit, never the face. -->
+  <path d="M208 232C228 222 294 222 315 235L313 251C288 264 232 264 210 249Z" fill="#9583BF" stroke="#383353" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M210 234C234 245 288 246 313 236L312 245C287 258 232 256 211 245Z" fill="#EEE9FC"/>
+  <path d="M233 245L233 251M291 245L291 251" stroke="#A695CA" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- A true circular helmet has a substantial white rim and clear cyan glass. -->
+  <circle cx="264" cy="150" r="112" fill="url(#rim)" stroke="#383353" stroke-width="5"/>
+  <circle cx="264" cy="150" r="102" fill="url(#visor)" stroke="#458B9F" stroke-width="3"/>
+  <path d="M187 216C207 242 239 256 267 255C302 255 330 239 348 215" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Pointed ears remain entirely inside the bubble and read as a cat silhouette. -->
+  <path d="M194 139C186 119 189 90 196 76C213 79 230 95 239 110C254 105 275 105 289 110C300 92 316 79 332 77C339 99 338 125 329 142C342 158 348 179 342 196L349 204L336 207C325 230 299 241 265 241C233 241 206 232 192 211L179 211L186 201C177 181 181 157 194 139Z" fill="url(#fur)" stroke="#714435" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M198 89C210 95 222 107 226 118L202 132C196 119 195 102 198 89Z" fill="#E68B88"/>
+  <path d="M302 118C308 107 318 96 327 91C330 107 329 119 324 132Z" fill="#E68B88"/>
+  <path d="M202 97L213 111M319 103L314 112" stroke="#FBC1AA" stroke-width="3" stroke-linecap="round"/>
+  <path d="M245 110L252 130L258 113M266 110L268 133L277 111" stroke="#D87C43" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M188 162L203 170M185 178L200 181M337 164L324 171M341 180L326 183" stroke="#D87C43" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- Cream cheeks merge into a soft muzzle; the smile stays clear at UI sizes. -->
+  <path d="M200 186C207 174 223 177 234 183C243 188 251 181 264 182C277 180 286 188 295 183C308 176 324 179 330 190C332 212 304 234 266 233C226 234 202 216 200 186Z" fill="url(#cream)"/>
+  <path d="M210 158C215 146 228 145 236 156M289 156C297 144 310 147 315 159" stroke="#493B42" stroke-width="6" stroke-linecap="round"/>
+  <path d="M211 140L220 136M303 136L312 141" stroke="#AC613D" stroke-width="3" stroke-linecap="round"/>
+  <ellipse cx="211" cy="180" rx="10" ry="5" fill="#F39E8A"/>
+  <ellipse cx="316" cy="180" rx="10" ry="5" fill="#F39E8A"/>
+  <path d="M256 179C260 176 269 176 273 180C271 184 267 187 264 187C261 187 257 183 256 179Z" fill="#945651"/>
+  <path d="M264 186V203" stroke="#704943" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M241 197C253 205 275 206 287 195C284 214 274 222 264 221C253 221 246 212 241 197Z" fill="#593D49"/>
+  <path d="M253 213C260 208 271 208 278 213C269 224 260 224 253 213Z" fill="#F49EA4"/>
+  <path d="M247 200C257 204 272 204 280 200L277 205C267 209 255 207 250 205Z" fill="#FFFFFF"/>
+  <path d="M207 191L184 186M206 200L181 201M320 191L343 185M321 200L346 201" stroke="#805443" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="221" cy="192" r="1.5" fill="#CC9A72"/><circle cx="228" cy="196" r="1.5" fill="#CC9A72"/>
+  <circle cx="306" cy="193" r="1.5" fill="#CC9A72"/><circle cx="300" cy="197" r="1.5" fill="#CC9A72"/>
+
+  <!-- Reflections are simple paths, without filters, masks, fonts or raster data. -->
+  <path d="M166 151C166 97 208 53 261 52C291 52 317 66 334 86C290 64 225 69 194 107C180 123 173 140 169 164Z" fill="url(#reflection)"/>
+  <path d="M183 115C193 91 213 73 238 66" stroke="#FFFFFF" stroke-opacity=".86" stroke-width="8" stroke-linecap="round"/>
+  <path d="M178 133L176 144" stroke="#FFFFFF" stroke-opacity=".8" stroke-width="6" stroke-linecap="round"/>
+  <path d="M348 159C348 178 342 194 334 206" stroke="#D5FCFF" stroke-opacity=".8" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="159" cy="166" r="8" fill="#F4F0FF" stroke="#655B81" stroke-width="3"/>
+  <circle cx="159" cy="166" r="3" fill="#A390CD"/>
+  <circle cx="369" cy="166" r="8" fill="#F4F0FF" stroke="#655B81" stroke-width="3"/>
+  <circle cx="369" cy="166" r="3" fill="#A390CD"/>
+
+  <!-- Foreground orbit and sparse, carefully spaced navigation stars. -->
+  <path d="M85 311C84 337 172 352 294 326C378 308 445 279 469 254" stroke="url(#orbit)" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="436" cy="279" r="5" fill="#FFE0A0" stroke="#9B795F" stroke-width="2"/>
+  <path d="M92 117C94 131 98 135 110 138C98 141 94 146 92 159C89 146 85 141 73 138C85 135 89 131 92 117Z" fill="#FFE0A0" stroke="#B58A62" stroke-width="1.5"/>
+  <path d="M470 191L474 202L485 206L474 210L470 221L466 210L455 206L466 202Z" fill="#B9ABEA"/>
+  <path d="M372 43L375 51L383 54L375 57L372 65L369 57L361 54L369 51Z" fill="#7DD5E0"/>
+  <path d="M130 367L133 374L140 377L133 380L130 387L127 380L120 377L127 374Z" fill="#C4B6ED"/>
+  <path d="M387 345L390 353L398 356L390 359L387 367L384 359L376 356L384 353Z" fill="#FFCF8F"/>
+  <circle cx="128" cy="205" r="3.5" fill="#80D6DF"/>
+  <circle cx="478" cy="318" r="3" fill="#C3B2E7"/>
+  <circle cx="171" cy="62" r="3" fill="#F2BF80"/>
+  <circle cx="248" cy="385" r="3" fill="#8DD6DE"/>
+</svg>

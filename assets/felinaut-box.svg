@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="420" viewBox="0 0 560 420" fill="none">
+  <title>Felinaut's little cardboard exploration ship</title>
+  <desc>A transparent foreground overlay for Felinaut's New Tab pose. A soft warm cardboard box with folded flaps, paper seams, a small paw-and-star mission sticker and a taped corner covers the astronaut's lower suit and boots. The matching 560 by 420 canvas leaves her helmet, face, both paws, striped tail and wool planets clear. The box is equipment, not a second face.</desc>
+  <defs>
+    <linearGradient id="boxFront" x1="183" y1="321" x2="302" y2="396" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EDC89A"/><stop offset=".55" stop-color="#DDA977"/><stop offset="1" stop-color="#CA9163"/>
+    </linearGradient>
+    <linearGradient id="boxSide" x1="309" y1="325" x2="353" y2="378" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D2A071"/><stop offset="1" stop-color="#B47D54"/>
+    </linearGradient>
+    <linearGradient id="boxFlap" x1="183" y1="306" x2="287" y2="344" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFE0B6"/><stop offset="1" stop-color="#E9BC8C"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Foreground geometry only: no rear panel across the cat's chest or paws. -->
+  <path d="M177 316L184 297L229 310L240 329Z" fill="#EDC598" stroke="#805C4B" stroke-width="3.5" stroke-linejoin="round"/>
+  <path d="M184 302L222 313" stroke="#FFE4C0" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M303 331L329 302L354 313L348 345Z" fill="#DBAF80" stroke="#805C4B" stroke-width="3.5" stroke-linejoin="round"/>
+  <path d="M330 308L347 315" stroke="#F7D6AA" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- The continuous opaque walls conceal both boots in the aligned mascot. -->
+  <path d="M178 316L303 331L354 313V375C354 378 352 380 349 381L308 397C305 398 302 398 299 397L182 377C179 376 178 374 178 371Z" fill="url(#boxFront)" stroke="#805C4B" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M303 331L354 313V375C354 378 352 380 349 381L308 397L303 398Z" fill="url(#boxSide)"/>
+  <path d="M303 335V391" stroke="#9C6C4D" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M184 339V368C184 370 185 371 188 372L292 390" stroke="#F5D0A1" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M310 390L346 376" stroke="#A56F4C" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- Open soft flaps and a fine corrugated cut edge, not an enclosing lid. -->
+  <path d="M178 316L303 331L292 347L175 330Z" fill="url(#boxFlap)" stroke="#805C4B" stroke-width="3.5" stroke-linejoin="round"/>
+  <path d="M303 331L354 313L360 331L315 349Z" fill="#EEC697" stroke="#805C4B" stroke-width="3.5" stroke-linejoin="round"/>
+  <path d="M183 320L297 334M309 334L352 319" stroke="#FFE7C5" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M180 329L288 344M318 345L355 330" stroke="#BD8A5F" stroke-width="1.5" stroke-linecap="round"/>
+
+  <!-- Four toe pads plus one central pad read as a paw, never eyes and a mouth. -->
+  <g transform="rotate(8 238 363)">
+    <circle cx="238" cy="363" r="19" fill="#FFF0D0" stroke="#B38A64" stroke-width="1.8"/>
+    <circle cx="238" cy="363" r="15.5" stroke="#D6B48B" stroke-width="1.2" stroke-dasharray="2 3"/>
+    <ellipse cx="228" cy="359" rx="2.8" ry="3.5" transform="rotate(-28 228 359)" fill="#78618A"/>
+    <ellipse cx="234" cy="353" rx="2.8" ry="3.5" transform="rotate(-12 234 353)" fill="#78618A"/>
+    <ellipse cx="242" cy="353" rx="2.8" ry="3.5" transform="rotate(12 242 353)" fill="#78618A"/>
+    <ellipse cx="248" cy="359" rx="2.8" ry="3.5" transform="rotate(28 248 359)" fill="#78618A"/>
+    <path d="M233 361C235 357 240 357 243 361L247 368C248 372 244 374 240 372C238 371 237 371 235 372C231 373 228 371 229 368Z" fill="#78618A"/>
+  </g>
+  <path d="M268 354L270 359L275 361L270 363L268 368L266 363L261 361L266 359Z" fill="#FFF0CE" stroke="#AA805C" stroke-width="1.2" stroke-linejoin="round"/>
+
+  <!-- A translucent paper repair and quiet grain strokes make it a loved ship. -->
+  <path d="M327 351L341 346L342 371L329 376Z" fill="#F9DCAB" fill-opacity=".72"/>
+  <path d="M330 354L338 351M332 367L339 364" stroke="#E8BE8D" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M193 350L204 352M194 360L200 361M274 379L285 381M317 364L320 363" stroke="#B5845E" stroke-width="1.5" stroke-linecap="round"/>
+</svg>

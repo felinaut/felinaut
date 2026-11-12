@@ -2200,15 +2200,19 @@ impl Browser {
                                     .text_xs()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(rgb(p.muted))
-                                    .child("SMALL BROWSER. BIG CURIOSITY."),
+                                    .child("SMALL BROWSER. INFINITE CURIOSITY."),
                             )
                             .child(
-                                brand::mascot()
+                                div()
                                     .w(px(280.))
                                     .h(px(210.))
                                     .flex_shrink_0()
                                     .relative()
-                                    .top(px((phase * 1.2).sin() * 6.)),
+                                    .top(px((phase * 1.2).sin() * 6.))
+                                    .child(brand::mascot().absolute().inset_0().size_full())
+                                    .child(
+                                        brand::exploration_box().absolute().inset_0().size_full(),
+                                    ),
                             )
                             .child(
                                 div()
@@ -2224,7 +2228,7 @@ impl Browser {
                                 div()
                                     .text_size(px(17.))
                                     .text_color(rgb(p.muted))
-                                    .child("Follow the thread. Find something wonderful."),
+                                    .child("A little curiosity. A whole universe."),
                             )
                             .child(
                                 div()

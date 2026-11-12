@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <title>Felifox voice preset</title>
+  <title>Felinaut voice preset</title>
   <rect x="9" y="3" width="6" height="11" rx="3"/>
   <path d="M5.5 11A6.5 6.5 0 0 0 18.5 11"/>
   <path d="M12 17.5V21M8.5 21H15.5"/>

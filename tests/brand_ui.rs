@@ -1,4 +1,4 @@
-//! Opt-in native UI test: FELIFOX_NATIVE_TEST=1 cargo test --test brand_ui
+//! Opt-in native UI test: FELINAUT_NATIVE_TEST=1 cargo test --test brand_ui
 
 #[allow(dead_code, unused_imports)]
 #[path = "../src/about.rs"]
@@ -29,7 +29,14 @@ impl Render for Parent {
             .relative()
             .size_full()
             .child(art::backdrop(theme::palette(cx), 0.).absolute().inset_0())
-            .child(brand::mascot().relative().w(px(280.)).h(px(210.)))
+            .child(
+                div()
+                    .relative()
+                    .w(px(280.))
+                    .h(px(210.))
+                    .child(brand::mascot().absolute().inset_0().size_full())
+                    .child(brand::exploration_box().absolute().inset_0().size_full()),
+            )
     }
 }
 
@@ -48,8 +55,12 @@ fn other_window(parent: WindowHandle<Parent>, cx: &App) -> AnyWindowHandle {
 }
 
 fn main() {
-    if std::env::var("FELIFOX_NATIVE_TEST").as_deref() != Ok("1") {
-        println!("Native brand UI test skipped; set FELIFOX_NATIVE_TEST=1 to run.");
+    if std::env::var_os("FELINAUT_NATIVE_TEST")
+        .or_else(|| std::env::var_os("FELIFOX_NATIVE_TEST"))
+        .as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        println!("Native brand UI test skipped; set FELINAUT_NATIVE_TEST=1 to run.");
         return;
     }
 
@@ -74,7 +85,7 @@ fn main() {
             }).ok();
         }).detach();
 
-        let images = [brand::MASCOT, brand::SYMBOL].map(|path| {
+        let images = [brand::MASCOT, brand::SYMBOL, brand::BOX].map(|path| {
             Box::pin(ImageAssetLoader::load(Resource::Embedded(path.into()), cx))
                             as std::pin::Pin<Box<dyn std::future::Future<Output = <ImageAssetLoader as Asset>::Output> + Send + 'static>>
         });
