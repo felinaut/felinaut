@@ -772,17 +772,11 @@ impl Browser {
                 if signed_out {
                     folder.sign_out(now);
                 } else {
-                    folder.signed_out = false;
-                    let section = &mut folder.sections[section];
-                    let gone = match done {
-                        Some(Ok(items)) => section.update(items),
-                        Some(Err(error)) => {
-                            section.error = Some(error);
-                            Vec::new()
-                        }
-                        None => Vec::new(),
-                    };
-                    section.last = Some(now);
+                    let result = done.expect("a completed refresh has a result");
+                    if result.is_ok() {
+                        folder.signed_out = false;
+                    }
+                    let gone = folder.sections[section].finish_refresh(result, now);
                     if !gone.is_empty() {
                         self.sync_live_tabs();
                     }
@@ -879,8 +873,8 @@ impl Browser {
         else {
             return;
         };
-        item.seen = true;
         let (url, title) = (item.url.clone(), item.title.clone());
+        live::restore_items(&mut self.live, &url);
         if let Some(index) = self.live_tab(&url) {
             self.select_tab(index, window, cx);
             return;
@@ -3074,6 +3068,17 @@ impl Browser {
         cx: &mut Context<Self>,
     ) {
         let name = folder.integration.name;
+        if !folder.has_enabled_sections() {
+            rows.push(
+                Self::live_note(
+                    ("live-disabled", index),
+                    "No lists enabled. Choose lists in Live folders settings.",
+                    p,
+                )
+                .into_any_element(),
+            );
+            return;
+        }
         if folder.checking() {
             rows.push(
                 Self::live_note(

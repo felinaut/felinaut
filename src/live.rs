@@ -98,6 +98,9 @@ macro_rules! api {
 
 mod asana;
 mod github;
+mod state;
+
+pub use state::restore_items;
 
 pub static ALL: [Integration; 2] = [&github::SPEC, &asana::SPEC];
 
@@ -162,24 +165,7 @@ impl Section {
         let first = self.last.is_none() && self.items.is_empty();
         for item in &mut items {
             let old = self.items.iter().find(|old| old.url == item.url);
-            // Any activity GitHub reports (comments, reviews, pushes, CI) makes it new again.
-            // An empty time means the page gave none, which is no evidence of an update.
-            item.seen = first
-                || old.is_some_and(|old| {
-                    old.seen
-                        && (old.updated == item.updated
-                            || old.updated.is_empty()
-                            || item.updated.is_empty())
-                });
-            item.dismissed = old.and_then(|old| old.dismissed.clone());
-            if item
-                .dismissed
-                .as_ref()
-                .is_some_and(|at| *at != item.updated)
-            {
-                item.dismissed = None;
-                item.seen = false;
-            }
+            state::retain_item_state(item, old, first);
         }
         let gone = self
             .items
@@ -191,6 +177,23 @@ impl Section {
         self.error = None;
         gone
     }
+    /// A failed refresh records its retry time and error without removing cached items.
+    pub fn finish_refresh(
+        &mut self,
+        result: Result<Vec<Item>, String>,
+        now: Instant,
+    ) -> Vec<String> {
+        let gone = match result {
+            Ok(items) => self.update(items),
+            Err(error) => {
+                self.error = Some(error);
+                Vec::new()
+            }
+        };
+        self.last = Some(now);
+        gone
+    }
+
     pub fn shown_items(&self) -> impl Iterator<Item = (usize, &Item)> {
         self.items
             .iter()
@@ -232,9 +235,14 @@ impl LiveFolder {
         }
     }
 
-    /// Just added: nothing to show until the first refresh has checked the sign-in.
+    pub fn has_enabled_sections(&self) -> bool {
+        self.sections.iter().any(|section| section.shown)
+    }
+
+    /// Just added: nothing to show until the first enabled refresh has checked the sign-in.
     pub fn checking(&self) -> bool {
-        !self.signed_out
+        self.has_enabled_sections()
+            && !self.signed_out
             && self
                 .sections
                 .iter()
@@ -635,6 +643,79 @@ mod tests {
                 .extractor
                 .contains("querySelectorAll('a[data-testid=\"listitem-title-link\"]")
         );
+    }
+
+    #[test]
+    fn missing_timestamps_survive_refresh_and_persistence_without_reopening() {
+        let url = "https://github.com/a/b/pull/1";
+        let mut folder = LiveFolder::new(&github::SPEC);
+        let now = Instant::now();
+        let section = &mut folder.sections[0];
+        section.finish_refresh(Ok(vec![updated(url, "1")]), now);
+        section.items[0].dismissed = Some("1".into());
+        section.finish_refresh(Ok(vec![updated(url, "")]), now);
+        assert_eq!(section.shown_items().count(), 0);
+        assert_eq!(section.items[0].updated, "1");
+        let mut restored = parse(&serialize(&[folder]));
+        let section = &mut restored[0].sections[0];
+        section.finish_refresh(Ok(vec![updated(url, "1")]), now);
+        assert_eq!(section.shown_items().count(), 0);
+        section.finish_refresh(Ok(vec![updated(url, "2")]), now);
+        assert!(section.items[0].shown() && !section.items[0].seen);
+    }
+
+    #[test]
+    fn explicit_reopen_restores_sidebar_items_after_close() {
+        let url = "https://github.com/a/b/pull/1";
+        let mut folders = vec![LiveFolder::new(&github::SPEC)];
+        for section in &mut folders[0].sections {
+            section.items = vec![Item {
+                dismissed: Some("1".into()),
+                ..updated(url, "1")
+            }];
+            assert_eq!(section.shown_items().count(), 0);
+        }
+        restore_items(&mut folders, url);
+        for section in &folders[0].sections {
+            let visible: Vec<_> = section.shown_items().collect();
+            assert_eq!(visible.len(), 1);
+            assert_eq!(visible[0].1.url, url);
+            assert!(visible[0].1.seen);
+        }
+        assert_eq!(folders[0].unseen(), 0);
+        assert_eq!(parse(&serialize(&folders)), folders);
+    }
+
+    #[test]
+    fn disabled_sections_are_not_checking_or_scheduled() {
+        for integration in ALL {
+            for mask in 0..(1 << integration.sources.len()) {
+                let mut folder = LiveFolder::new(integration);
+                for (index, section) in folder.sections.iter_mut().enumerate() {
+                    section.shown = mask & (1 << index) != 0;
+                }
+                assert_eq!(folder.has_enabled_sections(), mask != 0);
+                assert_eq!(folder.checking(), mask != 0);
+                assert_eq!(folder.due(), folder.sections.iter().position(|s| s.shown));
+                let restored = parse(&serialize(std::slice::from_ref(&folder)));
+                assert_eq!(restored[0].checking(), mask != 0);
+                folder.sign_out(Instant::now());
+                assert!(!folder.checking());
+                assert_eq!(folder.due(), None);
+                folder.refresh();
+                assert_eq!(folder.due(), folder.sections.iter().position(|s| s.shown));
+                folder.signed_out = false;
+                for section in &mut folder.sections {
+                    section.last = Some(Instant::now());
+                }
+                assert!(!folder.checking());
+                assert_eq!(folder.due(), None);
+            }
+        }
+        let mut folder = LiveFolder::new(&github::SPEC);
+        folder.sections.clear();
+        assert!(!folder.has_enabled_sections() && !folder.checking());
+        assert_eq!(folder.due(), None);
     }
 
     #[test]
