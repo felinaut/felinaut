@@ -474,24 +474,6 @@ fn is_word(segment: &str) -> bool {
     segment.chars().any(char::is_alphanumeric)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{next_word, previous_word};
-
-    #[test]
-    fn word_motion_stops_at_words_not_punctuation() {
-        let text = "https://example.com/foo bar";
-        assert_eq!(previous_word(text, text.len()), 24);
-        assert_eq!(previous_word(text, 24), 20);
-        assert_eq!(previous_word(text, 8), 0);
-        assert_eq!(previous_word(text, 0), 0);
-        assert_eq!(next_word(text, 0), 5);
-        assert_eq!(next_word(text, 5), 19);
-        assert_eq!(next_word(text, 23), text.len());
-        assert_eq!(next_word(text, text.len()), text.len());
-    }
-}
-
 impl EntityInputHandler for AddressInput {
     fn text_for_range(
         &mut self,
@@ -905,5 +887,23 @@ impl Render for AddressInput {
 impl Focusable for AddressInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{next_word, previous_word};
+
+    #[test]
+    fn word_motion_stops_at_words_not_punctuation() {
+        let text = "https://example.com/foo bar";
+        assert_eq!(previous_word(text, text.len()), 24);
+        assert_eq!(previous_word(text, 24), 20);
+        assert_eq!(previous_word(text, 8), 0);
+        assert_eq!(previous_word(text, 0), 0);
+        assert_eq!(next_word(text, 0), 5);
+        assert_eq!(next_word(text, 5), 19);
+        assert_eq!(next_word(text, 23), text.len());
+        assert_eq!(next_word(text, text.len()), text.len());
     }
 }
