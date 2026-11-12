@@ -285,6 +285,8 @@ A site gets the camera or the microphone only after you allow it. When a page as
 
 While a tab uses a device, its sidebar row or pinned tile shows a **camera** or **microphone** icon; click the icon to stop the use.
 
+The toolbar has a button for the active site while the site uses a device or has stored decisions: **● Camera in use**, or for example **Camera and microphone allowed ×**. Click that button, or choose **View → Reset Site Permissions**, to stop the use and to forget the decisions of the active site: the site then has to ask again. This button is the only place that shows stored decisions; there is no list of all sites.
+
 Decisions are kept in `permissions.tsv` (see _Scope and limitations_), one line for each site and device: `allow` or `deny`, `camera` or `microphone`, and the origin. Delete the file to forget every decision. A line that Felinaut cannot read is ignored, and never becomes a permission.
 
 Refused without a question:
@@ -373,7 +375,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/audio.rs`, `src/audio_control.js`: per-tab volume model, slider mapping, the audio bridge and Web Audio routing.
 - `src/volume.rs`: the native volume popover.
 - `src/permissions.rs`, `src/permissions/native.rs`: camera and microphone decisions per origin and their file, and the replaced WebKit permission method.
-- `src/permission_ui.rs`: the prompt bar and the tab's capture icon.
+- `src/permission_ui.rs`: the prompt bar, the toolbar's site permission button and the tab's capture icon.
 - `src/brand.rs` and `assets/`: embedded original SVG mascot, symbol and monochrome UI icons.
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.

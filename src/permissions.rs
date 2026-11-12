@@ -210,6 +210,36 @@ impl Permissions {
         self.dirty |= !kinds.is_empty();
     }
 
+    /// Forgets each decision for the origin, so it gets a prompt again.
+    pub fn revoke(&mut self, origin: &str) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|(known, _), _| known != origin);
+        let removed = self.entries.len() != before;
+        self.dirty |= removed;
+        removed
+    }
+
+    /// The stored decisions for an origin in words, such as "Camera allowed".
+    pub fn summary(&self, origin: &str) -> Option<String> {
+        let with = |decision| -> Vec<Kind> {
+            [Kind::Camera, Kind::Microphone]
+                .into_iter()
+                .filter(|kind| self.entries.get(&(origin.to_owned(), *kind)) == Some(&decision))
+                .collect()
+        };
+        let parts: Vec<_> = [(Decision::Allow, "allowed"), (Decision::Deny, "blocked")]
+            .into_iter()
+            .filter_map(|(decision, word)| {
+                let kinds = with(decision);
+                (!kinds.is_empty()).then(|| format!("{} {word}", describe(&kinds)))
+            })
+            .collect();
+        let text = parts.join(", ");
+        let mut letters = text.chars();
+        let first = letters.next()?;
+        Some(first.to_uppercase().chain(letters).collect())
+    }
+
     /// The path and contents to write if a decision changed, at most once per `SAVE_INTERVAL`
     /// so two background writes never race.
     pub fn snapshot_due(&mut self, now: Instant) -> Option<(PathBuf, String)> {
@@ -316,6 +346,35 @@ mod tests {
         // A later decision replaces an earlier one.
         permissions.remember(SITE, BOTH, Decision::Allow);
         assert_eq!(permissions.answer(SITE, BOTH), Answer::Grant);
+    }
+
+    #[test]
+    fn revoke_forgets_one_site_and_the_summary_names_its_decisions() {
+        let other = "https://other.example";
+        let mut permissions = Permissions::default();
+        assert_eq!(permissions.summary(SITE), None);
+        assert!(!permissions.revoke(SITE), "nothing to revoke");
+        permissions.remember(SITE, &[Kind::Microphone], Decision::Allow);
+        permissions.remember(SITE, &[Kind::Camera], Decision::Deny);
+        permissions.remember(other, BOTH, Decision::Allow);
+        assert_eq!(
+            permissions.summary(SITE).as_deref(),
+            Some("Microphone allowed, camera blocked")
+        );
+        assert_eq!(
+            permissions.summary(other).as_deref(),
+            Some("Camera and microphone allowed")
+        );
+
+        assert!(permissions.revoke(SITE));
+        assert!(!permissions.revoke(SITE), "nothing is left to revoke");
+        assert_eq!(permissions.answer(SITE, BOTH), Answer::Ask);
+        assert_eq!(permissions.summary(SITE), None);
+        assert_eq!(permissions.answer(other, BOTH), Answer::Grant);
+        // The change reaches the file.
+        permissions.path = Some("/nonexistent/permissions.tsv".into());
+        let (_, contents) = permissions.take_snapshot().unwrap();
+        assert!(!contents.contains(SITE) && contents.contains(other));
     }
 
     #[test]

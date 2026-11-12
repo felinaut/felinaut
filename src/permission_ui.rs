@@ -1,4 +1,5 @@
-//! The camera and microphone prompt and the capture indicator of a tab.
+//! The camera and microphone prompt, the toolbar's site permission button and the capture
+//! indicator of a tab.
 //!
 //! The prompt is a bar between the toolbar and the page. GPUI content drawn over the page
 //! would sit behind Wry's child NSView, so the bar takes a row of its own and the page moves
@@ -19,7 +20,13 @@ use crate::{
 
 actions!(
     permissions,
-    [NotNow, NextChoice, PreviousChoice, ConfirmChoice]
+    [
+        NotNow,
+        NextChoice,
+        PreviousChoice,
+        ConfirmChoice,
+        ResetSitePermissions
+    ]
 );
 
 const CONTEXT: &str = "FelinautPermission";
@@ -277,6 +284,67 @@ impl Browser {
                 )
                 .children(buttons),
         )
+    }
+
+    /// The origin of the active tab's page, if it could ask.
+    fn active_origin(&self) -> Option<String> {
+        let tab = &self.tabs[self.active];
+        (!tab.home)
+            .then(|| permissions::origin_of_url(&tab.url))
+            .flatten()
+    }
+
+    /// The toolbar button for the active site: what it uses now, or its stored decisions.
+    /// A click stops the use and forgets the decisions.
+    pub(crate) fn permission_button(
+        &self,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<Stateful<Div>> {
+        let label = match self.tabs[self.active].capture {
+            (true, true) => "● Camera and microphone in use".to_owned(),
+            (true, false) => "● Camera in use".to_owned(),
+            (false, true) => "● Microphone in use".to_owned(),
+            (false, false) => self.permissions.summary(&self.active_origin()?)?,
+        };
+        Some(
+            self.button("site-permissions", "", p)
+                .flex_shrink_0()
+                .text_size(px(12.))
+                .text_color(rgb(p.text))
+                .on_hover(Self::hint_on_hover(
+                    "Stop camera and microphone use and forget this site's decisions",
+                    cx,
+                ))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.reset_site_permissions(&ResetSitePermissions, window, cx);
+                }))
+                .child(format!("{label}  ×")),
+        )
+    }
+
+    /// Forgets the active site's decisions and stops its use of the camera and the microphone,
+    /// in each tab that shows the site.
+    pub(crate) fn reset_site_permissions(
+        &mut self,
+        _: &ResetSitePermissions,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(page) = &self.tabs[self.active].page {
+            page.stop_capture();
+        }
+        if let Some(origin) = self.active_origin() {
+            self.permissions.revoke(&origin);
+            for tab in &self.tabs {
+                if let Some(page) = &tab.page
+                    && permissions::origin_of_url(&tab.url).as_ref() == Some(&origin)
+                {
+                    page.stop_capture();
+                }
+            }
+        }
+        cx.notify();
     }
 
     /// A tab's camera or microphone icon while its page captures. A click stops the capture.

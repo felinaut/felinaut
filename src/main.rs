@@ -4017,6 +4017,7 @@ impl Render for Browser {
             .on_action(cx.listener(Self::reopen_tab))
             .on_action(cx.listener(Self::new_live_folder))
             .on_action(cx.listener(Self::show_downloads))
+            .on_action(cx.listener(Self::reset_site_permissions))
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(
@@ -4088,6 +4089,7 @@ impl Render for Browser {
                             } else {
                                 self.address.clone().into_any_element()
                             }))
+                            .children(self.permission_button(p, cx))
                             .child(download_panel::button(&self.downloads, p).on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.show_downloads(&ShowDownloads, window, cx)
@@ -4256,6 +4258,10 @@ fn main() {
                 items: [
                     MenuItem::action("Toggle Sidebar", ToggleSidebar),
                     MenuItem::action("Downloads", ShowDownloads),
+                    MenuItem::action(
+                        "Reset Site Permissions",
+                        permission_ui::ResetSitePermissions,
+                    ),
                     MenuItem::separator(),
                     MenuItem::action("Show Next Tab", NextTab),
                     MenuItem::action("Show Previous Tab", PreviousTab),
