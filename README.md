@@ -43,6 +43,25 @@ CARGO_PROFILE_RELEASE_STRIP=none cargo build --release
 
 The first build downloads dependencies from crates.io. The new-tab page contains no remote assets or telemetry. Search queries go to DuckDuckGo. Websites control their own requests once loaded.
 
+### Optional engines and macOS evaluation
+
+Build-time engine inclusion is now explicit. The default is `engine-webkit-system`; use `--no-default-features` to replace it, or add `--features engine-webkit-upstream` for both Cocoa comparison choices. `./target/debug/felinaut --list-engines` reports this binary's build without opening a profile or window. The picker disables excluded choices.
+
+See [engine build configurations](docs/engine-builds.md). These additional engines are **not integrated**: their `engine-*` requests fail with explicit adapter-not-implemented errors, never a silent WebKit fallback. Per-tab mixed-engine selection remains planned.
+
+### Developer comparison: system and upstream Cocoa WebKit
+
+The `multiplatform` working implementation can launch real Felinaut against system WebKit or trusted, manually prepared upstream Cocoa WebKit products, in separate temporary profiles. This is a local functional comparison, **not WPE support, a benchmark, or a production engine preference**. Read the [setup and security limits](docs/macos-webkit-comparison.md) first; the pinned archive requires macOS 27 and is not a distributable bundle.
+
+```sh
+cargo build --locked --bins --features engine-webkit-upstream
+python3 scripts/compare_macos_webkit.py                       # native picker
+python3 scripts/compare_macos_webkit.py --engine both         # until windows close
+python3 scripts/compare_macos_webkit.py --engine both --smoke --capture
+```
+
+The bounded smoke checks runtime identity, native input, JavaScript, page snapshots and storage isolation using a trusted loopback fixture. Window capture needs Screen Recording permission. The installed browser is untouched, and the default backend/data paths remain unchanged. New builds refuse unverified WebKit provenance before loading a profile; this can also refuse startup where the current dyld identity query is unavailable. See the documented compatibility limits.
+
 ## Build a DMG for friends
 
 From the project root, run:
@@ -298,7 +317,7 @@ GPUI: tabs, address bar, controls, new-tab page
 
 For the differences between native macOS WebKit and WPE WebKit, their advantages, and the feasibility of engine selection, see [Web engine options](docs/web-engines.md). WPE is not currently supported by Felinaut; this is a feasibility assessment, not an implemented setting. The [porting plan](docs/porting-plan.md) covers GPUI input, Windows/Linux backend options, and a GTK-free Linux investigation; those platforms are not yet supported.
 
-Portable-backend development is coordinated on the `multiplatform` integration branch. Read the [engine-neutral backend contract](docs/engine-backends.md) and platform-agent handoff in the porting plan before starting a platform task. This does not add Windows/Linux releases or a user-facing engine selector. The [macOS backend status](docs/macos-backend-status.md) records the initial native adapter validation and outstanding WPE comparison blockers.
+Portable-backend development is coordinated on the `multiplatform` integration branch. Read the [engine-neutral backend contract](docs/engine-backends.md) and platform-agent handoff in the porting plan before starting a platform task. This does not add Windows/Linux releases or a user-facing engine selector. The [macOS backend status](docs/macos-backend-status.md) records native adapter validation, the working Cocoa WebKit developer comparison, and outstanding WPE comparison blockers.
 
 Two small document-start scripts run in every frame: one for links, one for tab audio. A third runs in the main frame only and reports the site icon as a bounded PNG data URL. The link script supplies hover destinations, modifier-click requests and the link menu, including inside frames. Its narrowly scoped native message handler accepts only bounded HTTP(S) URLs; it exposes no filesystem or general native-command API. The link menu uses an isolated shadow root within the page because a GPUI overlay would be covered by WebKit's native view. Web pages remain untrusted and can interfere with document-local UI.
 

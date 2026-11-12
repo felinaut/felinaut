@@ -1,8 +1,31 @@
 # macOS backend implementation status
 
-**Comparison ready: no.** This work validates the native WebKit path behind a first engine-neutral boundary. It does not implement WPE, an engine selector, or live engine switching.
+**Cocoa developer comparison: functional smoke PASS. WPE comparison: not ready.** The current working implementation can launch real Felinaut against system WebKit and a trusted upstream Cocoa WebKit runtime in separate processes. It does not implement WPE, a production engine preference, or live engine switching.
 
-## Native evidence
+## Current Cocoa comparison progress
+
+Recorded on **12 November 2026** with the **uncommitted implementation based on `ac9f00c` on `multiplatform`**, on **macOS 27.0 (26A428), arm64, Xcode 27.0 (27A266a)**:
+
+| Requested runtime | Reported WebKit version | Mapped `WKWebView` image source | Image UUID                             |
+| ----------------- | ----------------------- | ------------------------------- | -------------------------------------- |
+| System            | `22625.1.29.11.27`      | `system-shared-cache`           | `AC293B1A-9EAF-34D8-86B2-914D2ABB84F3` |
+| Upstream Cocoa    | `627.1.8+`              | `external-framework`            | `FBC915B7-CB20-3E09-BBE5-BC236EC075B9` |
+
+Both real-browser functional smoke runs passed runtime selection, trusted native input/click, JavaScript, page PNG and storage-isolation checks using a trusted loopback fixture. This is not a benchmark, helper-provenance check or sandbox audit. The [comparison guide](macos-webkit-comparison.md) has runnable picker, interactive and bounded smoke commands, the pinned archive and its signing/cleanup limitations. Products were manually prepared on this Mac; no full WebKit source build was attempted.
+
+Current validation passed: browser and packaging-launcher formatter/Clippy checks (warnings denied); **149 browser unit tests, 2 ignored; 4 control-client tests; 1 packaging-launcher test; 255 Python tests**, including 61 comparison-tool tests and 4 build-gate tests executing multiple real Rust build-script configurations. Default system-only, upstream-only and combined Cocoa builds each passed Clippy, browser/CLI tests, debug and optimized release builds, and actual loopback smoke for their selected runtime(s). Actual Cargo checks rejected no-engine builds and all six unimplemented candidate requests, rather than silently falling back. No CEF, Gecko, Servo, Ladybird, Ultralight or WPE adapter was built or run.
+
+All three opt-in native harnesses (`native_webview`, `native_audio`, `brand_ui`) actually ran and printed `PASS`, including a rerun with both Cocoa features enabled; the webview harness emitted two sandbox-extension file warnings without failing its behavioral checks. `python3 scripts/smoke_macos_backend.py --run` also passed through normal system-runtime startup, and a fresh `python3 scripts/compare_macos_webkit.py --engine both --smoke --capture` passed both isolated runtimes. The native picker was displayed/captured against the actual system-only and combined build manifests in bounded checks, then its processes were stopped; button selection was not automated. The historical counts below describe only the earlier boundary work.
+
+[Engine build configurations](engine-builds.md) document feature combinations, the profile-free `--list-engines` manifest and disabled picker choices. Normal startup now rejects unverified runtime provenance before loading profiles; missing dyld evidence is an explicit compatibility failure, not a silent external-runtime downgrade. Mixed-engine per-tab selection remains unimplemented.
+
+Clean captures of the actual rebuilt comparison windows:
+
+![System Cocoa WebKit in real Felinaut, displaying the trusted local input fixture and comparison footer.](screenshots/macos-comparison-system.png)
+
+![Upstream Cocoa WebKit in real Felinaut, displaying the same fixture and experimental footer.](screenshots/macos-comparison-upstream.png)
+
+## Historical native-boundary evidence
 
 Checked on **12 November 2026**, **macOS 27.0 (26A428), arm64**, with full Xcode/Metal available. The native seam and diagnostics are in implementation commits `9fda117` and `5546661` on `port-macos-backend-boundary`, based on `a1c9c80` from `origin/multiplatform`. The final smoke/capture run rebuilt the Rust binaries at `5546661`; only the validation tooling and documentation were then uncommitted. The embedded Git hash identifies source history, not a guarantee that the entire working tree is clean.
 
@@ -30,9 +53,9 @@ Observed diagnostic output on this machine:
 
 The version is the installed WebKit framework version reported by Wry, not a Safari marketing version or a claim that every WebKit media/site feature works. The result is an observation, not a required version for another machine.
 
-## Validation performed
+## Historical native-boundary validation
 
-Passed:
+Passed for the older `5546661` native-boundary run described above (not the current comparison working tree):
 
 ```sh
 cargo fmt --all --check
@@ -85,7 +108,7 @@ Local fixture after trusted native input and click:
 
 ![Felinaut displaying a loopback page that confirms native text input and pointer interaction through the page backend.](screenshots/macos-native-webkit-page.png)
 
-These are smoke-test captures, not a complete six-theme visual baseline or a performance benchmark. No latency, battery, frame-rate, whole-process memory or cross-engine comparison result is claimed.
+These are smoke-test captures, not a complete six-theme visual baseline or a performance benchmark. No latency, battery, frame-rate or whole-process memory result is claimed; these older captures are not evidence of the new Cocoa runtime comparison.
 
 ## What is not finished in the shared boundary
 
@@ -108,9 +131,9 @@ A successful WPE configure/build was not attempted. Missing local packages alone
 
 No package was installed, no upstream outreach performed and no unsupported WPE dependency added. A maintained native Darwin build/graphics/sandbox recipe is the next prerequisite to establish; Linux results or a VM do not validate a native Mac comparison.
 
-## When a real comparison can start
+## When a WPE comparison can start
 
-Only mark the picker ready after:
+The working Cocoa runtime picker does not resolve these WPE gates. Only mark a WPE picker ready after:
 
 1. A pinned WPE runtime and its helpers build/run natively on the comparison Mac.
 2. Its page renders inside the GPUI content area with correct resize/Retina, native input/IME, focus, buffer lifetimes and shutdown.
@@ -118,4 +141,4 @@ Only mark the picker ready after:
 4. Startup selection actually instantiates the requested backend, reports its real version, and fails explicitly if unavailable. No silent native fallback.
 5. Equivalent local workloads can be repeated against both backends with comparable configuration and an identified security posture.
 
-Until then, the running Felinaut cannot compare native WebKit with WPE. There is no reliable delivery date from the evidence available yet. Preserve the useful native refactor and investigate WPE feasibility separately rather than shipping a nonfunctional selector.
+Until then, the running Felinaut cannot compare native WebKit with WPE; the available system/upstream comparison uses the Cocoa port for both. There is no reliable delivery date from the evidence available yet. Preserve the useful native refactor and investigate WPE feasibility separately rather than shipping a nonfunctional selector.
