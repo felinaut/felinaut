@@ -441,6 +441,9 @@ struct Browser {
     active: usize,
     next_id: u64,
     address: Entity<AddressInput>,
+    find: Entity<AddressInput>,
+    find_bar: FindBar,
+    _find_events: [Subscription; 2],
     focus: FocusHandle,
     _submit: Subscription,
     _theme_observer: Subscription,
@@ -552,6 +555,25 @@ impl Browser {
                 AddressEvent::ResetZoom => this.zoom(&Zoom(0), window, cx),
             },
         );
+        let find = cx.new(|cx| {
+            let mut input = AddressInput::new(cx);
+            input.placeholder = "Find in page".into();
+            input
+        });
+        let find_events = [
+            cx.subscribe_in(&find, window, |this, _, _: &Submit, window, cx| {
+                this.find(&Find(1), window, cx)
+            }),
+            cx.subscribe_in(
+                &find,
+                window,
+                |this, _, event: &AddressEvent, window, cx| match event {
+                    AddressEvent::Changed => this.search(false, true, cx),
+                    AddressEvent::Escape => this.close_find(window, cx),
+                    _ => {}
+                },
+            ),
+        ];
         let address_focus = address.read(cx).focus_handle(cx);
         let address_blur = cx.on_blur(&address_focus, window, |this, window, cx| {
             // GPUI also blurs when the window deactivates, as it does while a row or its × is
@@ -662,6 +684,9 @@ impl Browser {
             next_id: tabs.len() as u64 + 1,
             tabs,
             address,
+            find,
+            find_bar: FindBar::default(),
+            _find_events: find_events,
             focus,
             _submit: subscription,
             _theme_observer: theme_observer,
@@ -1627,8 +1652,12 @@ impl Browser {
                         audible,
                         limited,
                     }) => tab.sound.report(&id, audible, limited),
+                    Event::Found(found) => self.find_bar.found(index == self.active, found),
                 }
             }
+        }
+        if page_focused && self.find.read(cx).focus_handle(cx).is_focused(window) {
+            window.focus(&self.focus);
         }
         // Clicking into the other half of a split view makes it the active tab; a click on a
         // page never reaches GPUI, so it also has to close an open tab menu here.
@@ -1845,6 +1874,7 @@ impl Browser {
     fn activate_half(&mut self, index: usize, cx: &mut Context<Self>) {
         if index != self.active && self.partner(self.active) == Some(index) {
             self.active = index;
+            self.find_bar.missing = false;
             self.sync_address(cx);
             cx.notify();
         }
@@ -1990,6 +2020,7 @@ impl Browser {
             let _ = page.focus_parent();
         }
         self.active = index;
+        self.find_bar.missing = false;
         self.tabs[index].hovered_link = None;
         self.load_if_needed(index, window);
         if let Some(partner) = self.partner(index) {
@@ -2115,6 +2146,7 @@ impl Browser {
                 partner: tab.split,
             });
         }
+        self.find_bar.missing &= index != self.active;
         self.unsplit(index);
         self.tabs.remove(index);
         if self.tabs.is_empty() {
@@ -2132,6 +2164,43 @@ impl Browser {
         self.hide_others();
         self.reveal_active();
         self.sync_address(cx);
+        cx.notify();
+    }
+    fn find(&mut self, find: &Find, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = &self.tabs[self.active];
+        let Some(page) = tab.page.as_ref().filter(|_| !tab.home) else {
+            return;
+        };
+        self.find_bar.open(Instant::now());
+        if find.0 == 0 {
+            let _ = page.focus_parent();
+            self.find.update(cx, |input, cx| {
+                window.focus(&input.focus_handle(cx));
+                input.select_all_text(cx);
+            });
+        } else {
+            self.search(find.0 < 0, false, cx);
+        }
+        cx.notify();
+    }
+    fn search(&mut self, backwards: bool, restart: bool, cx: &mut Context<Self>) {
+        let text = self.find.read(cx).text();
+        let tab = &self.tabs[self.active];
+        if let Some(page) = tab
+            .page
+            .as_ref()
+            .filter(|_| self.find_bar.search(!tab.home, text))
+        {
+            page.find(text, backwards, restart);
+        }
+        cx.notify();
+    }
+    fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_bar.close(Instant::now());
+        window.focus(&self.focus);
+        if let Some(page) = &self.tabs[self.active].page {
+            let _ = page.focus();
+        }
         cx.notify();
     }
     fn focus_address(&mut self, _: &FocusAddress, window: &mut Window, cx: &mut Context<Self>) {
@@ -3926,6 +3995,14 @@ impl Render for Browser {
         // that, the toolbar carries the toggle just right of them.
         let toolbar_toggle = sidebar_width < 88.;
         let tab = &self.tabs[self.active];
+        // The bar's area keeps its full height while its content slides, so the page resizes once.
+        let slid = self
+            .find_bar
+            .slid(Instant::now(), theme::motion_allowed(cx));
+        if slid < 1. {
+            window.request_animation_frame();
+        }
+        let find_offset = 44. * if self.find_bar.open { 1. - slid } else { slid };
         let show_chip = !tab.home && !address_focused && display != AddressDisplay::Url;
         let not_secure =
             !tab.home && tab.load_failure.is_none() && webview::has_certificate_exception(&tab.url);
@@ -3996,6 +4073,10 @@ impl Render for Browser {
             .on_action(cx.listener(Self::reopen_tab))
             .on_action(cx.listener(Self::new_live_folder))
             .on_action(cx.listener(Self::show_downloads))
+            .on_action(cx.listener(Self::find))
+            .on_action(cx.listener(|this, _: &FindPreviousFromBar, window, cx| {
+                this.find(&Find(-1), window, cx)
+            }))
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(
@@ -4095,6 +4176,42 @@ impl Render for Browser {
                             .overflow_hidden()
                             .child(self.content(p, cx)),
                     )
+                    .when((self.find_bar.open || slid < 1.) && !tab.home, |column| {
+                        column.child(
+                            div().h(px(44.)).flex_shrink_0().overflow_hidden().child(
+                                div()
+                                    .key_context("FindBar")
+                                    .h_full()
+                                    .relative()
+                                    .top(px(find_offset))
+                                    .flex()
+                                    .items_center()
+                                    .px_4()
+                                    .gap_2()
+                                    .bg(rgb(p.surface))
+                                    .border_t_1()
+                                    .border_color(rgb(p.border))
+                                    .text_color(rgb(p.muted))
+                                    .child(div().w(px(280.)).child(self.find.clone()))
+                                    .child(self.button("find-previous", "↑", p).on_click(
+                                        cx.listener(|this, _, window, cx| {
+                                            this.find(&Find(-1), window, cx)
+                                        }),
+                                    ))
+                                    .child(self.button("find-next", "↓", p).on_click(cx.listener(
+                                        |this, _, window, cx| this.find(&Find(1), window, cx),
+                                    )))
+                                    .when(self.find_bar.missing, |bar| {
+                                        bar.child(div().text_size(px(12.)).child("Not found"))
+                                    })
+                                    .child(self.button("find-close", "×", p).ml_auto().on_click(
+                                        cx.listener(|this, _, window, cx| {
+                                            this.close_find(window, cx)
+                                        }),
+                                    )),
+                            ),
+                        )
+                    })
                     .child(
                         div()
                             .h(px(30.))
@@ -4122,6 +4239,52 @@ impl Render for Browser {
                             ),
                     ),
             )
+    }
+}
+/// `0` shows the find bar; `1` / `-1` go to the next / previous match.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = felinaut, no_json)]
+struct Find(i8);
+/// Shift+Enter in the find bar; separate from `Find(-1)`, whose menu item would then show ⇧↩.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = felinaut, no_json)]
+struct FindPreviousFromBar;
+#[derive(Default)]
+struct FindBar {
+    open: bool,
+    /// When the bar last opened or closed, for its 150 ms slide.
+    toggled: Option<Instant>,
+    missing: bool,
+}
+impl FindBar {
+    fn open(&mut self, now: Instant) {
+        if !self.open {
+            self.toggled = Some(now);
+        }
+        self.open = true;
+    }
+    fn close(&mut self, now: Instant) {
+        *self = Self {
+            toggled: Some(now),
+            ..Self::default()
+        };
+    }
+    /// Whether to search for `text`; an empty or unsearchable query clears "Not found".
+    fn search(&mut self, searchable: bool, text: &str) -> bool {
+        let search = searchable && !text.is_empty();
+        self.missing &= search;
+        search
+    }
+    fn found(&mut self, active: bool, found: bool) {
+        if active {
+            self.missing = !found;
+        }
+    }
+    /// How far the last open or close has slid, from 0 to 1.
+    fn slid(&self, now: Instant, motion: bool) -> f32 {
+        self.toggled.filter(|_| motion).map_or(1., |at| {
+            (now.saturating_duration_since(at).as_secs_f32() / 0.15).min(1.)
+        })
     }
 }
 /// The popover draws as soon as its window opens and reads the browser while doing so, so it
@@ -4202,6 +4365,12 @@ fn main() {
         cx.bind_keys(
             (1..=8).map(|n| KeyBinding::new(&format!("cmd-{n}"), ActivateTab(n - 1), None)),
         );
+        cx.bind_keys([
+            KeyBinding::new("cmd-f", Find(0), None),
+            KeyBinding::new("cmd-g", Find(1), None),
+            KeyBinding::new("cmd-shift-g", Find(-1), None),
+            KeyBinding::new("shift-enter", FindPreviousFromBar, Some("FindBar")),
+        ]);
         // Native menu equivalents remain available while WKWebView owns keyboard focus.
         cx.set_menus(vec![
             Menu {
@@ -4232,6 +4401,10 @@ fn main() {
                     MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
                     MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
                     MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+                    MenuItem::separator(),
+                    MenuItem::action("Find…", Find(0)),
+                    MenuItem::action("Find Next", Find(1)),
+                    MenuItem::action("Find Previous", Find(-1)),
                 ],
             },
             Menu {
@@ -4312,6 +4485,41 @@ mod tests {
         FETCH_TIMEOUT, drop_index, live_refresh_can_poll, restore_tabs, session::SavedTab,
     };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn find_bar_opens_searches_and_closes() {
+        let start = Instant::now();
+        let mut bar = super::FindBar::default();
+        assert_eq!(bar.slid(start, true), 1.);
+        bar.open(start);
+        assert!(bar.open);
+        assert_eq!(bar.slid(start + Duration::from_millis(75), true), 0.5);
+        assert_eq!(bar.slid(start, false), 1.);
+        // Opening again does not restart the slide.
+        bar.open(start + Duration::from_secs(1));
+        assert_eq!(bar.slid(start + Duration::from_secs(1), true), 1.);
+        // Only the active tab's result counts.
+        assert!(bar.search(true, "cat"));
+        bar.found(false, false);
+        assert!(!bar.missing);
+        bar.found(true, false);
+        assert!(bar.missing);
+        bar.found(true, true);
+        assert!(!bar.missing);
+        // An emptied query or the home page clears "Not found" without searching.
+        bar.found(true, false);
+        assert!(!bar.search(true, ""));
+        assert!(!bar.missing);
+        bar.found(true, false);
+        assert!(!bar.search(false, "cat"));
+        assert!(!bar.missing);
+        bar.found(true, false);
+        let closed = start + Duration::from_secs(2);
+        bar.close(closed);
+        assert!(!bar.open && !bar.missing);
+        assert_eq!(bar.slid(closed, true), 0.);
+        assert_eq!(bar.slid(closed + Duration::from_millis(150), true), 1.);
+    }
 
     fn failed(url: &str) -> super::LoadFailure {
         super::load_error::failure("NSURLErrorDomain", -1003, url, "Not found").unwrap()

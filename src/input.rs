@@ -97,7 +97,7 @@ pub fn init(cx: &mut App) {
 pub struct AddressInput {
     focus_handle: FocusHandle,
     content: SharedString,
-    placeholder: SharedString,
+    pub placeholder: SharedString,
     zoom: Option<(SharedString, f32)>,
     selected_range: Range<usize>,
     selection_reversed: bool,

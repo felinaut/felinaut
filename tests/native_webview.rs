@@ -147,6 +147,7 @@ fn main() {
                         let mut foreground_open = false;
                         let mut failure = None;
                         let mut downloads = Vec::new();
+                        let mut found = Vec::new();
                         loop {
                             Timer::after(Duration::from_millis(50)).await;
                             downloads.extend(downloads::native::drain());
@@ -164,6 +165,7 @@ fn main() {
                                     Event::Hover(None) => hover_cleared = true,
                                     Event::OpenInBackground(url) if url.ends_with("/link-destination") => background_opens += 1,
                                     Event::Open(url) if url.ends_with("/link-destination") => foreground_open = true,
+                                    Event::Found(value) => found.push(value),
                                     _ => {},
                                 }
                             }
@@ -172,6 +174,7 @@ fn main() {
                             if stage == 5 && (title != "LINK EVENTS OK" || failure.is_none()) { continue; }
                             let downloaded = downloads.iter().any(|event| matches!(event, downloads::Event::Finished { .. }));
                             if stage == 6 && !(downloaded && download_requests.load(Ordering::SeqCst) >= 2) { continue; }
+                            if stage == 7 && found.len() < 3 { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
@@ -242,7 +245,13 @@ fn main() {
                                     assert_eq!(std::fs::read(saved).unwrap(), b"fixture");
                                     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "the hidden page saved nothing");
                                     std::fs::remove_dir_all(folder.parent().unwrap()).unwrap();
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, and a download that stays in the downloads folder while a hidden page's is refused");
+                                    second_page.find("test link", false, true);
+                                    second_page.find("TEST", true, false);
+                                    second_page.find("no such words", false, false);
+                                }
+                                7 => {
+                                    assert_eq!(found, [true, true, false], "find matches case-insensitively and reports misses");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and find in page");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;
