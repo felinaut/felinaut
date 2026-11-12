@@ -226,6 +226,7 @@ cargo run --bin felinaut-ctl -- snapshot   # or: target/debug/felinaut-ctl snaps
 
 | Command                                             | Result                                                                            |
 | --------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `backend` | Report backend id, engine family, runtime version and optional capabilities; works on New Tab without loading a website |
 | `tabs`, `tab <index>`                               | List the tabs, or select one                                                      |
 | `navigate <url>`                                    | Load a page in the active tab                                                     |
 | `snapshot`                                          | List the visible elements that accept input, each with a reference such as `@e12` |

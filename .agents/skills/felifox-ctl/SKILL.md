@@ -46,6 +46,7 @@ The references are valid only until the next snapshot. A snapshot does not show 
 
 | Command | Result |
 | --- | --- |
+| `backend` | Report backend id, engine family, runtime version and optional capabilities; works on New Tab without loading a website |
 | `tabs` | Lists the tabs as JSON: index, title, URL, active, loading |
 | `tab <index>` | Selects a tab |
 | `navigate <url>` | Loads a URL in the active tab. Text that is not a URL starts a search. |

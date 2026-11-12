@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 const USAGE: &str = "\
 Usage: felinaut-ctl <command>      (start Felinaut with FELINAUT_AGENT=1)
 
+  backend                 Show the active backend, engine family, runtime version and capabilities
   tabs                    List the tabs
   tab <index>             Select a tab
   navigate <url|search>   Load a page in the active tab
@@ -39,7 +40,7 @@ Usage: felinaut-ctl <command>      (start Felinaut with FELINAUT_AGENT=1)
 fn command(args: &[String]) -> Option<Value> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     Some(match args[..] {
-        ["tabs"] | ["snapshot"] => json!({"cmd": args[0]}),
+        ["backend"] | ["tabs"] | ["snapshot"] => json!({"cmd": args[0]}),
         ["tab", index] => json!({"cmd": "tab", "index": index.parse::<u64>().ok()?}),
         ["live"] => json!({"cmd": "live"}),
         ["live", "add", key] => json!({"cmd": "live", "add": key}),
@@ -181,6 +182,26 @@ mod tests {
             vec!["downloads", "open", "1"],
         ] {
             assert_eq!(parse(&args), None);
+        }
+    }
+
+    #[test]
+    fn backend_requires_no_page_url_or_other_arguments() {
+        assert_eq!(parse(&["backend"]), Some(json!({"cmd": "backend"})));
+    }
+
+    #[test]
+    fn backend_rejects_extra_or_invalid_arguments() {
+        for args in [
+            vec![],
+            vec!["Backend"],
+            vec!["backend", ""],
+            vec!["backend", "felinaut://newtab"],
+            vec!["backend", "extra"],
+            vec!["backend", "--unknown"],
+            vec!["backend", "extra", "arguments"],
+        ] {
+            assert_eq!(parse(&args), None, "unexpectedly accepted {args:?}");
         }
     }
 
