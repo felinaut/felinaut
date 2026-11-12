@@ -1,6 +1,6 @@
 # Portable engine-backend contract
 
-**Status:** architecture constraints for the `multiplatform` development branch. These are target requirements, not proof of supported alternate engines or feature parity. The first native page/event/capability seam is implemented in `src/page.rs` and `src/page/macos.rs`; generation, cancellation and profile-selection work remain incomplete. The current application still uses native macOS WebKit. Read the [porting plan](porting-plan.md) and [control inventory](gpui-controls.md) first.
+**Status:** architecture constraints for the `multiplatform` development branch. These are target requirements, not proof of supported alternate engines or feature parity. The first native page/event/capability seam is implemented in `src/page.rs` and `src/page/macos.rs`; the [macOS status report](macos-backend-status.md) distinguishes its validated scope from still-unimplemented generation, cancellation and profile-selection work. The current application still uses native macOS WebKit. Read the [porting plan](porting-plan.md) and [control inventory](gpui-controls.md) first.
 
 ## Keep three decisions separate
 

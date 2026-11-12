@@ -1,6 +1,6 @@
 # Multiplatform Felinaut: beautiful, fast, and portable
 
-**Status:** proposed investigation and implementation plan, not shipped Windows/Linux support. Felinaut remains macOS-only. No cross-platform build, input test, or WPE performance result is claimed here. Research checked on 12 November 2026; see also [Web engine options](web-engines.md).
+**Status:** proposed investigation and implementation plan, not shipped Windows/Linux support. Felinaut remains macOS-only. No cross-platform build, input test, or WPE performance result is claimed here. Research checked on 12 November 2026; see also [Web engine options](web-engines.md). The first native adapter implementation and its actual validation are tracked in the [macOS backend status](macos-backend-status.md); WPE comparison is not ready.
 
 ## Execution roadmap
 

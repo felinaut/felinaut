@@ -1,0 +1,5 @@
+<!doctype html><meta charset="utf-8"><title>Local engine check</title>
+<style>body{background:#f7f6ff;color:#131b36;font:20px system-ui;max-width:760px;margin:80px auto;padding:24px}h1{font-size:40px}input,button{font:inherit;padding:12px;border:2px solid #4b5c82;border-radius:10px}button{background:#131b36;color:#f7f6ff}p{line-height:1.6}output{display:block;margin-top:24px}</style>
+<h1>Local engine check</h1><p>This loopback page checks real native text input, pointer events, JavaScript and page snapshots through Felinaut's backend adapter.</p>
+<label for="entry">Test input</label><p><input id="entry" autocomplete="off"><button id="verify">Verify input</button></p><output id="result">Waiting for input.</output>
+<script>verify.onclick=e=>{result.textContent='Native input verified: '+entry.value;result.dataset.trusted=String(e.isTrusted)}</script>
