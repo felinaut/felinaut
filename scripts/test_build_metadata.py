@@ -60,29 +60,29 @@ class BuildMetadataTests(unittest.TestCase):
 
     def test_archive_and_missing_git_use_unknown(self):
         with tempfile.TemporaryDirectory() as directory:
-            self.assertIn("FELIFOX_GIT_COMMIT=unknown", self.run_build(directory))
+            self.assertIn("FELINAUT_GIT_COMMIT=unknown", self.run_build(directory))
             env = dict(os.environ, PATH="")
-            self.assertIn("FELIFOX_GIT_COMMIT=unknown", self.run_build(directory, env))
+            self.assertIn("FELINAUT_GIT_COMMIT=unknown", self.run_build(directory, env))
 
     def test_branch_commits_and_packed_refs_are_watched(self):
         with tempfile.TemporaryDirectory() as directory:
             first = self.init_repo(directory)
             output = self.run_build(directory)
-            self.assertIn(f"FELIFOX_GIT_COMMIT={first}", output)
+            self.assertIn(f"FELINAUT_GIT_COMMIT={first}", output)
             for path in ("HEAD", "refs/heads/main", "packed-refs"):
                 self.assertIn(f"cargo:rerun-if-changed=.git/{path}\n", output)
             self.git(directory, "commit", "--allow-empty", "-m", "Second")
             second = self.git(directory, "rev-parse", "HEAD")[:12]
             self.assertNotEqual(first, second)
             self.git(directory, "pack-refs", "--all")
-            self.assertIn(f"FELIFOX_GIT_COMMIT={second}", self.run_build(directory))
+            self.assertIn(f"FELINAUT_GIT_COMMIT={second}", self.run_build(directory))
 
     def test_detached_head(self):
         with tempfile.TemporaryDirectory() as directory:
             revision = self.init_repo(directory)
             self.git(directory, "checkout", "--detach")
             output = self.run_build(directory)
-            self.assertIn(f"FELIFOX_GIT_COMMIT={revision}", output)
+            self.assertIn(f"FELINAUT_GIT_COMMIT={revision}", output)
             self.assertIn("cargo:rerun-if-changed=.git/HEAD\n", output)
 
     def test_worktree_git_file_resolves_real_watch_paths(self):
@@ -94,7 +94,7 @@ class BuildMetadataTests(unittest.TestCase):
             self.git(repo, "worktree", "add", "--detach", str(worktree))
             self.assertTrue((worktree / ".git").is_file())
             output = self.run_build(worktree)
-            self.assertIn(f"FELIFOX_GIT_COMMIT={revision}", output)
+            self.assertIn(f"FELINAUT_GIT_COMMIT={revision}", output)
             head = self.git(worktree, "rev-parse", "--git-path", "HEAD")
             self.assertIn(f"cargo:rerun-if-changed={head}\n", output)
 

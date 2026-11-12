@@ -12,7 +12,7 @@ fn release_command(root: &Path, host: &str) -> Command {
             "--release",
             "--locked",
             "--bin",
-            "felifox",
+            "felinaut",
             "--target",
             host,
         ])
@@ -31,7 +31,7 @@ fn dist() -> Result<(), String> {
         .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
     {
         println!(
-            "cargo dist [--app-only]\n\nBuild the current release, then package dist/Felifox.app and the illustrated DMG.\nPrevious artifacts are replaced. Ad-hoc signed unless FELIFOX_SIGN_IDENTITY (Developer ID)\nand FELIFOX_NOTARY_PROFILE (notarytool keychain profile) are set; see README."
+            "cargo dist [--app-only]\n\nBuild the current release, then package dist/Felinaut.app and the illustrated DMG.\nPrevious artifacts are replaced. Ad-hoc signed unless FELINAUT_SIGN_IDENTITY (Developer ID)\nand FELINAUT_NOTARY_PROFILE (notarytool keychain profile) are set.\nFELINAUT_PROVISIONING_PROFILE enables restricted browser entitlements when granted by Apple.\nLegacy FELIFOX_* signing/profile variables remain fallbacks; see README."
         );
         return Ok(());
     }
@@ -61,7 +61,7 @@ fn dist() -> Result<(), String> {
         .filter(|host| matches!(*host, "aarch64-apple-darwin" | "x86_64-apple-darwin"))
         .ok_or("A native macOS Rust toolchain is required.")?;
 
-    println!("1/2 Building Felifox release ({host})…");
+    println!("1/2 Building Felinaut release ({host})…");
     let status = release_command(&root, host)
         .status()
         .map_err(|e| format!("Could not start release build: {e}"))?;
@@ -101,28 +101,35 @@ mod tests {
     use super::*;
     #[test]
     fn release_build_is_locked_and_matches_the_packager_target() {
-        let command = release_command(Path::new("/project"), "aarch64-apple-darwin");
-        let args: Vec<_> = command
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            &args[..7],
-            &[
-                "build",
-                "--release",
-                "--locked",
-                "--bin",
-                "felifox",
-                "--target",
-                "aarch64-apple-darwin"
-            ]
-        );
-        assert!(
-            command
-                .get_envs()
-                .any(|(key, value)| key == "CARGO_PROFILE_RELEASE_STRIP"
-                    && value == Some(std::ffi::OsStr::new("none")))
-        );
+        for host in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
+            let command = release_command(Path::new("/project"), host);
+            let args: Vec<_> = command
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                args,
+                [
+                    "build",
+                    "--release",
+                    "--locked",
+                    "--bin",
+                    "felinaut",
+                    "--target",
+                    host,
+                    "--manifest-path",
+                    "/project/Cargo.toml"
+                ]
+            );
+            assert_eq!(command.get_current_dir(), Some(Path::new("/project")));
+            for (name, expected) in [
+                ("CARGO_PROFILE_RELEASE_STRIP", "none"),
+                ("MACOSX_DEPLOYMENT_TARGET", "12.0"),
+            ] {
+                assert!(command.get_envs().any(
+                    |(key, value)| key == name && value == Some(std::ffi::OsStr::new(expected))
+                ));
+            }
+        }
     }
 }

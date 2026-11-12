@@ -316,7 +316,7 @@ impl NativePage {
             .ok_or("AppKit could not make the key event")?;
             if !modifiers.is_empty() {
                 // A key with a modifier goes into the event queue and takes the route of a real
-                // key: AppKit first offers it to the window as a key equivalent. Felifox must
+                // key: AppKit first offers it to the window as a key equivalent. Felinaut must
                 // be the active app.
                 let app: *mut objc2::runtime::AnyObject =
                     unsafe { objc2::msg_send![objc2::class!(NSApplication), sharedApplication] };
@@ -440,9 +440,17 @@ pub fn forward_command_arrows() {
     std::mem::forget(monitor);
 }
 
-/// Agent control is opt-in: only `FELIFOX_AGENT=1` injects `agent.js` and opens the socket.
+/// Agent control is opt-in. The new setting takes precedence, including an explicit disable.
+/// Keep the legacy name for existing local automation without enabling either by default.
 pub fn agent_enabled() -> bool {
-    std::env::var("FELIFOX_AGENT").as_deref() == Ok("1")
+    agent_flag(
+        std::env::var_os("FELINAUT_AGENT").as_deref(),
+        std::env::var_os("FELIFOX_AGENT").as_deref(),
+    )
+}
+
+fn agent_flag(current: Option<&std::ffi::OsStr>, legacy: Option<&std::ffi::OsStr>) -> bool {
+    current.or(legacy).is_some_and(|value| value == "1")
 }
 
 /// Splits `Meta+Shift+ArrowLeft` into the modifier flags and the key name.
@@ -544,6 +552,24 @@ fn check_url(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn renamed_agent_flag_preserves_opt_in_and_honors_explicit_disable() {
+        use std::ffi::OsStr;
+        let value = |text: &'static str| Some(OsStr::new(text));
+        for (current, legacy, expected) in [
+            (None, None, false),
+            (None, value("1"), true),
+            (None, value("true"), false),
+            (value("1"), None, true),
+            (value("1"), value("0"), true),
+            (value("0"), value("1"), false),
+            (value(""), value("1"), false),
+            (value("true"), value("1"), false),
+        ] {
+            assert_eq!(super::agent_flag(current, legacy), expected);
+        }
+    }
+
     #[test]
     fn link_bridge_is_bounded_and_accepts_only_web_links() {
         use super::{Event, parse_link_event};

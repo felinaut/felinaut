@@ -31,7 +31,7 @@ use std::{
 use theme::{AddressDisplay, Palette, ThemeSettings};
 use webview::{Event, NativePage};
 
-const HOME: &str = "felifox://newtab";
+const HOME: &str = "felinaut://newtab";
 const SIDEBAR_SLIDE: Duration = Duration::from_millis(200);
 /// AppKit only hovers and clicks the traffic lights inside its title bar view (32 pt on this
 /// macOS), so the 14 pt buttons must start at most 18 pt down or they go half dead.
@@ -266,7 +266,7 @@ pub fn host(url: &str) -> Option<String> {
 pub const DISPLAY_VERSION: &str = "0.1 beta";
 
 actions!(
-    felifox,
+    felinaut,
     [
         NewTab,
         CloseTab,
@@ -276,7 +276,7 @@ actions!(
         Reload,
         Home,
         Quit,
-        AboutFelifox,
+        AboutFelinaut,
         VolumeControls,
         MuteTab,
         ToggleSidebar,
@@ -298,7 +298,7 @@ struct ClosedTab {
 
 /// ⌘1–⌘8 select that tab in sidebar order; `LAST_TAB` (⌘9) selects the last one.
 #[derive(Clone, PartialEq, Action)]
-#[action(namespace = felifox, no_json)]
+#[action(namespace = felinaut, no_json)]
 struct ActivateTab(usize);
 const LAST_TAB: usize = usize::MAX;
 
@@ -423,7 +423,7 @@ struct Browser {
     icon_dir: Option<PathBuf>,
     /// Site icons by host; `None` records a host without one so disk is read once.
     icons: RefCell<HashMap<String, Option<Arc<Image>>>>,
-    /// Commands from the control socket; `None` unless started with `FELIFOX_AGENT=1`.
+    /// Commands from the control socket; `None` unless started with `FELINAUT_AGENT=1`.
     agent: Option<agent::Queue>,
     /// What the hovered sidebar control does, shown in the status bar. GPUI tooltips would
     /// draw underneath the native page, so the status bar carries them instead.
@@ -2222,7 +2222,7 @@ impl Browser {
                                     .line_height(px(52.))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(rgb(p.text))
-                                    .child("Felifox"),
+                                    .child("Felinaut"),
                             )
                             .child(
                                 div()
@@ -2328,7 +2328,7 @@ impl Browser {
                                             .cursor_pointer()
                                             .text_color(rgb(p.primary))
                                             .on_click(|_, _, cx| about::open(cx))
-                                            .child(format!("About Felifox · {DISPLAY_VERSION}")),
+                                            .child(format!("About Felinaut · {DISPLAY_VERSION}")),
                                     ),
                             ),
                     ),
@@ -3730,7 +3730,7 @@ impl Render for Browser {
                     .to_owned()
             });
         div()
-            .id("felifox")
+            .id("felinaut")
             .track_focus(&self.focus)
             .key_context("Browser")
             .size_full()
@@ -3871,7 +3871,7 @@ impl Render for Browser {
                             .child(
                                 div()
                                     .flex_shrink_0()
-                                    .child(format!("FELIFOX  /  {DISPLAY_VERSION}")),
+                                    .child(format!("FELINAUT  /  {DISPLAY_VERSION}")),
                             ),
                     ),
             )
@@ -3890,7 +3890,7 @@ fn open_volume(
     });
 }
 
-/// Links handed over by macOS (Felifox as the default browser, `open -a Felifox <url>`).
+/// Links handed over by macOS (Felinaut as the default browser, `open -a Felinaut <url>`).
 /// The bundle registers only http/https; `NativePage` rejects anything else. A launch by
 /// link delivers the URLs before the window exists, so they wait in `pending`.
 #[derive(Default)]
@@ -3948,11 +3948,11 @@ fn main() {
         // Native menu equivalents remain available while WKWebView owns keyboard focus.
         cx.set_menus(vec![
             Menu {
-                name: "Felifox".into(),
+                name: "Felinaut".into(),
                 items: vec![
-                    MenuItem::action("About Felifox", AboutFelifox),
+                    MenuItem::action("About Felinaut", AboutFelinaut),
                     MenuItem::separator(),
-                    MenuItem::action("Quit Felifox", Quit),
+                    MenuItem::action("Quit Felinaut", Quit),
                 ],
             },
             Menu {
@@ -4008,7 +4008,7 @@ fn main() {
                 ],
             },
         ]);
-        cx.on_action(|_: &AboutFelifox, cx| about::open(cx));
+        cx.on_action(|_: &AboutFelinaut, cx| about::open(cx));
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -4023,7 +4023,7 @@ fn main() {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(1000.), px(700.))),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("Felifox".into()),
+                        title: Some("Felinaut".into()),
                         appears_transparent: true,
                         traffic_light_position: Some(point(px(16.), px(TRAFFIC_LIGHT_Y))),
                     }),
@@ -4031,7 +4031,7 @@ fn main() {
                 },
                 |window, cx| cx.new(|cx| Browser::new(window, cx)),
             )
-            .expect("Could not open Felifox window");
+            .expect("Could not open Felinaut window");
         let mut handoff = handoff.borrow_mut();
         handoff.browser = Some((window, cx.to_async()));
         open_links(window, cx, std::mem::take(&mut handoff.pending));
@@ -4045,6 +4045,28 @@ mod tests {
         FETCH_TIMEOUT, drop_index, live_refresh_can_poll, restore_tabs, session::SavedTab,
     };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn rename_keeps_existing_profile_files_and_settings_together() {
+        let profile = std::env::var_os("HOME")
+            .map(|home| std::path::PathBuf::from(home).join("Library/Application Support/Felifox"));
+        assert_eq!(
+            super::history::default_path(),
+            profile.as_ref().map(|p| p.join("history/visits.tsv"))
+        );
+        assert_eq!(
+            super::session::default_path(),
+            profile.as_ref().map(|p| p.join("tabs.tsv"))
+        );
+        assert_eq!(
+            super::live::default_path(),
+            profile.as_ref().map(|p| p.join("live.tsv"))
+        );
+        assert_eq!(
+            super::theme::settings_path(),
+            profile.as_ref().map(|p| p.join("settings"))
+        );
+    }
 
     #[test]
     fn live_refresh_polls_through_navigation_until_its_deadline() {

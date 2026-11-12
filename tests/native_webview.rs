@@ -1,5 +1,5 @@
 //! Opt-in native integration test. WKWebView requires macOS's main thread.
-//! Run: FELIFOX_NATIVE_TEST=1 cargo test --test native_webview
+//! Run: FELINAUT_NATIVE_TEST=1 cargo test --test native_webview
 
 #[allow(dead_code, unused_imports)]
 #[path = "../src/audio.rs"]
@@ -43,8 +43,12 @@ impl Render for TestWindow {
 }
 
 fn main() {
-    if std::env::var("FELIFOX_NATIVE_TEST").as_deref() != Ok("1") {
-        println!("Native webview test skipped; set FELIFOX_NATIVE_TEST=1 to run.");
+    if std::env::var_os("FELINAUT_NATIVE_TEST")
+        .or_else(|| std::env::var_os("FELIFOX_NATIVE_TEST"))
+        .as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        println!("Native webview test skipped; set FELINAUT_NATIVE_TEST=1 to run.");
         return;
     }
     // All fixture traffic stays on loopback; exercise the production, URL-only link bridge.

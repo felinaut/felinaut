@@ -21,13 +21,13 @@ struct AboutWindow {
 }
 impl Global for AboutWindow {}
 
-/// Open About Felifox, or bring its existing window forward.
+/// Open About Felinaut, or bring its existing window forward.
 pub fn open(cx: &mut App) {
     if !cx.has_global::<AboutWindow>() {
         cx.set_global(AboutWindow::default());
         cx.bind_keys([
-            KeyBinding::new("escape", CloseAbout, Some("FelifoxAbout")),
-            KeyBinding::new("cmd-w", CloseAbout, Some("FelifoxAbout")),
+            KeyBinding::new("escape", CloseAbout, Some("FelinautAbout")),
+            KeyBinding::new("cmd-w", CloseAbout, Some("FelinautAbout")),
         ]);
     }
 
@@ -51,7 +51,7 @@ pub fn open(cx: &mut App) {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(600.), px(700.))),
             titlebar: Some(TitlebarOptions {
-                title: Some("About Felifox".into()),
+                title: Some("About Felinaut".into()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -62,7 +62,7 @@ pub fn open(cx: &mut App) {
             cx.global_mut::<AboutWindow>().handle = Some(handle);
             cx.activate(true);
         }
-        Err(error) => eprintln!("Could not open About Felifox: {error}"),
+        Err(error) => eprintln!("Could not open About Felinaut: {error}"),
     }
 }
 
@@ -154,8 +154,8 @@ impl Render for About {
             0.
         };
         div()
-            .id("about-felifox")
-            .key_context("FelifoxAbout")
+            .id("about-felinaut")
+            .key_context("FelinautAbout")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::close))
             .relative()
@@ -208,13 +208,13 @@ impl Render for About {
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .text_size(px(48.))
                                     .line_height(px(52.))
-                                    .child("Felifox"),
+                                    .child("Felinaut"),
                             )
                             .child(
                                 div()
                                     .text_size(px(15.))
                                     .text_color(rgb(p.muted))
-                                    .child("Curiosity, with a little mischief."),
+                                    .child("A little curiosity. A whole universe."),
                             ),
                     )
                     .child(
@@ -288,7 +288,7 @@ fn version_label() -> String {
         "{} · {} ({})",
         DISPLAY_VERSION,
         env!("CARGO_PKG_VERSION"),
-        env!("FELIFOX_GIT_COMMIT")
+        env!("FELINAUT_GIT_COMMIT")
     )
 }
 
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn about_identifies_the_package_version_and_built_commit() {
-        let revision = env!("FELIFOX_GIT_COMMIT");
+        let revision = env!("FELINAUT_GIT_COMMIT");
         assert!(
             revision == "unknown"
                 || (revision.len() == 12 && revision.bytes().all(|b| b.is_ascii_hexdigit()))

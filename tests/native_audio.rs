@@ -1,5 +1,5 @@
 //! Opt-in native per-tab audio test. WKWebView requires macOS's main thread.
-//! Run: FELIFOX_NATIVE_TEST=1 cargo test --test native_audio
+//! Run: FELINAUT_NATIVE_TEST=1 cargo test --test native_audio
 //!
 //! Two loopback origins serve a quiet looping tone: one same-origin (routed through Web Audio,
 //! boostable) and one cross-origin without CORS (volume fallback, reported as limited).
@@ -146,8 +146,12 @@ const CHECK: &str = r#"
 "#;
 
 fn main() {
-    if std::env::var("FELIFOX_NATIVE_TEST").as_deref() != Ok("1") {
-        println!("Native audio test skipped; set FELIFOX_NATIVE_TEST=1 to run.");
+    if std::env::var_os("FELINAUT_NATIVE_TEST")
+        .or_else(|| std::env::var_os("FELIFOX_NATIVE_TEST"))
+        .as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        println!("Native audio test skipped; set FELINAUT_NATIVE_TEST=1 to run.");
         return;
     }
     let remote_listener = TcpListener::bind("127.0.0.1:0").expect("remote listener");

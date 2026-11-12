@@ -1,8 +1,8 @@
-//! Opt-in control server for agents: `FELIFOX_AGENT=1` opens a Unix socket that drives the
+//! Opt-in control server for agents: `FELINAUT_AGENT=1` opens a Unix socket that drives the
 //! active page. It is off by default, because each client can use the logged-in sessions.
 //!
 //! One request is one JSON line, `{"token": …, "cmd": …}`. One answer is one JSON line,
-//! `{"ok": true, "value": …}` or `{"ok": false, "error": …}`. See `bin/felifox-ctl.rs`.
+//! `{"ok": true, "value": …}` or `{"ok": false, "error": …}`. See `bin/felinaut-ctl.rs`.
 
 use std::{
     fs,
@@ -43,7 +43,7 @@ fn dir() -> Option<PathBuf> {
     Some(PathBuf::from(home).join("Library/Application Support/Felifox"))
 }
 
-/// Starts the listener thread when `FELIFOX_AGENT=1`.
+/// Starts the listener thread when `FELINAUT_AGENT=1`.
 pub fn start() -> Option<Queue> {
     if !crate::webview::agent_enabled() {
         return None;

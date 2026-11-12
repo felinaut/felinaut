@@ -17,10 +17,10 @@ func color(_ hex: UInt32, alpha: CGFloat = 1) -> NSColor {
             blue: CGFloat(hex & 255) / 255, alpha: alpha)
 }
 
-let purple = color(0x563281)
-let fuchsia = color(0xF037A5)
-let amber = color(0xFFC85A)
-let aqua = color(0x57DFDC)
+let purple = color(0x383353)
+let fuchsia = color(0xFF72B6)
+let amber = color(0xFFB45E)
+let aqua = color(0x78D9EF)
 
 // All drawing is unflipped. Only layout measurements use a top-origin convention.
 func topRect(_ x: CGFloat, _ top: CGFloat, _ width: CGFloat,
@@ -108,15 +108,46 @@ func renderPNG(to url: URL, pixels: NSSize, logicalSize: NSSize,
     catch { throw ArtError.message("Could not write PNG to '\(url.path)': \(error.localizedDescription)") }
 }
 
-func drawAppIcon(mascot: NSImage) throws {
+func drawYarnPlanet(at center: NSPoint, radius: CGFloat, tint: NSColor) throws {
+    let sphere = NSBezierPath(ovalIn: NSRect(x: center.x - radius, y: center.y - radius,
+                                            width: radius * 2, height: radius * 2))
+    let thread = NSBezierPath()
+    thread.move(to: NSPoint(x: center.x + radius * 0.6, y: center.y - radius * 0.7))
+    thread.curve(to: NSPoint(x: center.x + radius * 1.8, y: center.y - radius * 1.1),
+                 controlPoint1: NSPoint(x: center.x + radius * 2, y: center.y - radius * 0.6),
+                 controlPoint2: NSPoint(x: center.x + radius, y: center.y - radius * 1.9))
+    stroke(thread, color: tint, width: radius * 0.07)
+    do {
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        sphere.addClip()
+        try gradient([color(0xF7F6FF), tint, purple]).draw(in: sphere, angle: -55)
+        // Two curved crossing families wrap around a shaded sphere, not a flat striped disc.
+        for direction: CGFloat in [-1, 1] {
+            for offset: CGFloat in [-0.65, -0.25, 0.15, 0.55] {
+                let strand = NSBezierPath()
+                strand.move(to: NSPoint(x: center.x - radius, y: center.y + radius * offset))
+                strand.curve(to: NSPoint(x: center.x + radius, y: center.y - radius * offset),
+                             controlPoint1: NSPoint(x: center.x - radius * 0.45,
+                                                    y: center.y + radius * direction),
+                             controlPoint2: NSPoint(x: center.x + radius * 0.45,
+                                                    y: center.y + radius * direction))
+                stroke(strand, color: color(0xF7F6FF, alpha: 0.65), width: radius * 0.055)
+            }
+        }
+    }
+    stroke(sphere, color: purple.withAlphaComponent(0.65), width: radius * 0.045)
+}
+
+func drawAppIcon(symbol: NSImage) throws {
     let tile = NSBezierPath(roundedRect: NSRect(x: 64, y: 64, width: 896, height: 896),
                             xRadius: 200, yRadius: 200)
     NSGraphicsContext.saveGraphicsState()
     defer { NSGraphicsContext.restoreGraphicsState() }
     tile.addClip()
-    try gradient([color(0x170E2C), color(0x382052), color(0x65418B)])
+    try gradient([color(0x0B1026), color(0x131B36), color(0x1D2948)])
         .draw(in: tile, angle: 70)
-    try gradient([color(0xC599FF, alpha: 0.48), color(0xA65BE0, alpha: 0)])
+    try gradient([color(0xB3A0FF, alpha: 0.38), color(0xB3A0FF, alpha: 0)])
         .draw(fromCenter: NSPoint(x: 515, y: 545), radius: 12,
               toCenter: NSPoint(x: 515, y: 545), radius: 440, options: [.drawsBeforeStartingLocation])
 
@@ -131,9 +162,10 @@ func drawAppIcon(mascot: NSImage) throws {
                 controlPoint2: NSPoint(x: 269, y: 855))
     stroke(glint, color: aqua.withAlphaComponent(0.65), width: 7)
 
-    // Preserve the original 4:3 composition, including its transparent breathing room.
-    drawImage(mascot, in: NSRect(x: 80, y: 174, width: 864, height: 648))
-    star(at: NSPoint(x: 790, y: 790), radius: 22, color: amber)
+    // The canonical helmet stays readable at small sizes; no miniature full-body scene.
+    drawImage(symbol, in: NSRect(x: 182, y: 168, width: 660, height: 660))
+    try drawYarnPlanet(at: NSPoint(x: 819, y: 776), radius: 48, tint: fuchsia)
+    star(at: NSPoint(x: 754, y: 862), radius: 18, color: amber)
     star(at: NSPoint(x: 214, y: 369), radius: 13, color: aqua)
     star(at: NSPoint(x: 842, y: 457), radius: 12, color: fuchsia)
     let rim = NSBezierPath(roundedRect: NSRect(x: 66, y: 66, width: 892, height: 892),
@@ -146,18 +178,22 @@ func drawDMG(mascot: NSImage, symbol: NSImage, version: String) throws {
     func rect(_ x: CGFloat, _ top: CGFloat, _ w: CGFloat, _ h: CGFloat) -> NSRect {
         topRect(x, top, w, h, canvasHeight: height)
     }
-    try gradient([color(0xF5F0FF), color(0xFFF9EC)])
+    // Light moon-dust surfaces keep Finder's black filename labels legible.
+    try gradient([color(0xECEBFF), color(0xF7F6FF)])
         .draw(in: NSRect(x: 0, y: 0, width: 720, height: height), angle: 90)
     drawImage(mascot, in: rect(30, 15, 170, 127.5))
     guard let wordmarkFont = NSFont(name: "Georgia-BoldItalic", size: 46) else {
         throw ArtError.message("Required macOS font Georgia-BoldItalic is unavailable.")
     }
-    text("Felifox", in: rect(235, 35, 440, 58), font: wordmarkFont, color: purple)
+    text("Felinaut", in: rect(235, 35, 440, 58), font: wordmarkFont, color: purple)
+    try drawYarnPlanet(at: NSPoint(x: 646, y: 418), radius: 29, tint: fuchsia)
+    star(at: NSPoint(x: 594, y: 449), radius: 7, color: color(0x8C72CD))
+    star(at: NSPoint(x: 688, y: 372), radius: 5, color: color(0x438DA0))
     drawImage(symbol, in: rect(235, 98, 22, 22))
     text(version, in: rect(265, 99, 410, 24),
          font: .systemFont(ofSize: 14, weight: .semibold), color: purple)
-    text("A little trouble. A lot of spark.", in: rect(235, 129, 440, 25),
-         font: .systemFont(ofSize: 14), color: color(0x78648E))
+    text("A little curiosity. A whole universe.", in: rect(235, 129, 440, 25),
+         font: .systemFont(ofSize: 14), color: color(0x655B81))
 
     // Finder supplies the actual icons and black filename labels. Keep these zones quiet.
     for x: CGFloat in [190, 530] {
@@ -178,10 +214,11 @@ func drawDMG(mascot: NSImage, symbol: NSImage, version: String) throws {
     tip.line(to: NSPoint(x: 378, y: height - 251))
     stroke(tip, color: purple.withAlphaComponent(0.75), width: 2.5)
 
-    text("Drag Felifox into Applications", in: rect(40, 365, 640, 30),
+    text("Drag Felinaut into Applications", in: rect(40, 365, 640, 30),
          font: .systemFont(ofSize: 22, weight: .semibold), color: purple, alignment: .center)
-    text("Then open it and let the sparks fly.", in: rect(40, 402, 640, 24),
-         font: .systemFont(ofSize: 14), color: color(0x78648E), alignment: .center)
+    text("Then open it and explore.", in: rect(40, 402, 640, 24),
+         font: .systemFont(ofSize: 14), color: color(0x655B81), alignment: .center)
+    try drawYarnPlanet(at: NSPoint(x: 54, y: 73), radius: 23, tint: aqua)
 
     // Ribbons stay below the instructions and well clear of Finder's filename labels.
     for (offset, tint, width): (CGFloat, NSColor, CGFloat) in [
@@ -212,7 +249,7 @@ func main() throws {
     try renderPNG(to: output.appendingPathComponent("app-icon.png"),
                   pixels: NSSize(width: 1024, height: 1024),
                   logicalSize: NSSize(width: 1024, height: 1024)) {
-        try drawAppIcon(mascot: mascot)
+        try drawAppIcon(symbol: symbol)
     }
     try renderPNG(to: output.appendingPathComponent("dmg-background.png"),
                   pixels: NSSize(width: 1440, height: 960),

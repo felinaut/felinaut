@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "felifox-dist"
+name = "felinaut-dist"
 version = "0.1.0"

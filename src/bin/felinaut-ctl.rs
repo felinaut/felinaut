@@ -1,4 +1,4 @@
-//! Command-line client for the agent control server of Felifox (`src/agent.rs`).
+//! Command-line client for the agent control server of Felinaut (`src/agent.rs`).
 
 use std::{
     env, fs,
@@ -11,7 +11,7 @@ use std::{
 use serde_json::{Value, json};
 
 const USAGE: &str = "\
-Usage: felifox-ctl <command>      (start Felifox with FELIFOX_AGENT=1)
+Usage: felinaut-ctl <command>      (start Felinaut with FELINAUT_AGENT=1)
 
   tabs                    List the tabs
   tab <index>             Select a tab
@@ -56,7 +56,7 @@ fn command(args: &[String]) -> Option<Value> {
         // The server writes the file, thus the path must be absolute.
         ["screenshot"] => json!({
             "cmd": "screenshot",
-            "path": env::temp_dir().join("felifox-screenshot.png"),
+            "path": env::temp_dir().join("felinaut-screenshot.png"),
         }),
         ["screenshot", path] => json!({
             "cmd": "screenshot",
@@ -70,7 +70,7 @@ fn send(mut command: Value) -> Result<Value, String> {
     // The same directory as `agent::dir`.
     let dir = PathBuf::from(env::var_os("HOME").ok_or("No home directory")?)
         .join("Library/Application Support/Felifox");
-    let offline = |_| "Felifox does not listen. Start it with FELIFOX_AGENT=1.".to_string();
+    let offline = |_| "Felinaut does not listen. Start it with FELINAUT_AGENT=1.".to_string();
     command["token"] = fs::read_to_string(dir.join("agent.token"))
         .map_err(offline)?
         .into();
@@ -81,7 +81,7 @@ fn send(mut command: Value) -> Result<Value, String> {
         .map_err(error)?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).map_err(error)?;
-    let answer: Value = serde_json::from_str(&line).map_err(|_| "Felifox gave no answer")?;
+    let answer: Value = serde_json::from_str(&line).map_err(|_| "Felinaut gave no answer")?;
     if answer["ok"] == true {
         Ok(answer["value"].clone())
     } else {
@@ -126,8 +126,55 @@ fn main() {
         Ok(Value::String(text)) => println!("{text}"),
         Ok(value) => println!("{value:#}"),
         Err(error) => {
-            eprintln!("felifox-ctl: {error}");
+            eprintln!("felinaut-ctl: {error}");
             exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Option<Value> {
+        command(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn renamed_client_preserves_navigation_and_live_item_commands() {
+        assert_eq!(
+            parse(&["navigate", "felinaut://newtab"]),
+            Some(json!({"cmd": "navigate", "url": "felinaut://newtab"}))
+        );
+        assert_eq!(
+            parse(&["live", "open", "0", "1", "2"]),
+            Some(json!({"cmd": "live", "open": [0, 1, 2], "close": false}))
+        );
+        assert_eq!(
+            parse(&["live", "close", "0", "1", "2"]),
+            Some(json!({"cmd": "live", "open": [0, 1, 2], "close": true}))
+        );
+        for args in [
+            vec![],
+            vec!["unknown"],
+            vec!["tab", "-1"],
+            vec!["live", "open", "0", "x", "2"],
+        ] {
+            assert_eq!(parse(&args), None);
+        }
+    }
+
+    #[test]
+    fn default_screenshot_uses_the_new_name_without_changing_custom_paths() {
+        let default = parse(&["screenshot"]).unwrap();
+        assert_eq!(
+            default["path"],
+            env::temp_dir()
+                .join("felinaut-screenshot.png")
+                .to_string_lossy()
+                .as_ref()
+        );
+        let custom = parse(&["screenshot", "/tmp/custom.png"]).unwrap();
+        assert_eq!(custom["path"], "/tmp/custom.png");
     }
 }

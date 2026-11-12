@@ -3,7 +3,7 @@
 use url::Url;
 
 const MAX_URL_CHARS: usize = 8_192;
-const NEW_TAB: &str = "felifox://newtab";
+const NEW_TAB: &str = "felinaut://newtab";
 
 /// Resolve address-bar input to a web URL, the internal new tab, or a search.
 pub fn resolve_input(input: &str) -> Result<String, String> {
@@ -11,7 +11,8 @@ pub fn resolve_input(input: &str) -> Result<String, String> {
     if input.is_empty() {
         return Err("Enter an address or search query.".into());
     }
-    if input == NEW_TAB {
+    // Accept the old internal address without sending it to a search engine.
+    if matches!(input, NEW_TAB | "felifox://newtab") {
         return Ok(NEW_TAB.into());
     }
 
@@ -90,6 +91,7 @@ mod tests {
     #[test]
     fn resolves_addresses_and_internal_page() {
         for (input, expected) in [
+            (" felinaut://newtab ", NEW_TAB),
             (" felifox://newtab ", NEW_TAB),
             ("https://example.com/path", "https://example.com/path"),
             ("HTTP://example.com", "http://example.com/"),
@@ -131,6 +133,10 @@ mod tests {
             "ftp://example.com",
             "mailto:a@example.com",
             "felifox://settings",
+            "felinaut://settings",
+            "felinaut://newtab/",
+            "felinaut://newtab?private=1",
+            "about:meow",
             "https://",
             "http:example.com",
             "https://example.com:bad",

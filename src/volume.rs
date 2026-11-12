@@ -74,7 +74,7 @@ pub fn toggle(
 ) {
     if !cx.has_global::<PopupWindow>() {
         cx.set_global(PopupWindow::default());
-        let context = Some("FelifoxVolume");
+        let context = Some("FelinautVolume");
         cx.bind_keys([
             KeyBinding::new("escape", CloseVolume, context),
             KeyBinding::new("right", VolumeUp, context),
@@ -439,7 +439,7 @@ impl VolumePanel {
                                     .absolute()
                                     .inset_0(),
                             )
-                            // Track: natural half and the "flame" boost half.
+                            // Track: natural half and the colored boost half.
                             .child(
                                 div()
                                     .absolute()
@@ -506,7 +506,7 @@ impl VolumePanel {
                                         .bg(rgb(p.text)),
                                 ),
                             )
-                            // The knob is the flaming-yarn mark.
+                            // The astronaut helmet remains recognizable at knob size.
                             .child(
                                 div().absolute().left(relative(position)).top(px(5.)).child(
                                     div()
@@ -766,7 +766,7 @@ impl Render for VolumePanel {
         let p = theme::palette(cx);
         let root = div()
             .id("volume")
-            .key_context("FelifoxVolume")
+            .key_context("FelinautVolume")
             .track_focus(&self.focus)
             .size_full()
             .rounded_xl()

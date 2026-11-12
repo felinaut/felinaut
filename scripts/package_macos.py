@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Build a native Felifox .app and a Finder-configured, drag-to-Applications DMG.
+"""Build a native Felinaut .app and a Finder-configured, drag-to-Applications DMG.
 
 Requires macOS, Python 3.11+, Rust, and Xcode command-line tools. No pip packages.
 By default artifacts use an ad-hoc code signature. For other Macs, set
-FELIFOX_SIGN_IDENTITY to a "Developer ID Application: …" identity, and
-FELIFOX_NOTARY_PROFILE to an `xcrun notarytool store-credentials` profile.
+FELINAUT_SIGN_IDENTITY to a "Developer ID Application: …" identity, and
+FELINAUT_NOTARY_PROFILE to an `xcrun notarytool store-credentials` profile.
+Legacy FELIFOX_* variables are fallbacks when the corresponding FELINAUT_* is unset.
 Passkeys in WKWebView need Apple's restricted browser entitlement: once Apple has
-granted it, set FELIFOX_PROVISIONING_PROFILE to a Developer ID provisioning profile
-that carries it and the app is signed with assets/Felifox.entitlements.
+granted it, set FELINAUT_PROVISIONING_PROFILE to a Developer ID provisioning profile
+that carries it and the app is signed with assets/Felinaut.entitlements.
 """
 
 from __future__ import annotations
@@ -29,12 +30,21 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# Keep the original identity: WebKit website storage and Apple's restricted
+# browser provisioning profiles are tied to this bundle ID, not the display name.
 BUNDLE_ID = "io.github.casaroli.felifox"
 MINIMUM_MACOS = "12.0"
-SIGN_IDENTITY = os.environ.get("FELIFOX_SIGN_IDENTITY", "")
-NOTARY_PROFILE = os.environ.get("FELIFOX_NOTARY_PROFILE", "")
-PROVISIONING_PROFILE = os.environ.get("FELIFOX_PROVISIONING_PROFILE", "")
-ENTITLEMENTS = ROOT / "assets" / "Felifox.entitlements"
+
+
+def packaging_env(suffix: str) -> str:
+    """Prefer Felinaut settings; an explicit empty value disables legacy settings."""
+    return os.environ.get(f"FELINAUT_{suffix}", os.environ.get(f"FELIFOX_{suffix}", ""))
+
+
+SIGN_IDENTITY = packaging_env("SIGN_IDENTITY")
+NOTARY_PROFILE = packaging_env("NOTARY_PROFILE")
+PROVISIONING_PROFILE = packaging_env("PROVISIONING_PROFILE")
+ENTITLEMENTS = ROOT / "assets" / "Felinaut.entitlements"
 
 
 def codesign_args(identity: str, entitlements: Path | None = None) -> list[str]:
@@ -88,22 +98,22 @@ def info_plist(version: str, display: str) -> dict:
         raise ValueError("Bundle version must have three numeric components")
     return {
         "CFBundleDevelopmentRegion": "en",
-        "CFBundleName": "Felifox",
-        "CFBundleDisplayName": "Felifox",
-        "CFBundleExecutable": "felifox",
+        "CFBundleName": "Felinaut",
+        "CFBundleDisplayName": "Felinaut",
+        "CFBundleExecutable": "felinaut",
         "CFBundleIdentifier": BUNDLE_ID,
         "CFBundlePackageType": "APPL",
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundleShortVersionString": version,
         "CFBundleVersion": version,
-        "CFBundleGetInfoString": f"Felifox {display}",
-        "CFBundleIconFile": "Felifox.icns",
+        "CFBundleGetInfoString": f"Felinaut {display}",
+        "CFBundleIconFile": "Felinaut.icns",
         "CFBundleSupportedPlatforms": ["MacOSX"],
         "LSMinimumSystemVersion": MINIMUM_MACOS,
         "LSApplicationCategoryType": "public.app-category.productivity",
         "NSPrincipalClass": "NSApplication",
         "NSHighResolutionCapable": True,
-        # Lets macOS offer Felifox as the default browser and hand it http/https links;
+        # Lets macOS offer Felinaut as the default browser and hand it http/https links;
         # Apple's browser entitlements require these schemes to be declared.
         "CFBundleURLTypes": [
             {
@@ -112,7 +122,7 @@ def info_plist(version: str, display: str) -> dict:
                 "CFBundleTypeRole": "Viewer",
             }
         ],
-        "NSHumanReadableCopyright": "Copyright © 2026 Felifox contributors. MIT license.",
+        "NSHumanReadableCopyright": "Copyright © 2026 Felinaut contributors. MIT license.",
         # Browser web content, including users' HTTP development sites, must work
         # when launched as a bundle as well as when run as a bare Cargo executable.
         "NSAppTransportSecurity": {
@@ -150,7 +160,7 @@ def finder_script(mount: Path) -> str:
     set icon size of options to 104
     set text size of options to 14
     set background picture of options to (POSIX file {background}) as alias
-    set position of item "Felifox.app" of installerWindow to {{190, 245}}
+    set position of item "Felinaut.app" of installerWindow to {{190, 245}}
     set position of item "Applications" of installerWindow to {{530, 245}}
     update installerFolder without registering applications
     delay 2
@@ -159,7 +169,7 @@ end tell"""
 
 
 def make_icon(art: Path, work: Path) -> Path:
-    iconset = work / "Felifox.iconset"
+    iconset = work / "Felinaut.iconset"
     iconset.mkdir()
     for logical in [16, 32, 128, 256, 512]:
         for scale in [1, 2]:
@@ -175,7 +185,7 @@ def make_icon(art: Path, work: Path) -> Path:
                 iconset / f"icon_{logical}x{logical}{suffix}.png",
                 capture=True,
             )
-    icon = work / "Felifox.icns"
+    icon = work / "Felinaut.icns"
     run("iconutil", "--convert", "icns", "--output", icon, iconset)
     return icon
 
@@ -184,10 +194,10 @@ def make_app(binary: Path, icon: Path, destination: Path, version: str, display:
     contents = destination / "Contents"
     (contents / "MacOS").mkdir(parents=True)
     (contents / "Resources").mkdir()
-    executable = contents / "MacOS" / "felifox"
+    executable = contents / "MacOS" / "felinaut"
     shutil.copy2(binary, executable)
     executable.chmod(0o755)
-    shutil.copy2(icon, contents / "Resources" / "Felifox.icns")
+    shutil.copy2(icon, contents / "Resources" / "Felinaut.icns")
     shutil.copy2(ROOT / "LICENSE", contents / "Resources" / "LICENSE")
     (contents / "Info.plist").write_bytes(plistlib.dumps(info_plist(version, display)))
     (contents / "PkgInfo").write_bytes(b"APPL????")
@@ -200,7 +210,7 @@ def make_app(binary: Path, icon: Path, destination: Path, version: str, display:
     run("codesign", "--verify", "--deep", "--strict", "--verbose=2", destination)
 
 
-def portable_alias(alias: bytes, volume_name: str = "Felifox") -> bytes:
+def portable_alias(alias: bytes, volume_name: str = "Felinaut") -> bytes:
     """Keep the HFS volume/file identity, not the builder's mount/backing-image path."""
     if len(alias) < 154 or struct.unpack_from(">H", alias, 6)[0] != 2:
         raise ValueError("Unsupported Finder background alias format")
@@ -229,7 +239,7 @@ def portable_alias(alias: bytes, volume_name: str = "Felifox") -> bytes:
     raise ValueError("Finder alias is missing its end record")
 
 
-def portable_finder_background(store: Path, volume_name: str = "Felifox"):
+def portable_finder_background(store: Path, volume_name: str = "Felinaut"):
     """Replace icvp plists in-place without changing DS_Store B-tree record sizes.
 
     Finder adds a backing-DMG alias that stops resolving after the temporary image
@@ -250,11 +260,11 @@ def portable_finder_background(store: Path, volume_name: str = "Felifox"):
         alias = settings.get("backgroundImageAlias")
         if alias:
             settings["backgroundImageAlias"] = portable_alias(alias, volume_name)
-            settings["felifoxPortableLayout"] = b""
+            settings["felinautPortableLayout"] = b""
             base = len(plistlib.dumps(settings, fmt=plistlib.FMT_BINARY))
             guess = length - base
             for padding in range(max(0, guess - 32), max(0, guess) + 33):
-                settings["felifoxPortableLayout"] = bytes(padding)
+                settings["felinautPortableLayout"] = bytes(padding)
                 replacement = plistlib.dumps(settings, fmt=plistlib.FMT_BINARY)
                 if len(replacement) == length:
                     data[start:end] = replacement
@@ -271,10 +281,10 @@ def portable_finder_background(store: Path, volume_name: str = "Felifox"):
 def available_volume_name(volumes: Path = Path("/Volumes")) -> str:
     # Finder's AppleScript disk references are name-based. Never collide with a
     # tester's already mounted installer, and never eject someone else's volume.
-    name = "Felifox"
+    name = "Felinaut"
     suffix = 1
     while (volumes / name).exists():
-        name = "Felifox Installer" if suffix == 1 else f"Felifox Installer {suffix}"
+        name = "Felinaut Installer" if suffix == 1 else f"Felinaut Installer {suffix}"
         suffix += 1
     return name
 
@@ -283,7 +293,7 @@ def make_dmg(app: Path, art: Path, icon: Path, work: Path, name: str) -> Path:
     volume_name = available_volume_name()
     payload = work / "payload"
     payload.mkdir()
-    shutil.copytree(app, payload / "Felifox.app", symlinks=True)
+    shutil.copytree(app, payload / "Felinaut.app", symlinks=True)
     (payload / "Applications").symlink_to("/Applications", target_is_directory=True)
     (payload / ".background").mkdir()
     shutil.copy2(art / "dmg-background.png", payload / ".background" / "installer.png")
@@ -395,12 +405,14 @@ def main():
     if platform.system() != "Darwin":
         parser.error("macOS packaging requires macOS")
     if NOTARY_PROFILE and not SIGN_IDENTITY:
-        parser.error("FELIFOX_NOTARY_PROFILE requires FELIFOX_SIGN_IDENTITY")
+        parser.error("FELINAUT_NOTARY_PROFILE requires FELINAUT_SIGN_IDENTITY")
     if NOTARY_PROFILE and args.app_only:
         parser.error("Notarization needs the DMG; drop --app-only")
     if PROVISIONING_PROFILE:
         if not SIGN_IDENTITY:
-            parser.error("FELIFOX_PROVISIONING_PROFILE requires FELIFOX_SIGN_IDENTITY")
+            parser.error(
+                "FELINAUT_PROVISIONING_PROFILE requires FELINAUT_SIGN_IDENTITY"
+            )
         if not Path(PROVISIONING_PROFILE).is_file():
             parser.error(f"Provisioning profile not found: {PROVISIONING_PROFILE}")
         with open(ENTITLEMENTS, "rb") as file:
@@ -437,9 +449,9 @@ def main():
         parser.error(f"Unsupported host target: {host}")
     arch = "arm64" if host.startswith("aarch64") else "x86_64"
     slug = re.sub(r"[^A-Za-z0-9._-]", "-", display)
-    dmg_name = f"Felifox-{slug}-macos-{arch}.dmg"
+    dmg_name = f"Felinaut-{slug}-macos-{arch}.dmg"
     output = ROOT / "dist"
-    app_output = output / "Felifox.app"
+    app_output = output / "Felinaut.app"
     dmg_output = output / dmg_name
     artifacts = [app_output] + (
         [] if args.app_only else [dmg_output, output / "SHA256SUMS"]
@@ -451,11 +463,18 @@ def main():
                     f"Output already exists: {artifact}; pass --overwrite to replace it"
                 )
     metadata = json.loads(
-        run("cargo", "metadata", "--no-deps", "--format-version=1", capture=True).stdout
+        run(
+            "cargo",
+            "metadata",
+            "--locked",
+            "--no-deps",
+            "--format-version=1",
+            capture=True,
+        ).stdout
     )
     target = Path(metadata["target_directory"])
     target.mkdir(parents=True, exist_ok=True)
-    binary = target / host / "release" / "felifox"
+    binary = target / host / "release" / "felinaut"
     if not args.skip_build:
         env = os.environ.copy()
         env["MACOSX_DEPLOYMENT_TARGET"] = MINIMUM_MACOS
@@ -467,6 +486,8 @@ def main():
             "build",
             "--release",
             "--locked",
+            "--bin",
+            "felinaut",
             "--target",
             host,
             env=env,
@@ -476,7 +497,7 @@ def main():
         parser.error(f"Release executable not found: {binary}")
     output.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(
-        prefix="felifox-package-", dir=target
+        prefix="felinaut-package-", dir=target
     ) as temporary:
         work = Path(temporary)
         art = work / "art"
@@ -484,13 +505,13 @@ def main():
         run(
             "swift",
             ROOT / "scripts" / "render_macos_art.swift",
-            ROOT / "assets" / "felifox-mascot.svg",
-            ROOT / "assets" / "felifox-symbol.svg",
+            ROOT / "assets" / "felinaut-mascot.svg",
+            ROOT / "assets" / "felinaut-symbol.svg",
             art,
             display,
         )
         icon = make_icon(art, work)
-        app = work / "Felifox.app"
+        app = work / "Felinaut.app"
         make_app(binary, icon, app, version, display)
         # Keep the valid app even if Finder automation is unavailable for DMG styling.
         if app_output.exists():

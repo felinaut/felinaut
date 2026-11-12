@@ -67,8 +67,8 @@ jobs:
       - name: Build and verify ad-hoc signed app
         run: |
           cargo dist --app-only
-          codesign --verify --deep --strict dist/Felifox.app
-          lipo -verify_arch '${{ matrix.arch }}' dist/Felifox.app/Contents/MacOS/felifox
+          codesign --verify --deep --strict dist/Felinaut.app
+          lipo -verify_arch '${{ matrix.arch }}' dist/Felinaut.app/Contents/MacOS/felinaut
       - name: ZIP app (preserve macOS metadata and bundle root)
         env:
           ARCH: ${{ matrix.arch }}
@@ -81,10 +81,10 @@ jobs:
 
           version = tomllib.loads(Path('Cargo.toml').read_text())['package']['version']
           short = subprocess.check_output(['git', 'rev-parse', '--short=12', 'HEAD'], text=True).strip()
-          name = f"Felifox-{version}-{short}-macos-{os.environ['ARCH']}.zip"
+          name = f"Felinaut-{version}-{short}-macos-{os.environ['ARCH']}.zip"
           Path('release-assets').mkdir()
           subprocess.run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent',
-                          'dist/Felifox.app', f'release-assets/{name}'], check=True)
+                          'dist/Felinaut.app', f'release-assets/{name}'], check=True)
           PY
       - uses: actions/upload-artifact@v4
         with:
@@ -129,7 +129,7 @@ jobs:
           sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           short = subprocess.check_output(['git', 'rev-parse', '--short=12', 'HEAD'], text=True).strip()
           assets = Path('release-assets')
-          expected = {f'Felifox-{version}-{short}-macos-{arch}.zip' for arch in ('arm64', 'x86_64')}
+          expected = {f'Felinaut-{version}-{short}-macos-{arch}.zip' for arch in ('arm64', 'x86_64')}
           assert {p.name for p in assets.iterdir()} == expected, 'Missing or unexpected release assets'
           lines = []
           for name in sorted(expected):
@@ -138,7 +138,7 @@ jobs:
               lines.append(f'{digest}  {name}\n')
           (assets / 'SHA256SUMS').write_text(''.join(lines))
           with open(os.environ['GITHUB_ENV'], 'a') as env:
-              env.write(f'RELEASE_TAG=main-{sha}\nRELEASE_TITLE=Felifox {version} ({short})\n')
+              env.write(f'RELEASE_TAG=main-{sha}\nRELEASE_TITLE=Felinaut {version} ({short})\n')
           PY
           (cd release-assets && sha256sum --check SHA256SUMS)
       - name: Create or resume draft, upload, then publish
@@ -148,7 +148,7 @@ jobs:
         run: |
           cat > release-notes.md <<'NOTES'
           Automated, native macOS builds from the commit targeted by this release.
-          Choose arm64 for Apple Silicon or x86_64 for Intel; extract the ZIP and move Felifox.app into Applications.
+          Choose arm64 for Apple Silicon or x86_64 for Intel; extract the ZIP and move Felinaut.app into Applications.
           Verify the ZIPs with SHA256SUMS before extracting.
 
           These apps have local ad-hoc signatures only: no Developer ID signing or Apple notarization.

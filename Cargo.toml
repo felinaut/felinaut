@@ -1,10 +1,10 @@
 [package]
-name = "felifox"
+name = "felinaut"
 version = "0.1.0"
 edition = "2024"
 description = "A lightweight Rust browser with GPUI chrome and native WebKit pages"
 license = "MIT"
-default-run = "felifox"
+default-run = "felinaut"
 
 [dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"] }

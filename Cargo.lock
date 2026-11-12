@@ -1573,7 +1573,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "felifox"
+name = "felinaut"
 version = "0.1.0"
 dependencies = [
  "block2",

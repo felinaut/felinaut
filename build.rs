@@ -24,5 +24,5 @@ fn main() {
         .filter(|sha| matches!(sha.len(), 40 | 64) && sha.bytes().all(|b| b.is_ascii_hexdigit()))
         .map(|sha| sha[..12].to_owned())
         .unwrap_or_else(|| "unknown".to_owned());
-    println!("cargo:rustc-env=FELIFOX_GIT_COMMIT={revision}");
+    println!("cargo:rustc-env=FELINAUT_GIT_COMMIT={revision}");
 }
