@@ -159,6 +159,14 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 
 **Testing:** open https://webauthn.io, enter any user name and click **Register**; macOS should show its passkey sheet (Touch ID or the account password) and the site should then **Authenticate** with the new passkey. For Gmail, open https://accounts.google.com, enter the address and choose **Try another way → Use your passkey** (or let the conditional-UI prompt appear in the address field) with a passkey that already exists in iCloud Keychain. Until the entitlement is granted both report that no passkey is available; the Google sign-in page falls back to the password.
 
+## Cookies and staying signed in
+
+**Sign-ins survive a restart when the site's cookie has an expiry.** Felinaut's pages (and the hidden live-folder page) use WebKit's default, persistent website data store, and WebKit writes its cookies to disk itself. Measured with a loopback server in a development build on macOS 26: a cookie with `Max-Age` came back after a normal quit, after a quit within a second of being set, and after `kill -9`; a cookie without `Expires`/`Max-Age` (a session cookie) did not. That second part is by design: session cookies end when the browser quits. Felinaut does not keep them, so a site that signs you in with a session cookie (often when "Remember me" is off) asks again after a restart, even though the tab is restored. WebKit also caps long lifetimes (the fixture's two-year cookie was stored with 400 days).
+
+Two things are separate from persistence. A site can refuse or limit sign-in in an embedded WebKit view: Felinaut sends WebKit's default user agent, which lacks Safari's `Version/… Safari/…` token (untested against Google; passkeys are covered above). And each build has its own storage: WebKit keys it by bundle identifier, or by executable name for an unbundled `cargo run` binary, so the packaged app and a development build do not share sign-ins.
+
+Felinaut stores no cookie data of its own and logs none. WebKit keeps the cookies in `~/Library/HTTPStorages/io.github.casaroli.felifox.binarycookies` (`felinaut.binarycookies` for a development binary) and other website data in `~/Library/WebKit/` under the same name.
+
 ## Controls
 
 - Native address input with Unicode, IME, selection and clipboard.
@@ -321,11 +329,15 @@ FELINAUT_NATIVE_TEST=1 cargo test --test native_webview
 FELINAUT_NATIVE_TEST=1 cargo test --test brand_ui
 # Per-tab audio in real WebKit (plays a quiet tone from two loopback origins):
 FELINAUT_NATIVE_TEST=1 cargo test --test native_audio
+# Cookie persistence across a restart in real WebKit (loopback only):
+FELINAUT_NATIVE_TEST=1 cargo test --test native_cookies
 ```
 
 Add `-F gpui/runtime_shaders` to these commands on machines without full Xcode.
 
 The native webview test verifies actual WebKit JavaScript execution, DOM title changes, localStorage, native history, URL polling of a tab whose host never resolved, and injected DOM-event handling for hover, Cmd-click, middle-click and the right-click menu. It also downloads a loopback attachment whose name points outside the downloads folder (into a temporary home, never the real `~/Downloads`) and checks that the file stays inside it and that a hidden page's download is refused. The brand UI test also verifies that the actual artwork timer advances when enabled and stops when disabled (or when macOS Reduce Motion applies). Geometry tests cover distinct scenes, tessellation and changes over time for all six themes. Native tests use programmatically dispatched DOM events or shared UI handlers, not physical mouse automation. It is skipped by default because WebKit needs a macOS desktop session and main-thread event loop.
+
+The native cookie test runs itself twice as a child process: the first loads a loopback page that sets a cookie with an expiry and a session cookie; the second, a fresh process, must send the first back and not the second. It uses the test binary's own WebKit storage, not Felinaut's, and expires its cookies afterwards.
 
 ## Source
 
@@ -347,5 +359,6 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.
 - `tests/native_audio.rs`: opt-in WebKit check of audio routing, cross-origin fallback and reset.
+- `tests/native_cookies.rs`: opt-in check that a cookie with an expiry survives a restart and a session cookie does not.
 
 Felinaut source is MIT licensed. Dependencies retain their own licenses, including GPUI (Apache-2.0) and Wry (Apache-2.0 OR MIT).
