@@ -33,6 +33,9 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSImage",
     "NSImageRep",
     "NSBitmapImageRep",
+    # The Not secure mark's explanation sheet.
+    "NSAlert",
+    "NSApplication",
 ] }
 # Also already used by Wry; agent control calls WKWebView directly.
 objc2 = "0.6"

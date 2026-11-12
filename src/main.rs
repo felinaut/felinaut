@@ -296,6 +296,7 @@ actions!(
         ShowDownloads
     ]
 );
+actions!(felinaut, [ExplainNotSecure]);
 
 /// What ⌘⇧T needs to bring a closed tab back where it was.
 struct ClosedTab {
@@ -2200,6 +2201,15 @@ impl Browser {
         }
         cx.notify();
     }
+    fn explain_not_secure(
+        &mut self,
+        _: &ExplainNotSecure,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        let host = host(&self.tabs[self.active].url).unwrap_or_default();
+        webview::explain_not_secure(window, &host);
+    }
     fn home(&mut self, _: &Home, window: &mut Window, cx: &mut Context<Self>) {
         let tab = &mut self.tabs[self.active];
         if let Some(page) = &tab.page {
@@ -2545,8 +2555,8 @@ impl Browser {
                         )
                         .child(
                             note(
-                                "Until Felinaut quits. Anyone on your network could read or change \
-                                 what you send, even passwords."
+                                "For this site until Felinaut quits. Anyone on your network could read \
+                                 or change what you send, including passwords."
                                     .into(),
                             )
                             .text_xs(),
@@ -3927,8 +3937,12 @@ impl Render for Browser {
         let toolbar_toggle = sidebar_width < 88.;
         let tab = &self.tabs[self.active];
         let show_chip = !tab.home && !address_focused && display != AddressDisplay::Url;
-        let not_secure =
-            !tab.home && tab.load_failure.is_none() && webview::has_certificate_exception(&tab.url);
+        let not_secure = !tab.home
+            && tab.load_failure.is_none()
+            && tab
+                .page
+                .as_deref()
+                .is_some_and(NativePage::uses_accepted_certificate);
         self.address
             .update(cx, |input, _| input.set_not_secure(not_secure));
         let back_enabled = tab.can_go_back();
@@ -3996,6 +4010,7 @@ impl Render for Browser {
             .on_action(cx.listener(Self::reopen_tab))
             .on_action(cx.listener(Self::new_live_folder))
             .on_action(cx.listener(Self::show_downloads))
+            .on_action(cx.listener(Self::explain_not_secure))
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(

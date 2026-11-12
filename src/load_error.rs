@@ -116,7 +116,7 @@ pub struct Exceptions(HashMap<(String, u16), HashSet<Vec<u8>>>);
 
 impl Exceptions {
     pub fn allow(&mut self, url: &str, certificate: Vec<u8>) {
-        if let Some(site) = site(url) {
+        if let Some(site) = site(url).filter(|_| can_override(url)) {
             self.0.entry(site).or_default().insert(certificate);
         }
     }
@@ -127,10 +127,50 @@ impl Exceptions {
             .is_some_and(|certificates| certificates.contains(certificate))
     }
 
-    /// Whether a page at `url` may be using an accepted certificate, for the Not secure mark.
-    pub fn covers(&self, url: &str) -> bool {
-        !self.0.is_empty() && site(url).is_some_and(|site| self.0.contains_key(&site))
+    /// Whether the user accepted `certificate` for any site.
+    pub fn accepted(&self, certificate: &[u8]) -> bool {
+        self.0
+            .values()
+            .any(|certificates| certificates.contains(certificate))
     }
+}
+
+/// Major sites that require HTTPS (HSTS) and whole preloaded TLDs, with their subdomains: a
+/// small subset of the browsers' HSTS preload list.
+const HSTS: &[&str] = &[
+    "google.com",
+    "gmail.com",
+    "youtube.com",
+    "facebook.com",
+    "github.com",
+    "paypal.com",
+    "apple.com",
+    "icloud.com",
+    "microsoft.com",
+    "live.com",
+    "twitter.com",
+    "x.com",
+    "amazon.com",
+    "dropbox.com",
+    "wikipedia.org",
+    "mozilla.org",
+    "cloudflare.com",
+    "app",
+    "dev",
+    "bank",
+    "page",
+    "new",
+];
+
+/// Whether the user may visit `url` despite a bad certificate: `https`, and not an HSTS site.
+pub fn can_override(url: &str) -> bool {
+    site(url).is_some_and(|(host, _)| {
+        let host = host.trim_end_matches('.');
+        !HSTS.iter().any(|domain| {
+            host.strip_suffix(domain)
+                .is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
+        })
+    })
 }
 
 /// The host and port of an `https` URL; the URL parser lowercases the host.
@@ -190,20 +230,45 @@ mod tests {
     #[test]
     fn exceptions_cover_one_certificate_on_one_https_site() {
         let mut exceptions = Exceptions::default();
-        assert!(!exceptions.covers("https://expired.badssl.com/"));
+        assert!(!exceptions.accepted(&[1, 2, 3]));
         exceptions.allow("https://Expired.badssl.com/a?b", vec![1, 2, 3]);
         exceptions.allow("http://plain.example/", vec![1]);
-        assert!(exceptions.covers("https://expired.badssl.com/other"));
+        assert!(exceptions.accepted(&[1, 2, 3]));
+        assert!(!exceptions.accepted(&[1]));
         assert!(exceptions.allows("EXPIRED.badssl.com", 443, &[1, 2, 3]));
         assert!(!exceptions.allows("expired.badssl.com", 443, &[9]));
         assert!(!exceptions.allows("expired.badssl.com", 8443, &[1, 2, 3]));
         assert!(!exceptions.allows("self-signed.badssl.com", 443, &[1, 2, 3]));
+        assert!(!exceptions.accepted(&[9]));
+    }
+
+    #[test]
+    fn hsts_sites_cannot_be_overridden() {
         for url in [
-            "http://expired.badssl.com/",
-            "http://plain.example/",
-            "about:blank",
+            "https://google.com/",
+            "https://mail.google.com/x",
+            "https://accounts.google.com.:443/",
+            "https://www.paypal.com/",
+            "https://pkg.go.dev/",
+            "https://example.app/",
+            "https://my.bank/",
         ] {
-            assert!(!exceptions.covers(url), "{url}");
+            assert!(!can_override(url), "{url}");
+            let mut exceptions = Exceptions::default();
+            exceptions.allow(url, vec![1]);
+            assert!(!exceptions.accepted(&[1]), "{url}");
+        }
+        for url in [
+            "https://expired.badssl.com/",
+            "https://notgoogle.com/",
+            "https://google.com.evil.example/",
+            "https://developer.example/",
+            "https://192.168.1.1:8443/",
+        ] {
+            assert!(can_override(url), "{url}");
+        }
+        for url in ["http://example.com/", "about:blank", "", "not a url"] {
+            assert!(!can_override(url), "{url}");
         }
     }
 }

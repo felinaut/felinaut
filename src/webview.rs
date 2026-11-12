@@ -216,6 +216,17 @@ impl NativePage {
         unsafe { self.webview.webview().isLoading() }
     }
 
+    /// Whether the page came with a certificate the user accepted, even over a reused connection.
+    pub fn uses_accepted_certificate(&self) -> bool {
+        use wry::WebViewExtMacOS;
+        // SAFETY: a property read on a live WKWebView owned by this page, on the main thread;
+        // the trust (or null) belongs to the view and is only read before this returns.
+        let trust: *mut SecTrust =
+            unsafe { objc2::msg_send![&*self.webview.webview(), serverTrust] };
+        leaf_certificate(trust)
+            .is_some_and(|leaf| EXCEPTIONS.with_borrow(|exceptions| exceptions.accepted(&leaf)))
+    }
+
     /// The URL and title on display; none after a failed first load.
     pub fn document(&self) -> Option<(String, String)> {
         use wry::WebViewExtMacOS;
@@ -443,8 +454,32 @@ pub fn allow_certificate(url: &str, certificate: Vec<u8>) {
     EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.allow(url, certificate));
 }
 
-pub fn has_certificate_exception(url: &str) -> bool {
-    EXCEPTIONS.with_borrow(|exceptions| exceptions.covers(url))
+/// Explains the Not secure mark in a sheet, which is drawn above the native pages.
+pub fn explain_not_secure(window: &gpui::Window, host: &str) {
+    use objc2_app_kit::{NSAlert, NSView};
+    use objc2_foundation::{NSString, ns_string};
+    use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let (RawWindowHandle::AppKit(handle), Some(mtm)) =
+        (handle.as_raw(), objc2::MainThreadMarker::new())
+    else {
+        return;
+    };
+    // SAFETY: GPUI hands out its live content view, and we are on the main thread.
+    let view: &NSView = unsafe { handle.ns_view.cast().as_ref() };
+    let Some(ns_window) = view.window() else {
+        return;
+    };
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(ns_string!("This connection isn't private"));
+    alert.setInformativeText(&NSString::from_str(&format!(
+        "You chose to trust an invalid certificate for {host}, in all tabs, until \
+         Felinaut quits. Anyone on your network could read or change what you send, including \
+         passwords."
+    )));
+    alert.beginSheetModalForWindow_completionHandler(&ns_window, None);
 }
 
 /// `SecTrustRef`'s pointee, so `msg_send!` can check the Objective-C type encoding.
@@ -540,14 +575,19 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     unsafe extern "C-unwind" fn challenge(
         _: *mut AnyObject,
         _: Sel,
-        _: *mut AnyObject,
+        webview: *mut AnyObject,
         challenge: *mut AnyObject,
         handler: *mut Handler,
     ) {
         // SAFETY: WebKit passes a live challenge and completion handler on the main thread,
         // and expects the handler to be called exactly once.
         let handler = unsafe { &*handler };
-        match unsafe { challenge.as_ref() }.and_then(accepted_credential) {
+        // The hidden live-folder page has no failure key, so it never uses an exception.
+        let visible = FAILURES.with_borrow(|pages| pages.contains_key(&(webview as usize)));
+        match unsafe { challenge.as_ref() }
+            .filter(|_| visible)
+            .and_then(accepted_credential)
+        {
             // NSURLSessionAuthChallengeUseCredential
             Some(credential) => handler.call((0, Retained::as_ptr(&credential).cast_mut())),
             // NSURLSessionAuthChallengePerformDefaultHandling
@@ -608,7 +648,10 @@ fn report_failure(key: usize, error: Option<&objc2_foundation::NSError>, provisi
             &error.localizedDescription().to_string(),
         )?;
         // A bad date, issuer or name can be overridden; a failed handshake cannot.
-        if domain == "NSURLErrorDomain" && (-1204..=-1201).contains(&code) {
+        if domain == "NSURLErrorDomain"
+            && (-1204..=-1201).contains(&code)
+            && crate::load_error::can_override(&url)
+        {
             failure.certificate = info
                 .objectForKey(objc2_foundation::ns_string!(
                     "NSURLErrorFailingURLPeerTrustErrorKey"
