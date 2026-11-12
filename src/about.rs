@@ -227,7 +227,7 @@ impl Render for About {
                             .border_color(rgb(p.border))
                             .text_size(px(13.))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(DISPLAY_VERSION),
+                            .child(version_label()),
                     )
                     .child(
                         div()
@@ -283,10 +283,32 @@ impl Render for About {
     }
 }
 
+fn version_label() -> String {
+    format!(
+        "{} · {} ({})",
+        DISPLAY_VERSION,
+        env!("CARGO_PKG_VERSION"),
+        env!("FELIFOX_GIT_COMMIT")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn version_label_is_the_public_beta_version() {
         assert_eq!(crate::DISPLAY_VERSION, "0.1 beta");
+    }
+
+    #[test]
+    fn about_identifies_the_package_version_and_built_commit() {
+        let revision = env!("FELIFOX_GIT_COMMIT");
+        assert!(
+            revision == "unknown"
+                || (revision.len() == 12 && revision.bytes().all(|b| b.is_ascii_hexdigit()))
+        );
+        assert_eq!(
+            super::version_label(),
+            format!("0.1 beta · {} ({revision})", env!("CARGO_PKG_VERSION"))
+        );
     }
 }
