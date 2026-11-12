@@ -165,7 +165,14 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 
 Two things are separate from persistence. A site can refuse or limit sign-in in an embedded WebKit view: Felinaut sends WebKit's default user agent, which lacks Safari's `Version/… Safari/…` token (untested against Google; passkeys are covered above). And each build has its own storage: WebKit keys it by bundle identifier, or by executable name for an unbundled `cargo run` binary, so the packaged app and a development build do not share sign-ins.
 
-Felinaut stores no cookie data of its own and logs none. WebKit keeps the cookies in `~/Library/HTTPStorages/io.github.casaroli.felifox.binarycookies` (`felinaut.binarycookies` for a development binary) and other website data in `~/Library/WebKit/` under the same name.
+**The Cookies window** (`⌥⌘K`, **Felinaut → Cookies…**) reads the same store through `WKHTTPCookieStore`:
+
+- A tree drawn as a graph: **All cookies → site → host → cookie**, with connecting lines, a cookie count on every branch, and a domain filter. Click a branch to open it and again to close it; `↑ ↓ ← →` and Return work from the keyboard, `⌘F` goes to the filter, `⌘R` or **Refresh** reads the store again (it also refreshes whenever the window becomes active).
+- Selecting a cookie shows its name, host (and whether subdomains get it), path, expiry or "Session", Secure, HttpOnly and SameSite. **The value stays hidden until you click Reveal.** Selecting a branch shows its totals.
+- **Delete** works at every level: one cookie at once; a host, a site or everything after one confirmation that names how many cookies go. `⌘⌫` deletes the selection, Return confirms, Escape cancels. With a filter on, only the cookies shown are deleted. Deleting a site's cookies signs you out there.
+- Sites are grouped by a small heuristic, not the Public Suffix List: the last two labels of the host, or three for common country registries (`bbc.co.uk`). Hosts under a shared suffix such as `github.io` therefore appear as one site. This only affects grouping; a delete removes exactly the listed cookies.
+
+Felinaut stores no cookie data of its own, logs none, and agent control (`felinaut-ctl`) has no cookie command. WebKit keeps the cookies in `~/Library/HTTPStorages/io.github.casaroli.felifox.binarycookies` (`felinaut.binarycookies` for a development binary) and other website data in `~/Library/WebKit/` under the same name. To clear cookies, select **All cookies** in the Cookies window and delete; local storage and caches are not shown there.
 
 ## Controls
 
@@ -184,6 +191,7 @@ Felinaut stores no cookie data of its own and logs none. WebKit keeps the cookie
 - Native menus keep browser shortcuts available while the webview has focus.
 - **Per-tab volume** from 0 % to 600 %, with mute and sound presets (see below).
 - **Downloads** are saved to `~/Downloads` and listed under the toolbar's **↓** button, with progress, cancel, open and show in Finder (see below).
+- **Cookies window** (`⌥⌘K`, or **Felinaut → Cookies…**): every stored cookie as a site → host → cookie tree, with details and delete at each level (see [Cookies and staying signed in](#cookies-and-staying-signed-in)).
 
 | Shortcut         | Action                                                          |
 | ---------------- | --------------------------------------------------------------- |
@@ -199,6 +207,7 @@ Felinaut stores no cookie data of its own and logs none. WebKit keeps the cookie
 | `⌘⇧J`            | Show / hide the downloads list                                  |
 | `⌘S`             | Show / hide the tab sidebar (remembered)                        |
 | `⌘D`             | Pin / unpin active tab                                          |
+| `⌥⌘K`            | Open the Cookies window                                         |
 | `⌘1`–`⌘8` / `⌘9` | Go to tab 1–8 / last tab                                        |
 | `⌃Tab` / `⌃⇧Tab` | Next / previous tab (also `⌘⇧]` / `⌘⇧[`)                        |
 | `⌘Q`             | Quit                                                            |
@@ -314,6 +323,7 @@ Keep it small: no bookmarks manager, extensions, permission UI, tracker-blocker 
 - Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
 - This is an early browser shell, not a security-audited Safari replacement. WebKit's engine security updates come from macOS updates.
+- Cookies persist in WebKit's own store and can be inspected and deleted in the Cookies window; session cookies are not kept across a restart (see [Cookies and staying signed in](#cookies-and-staying-signed-in)).
 - Only macOS is configured and tested. Windows and Linux backends are not configured.
 
 ## Validate
@@ -356,6 +366,9 @@ The native cookie test runs itself twice as a child process: the first loads a l
 - `src/brand.rs` and `assets/`: embedded original SVG mascot, symbol and monochrome UI icons.
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.
+- `src/cookies.rs`: the cookie tree model: grouping by site and host, rows and connectors, filtering, subtree deletion, totals.
+- `src/cookie_store.rs`: reads and deletes cookies in WebKit's default data store (`WKHTTPCookieStore`).
+- `src/cookie_window.rs`: the Cookies window.
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.
 - `tests/native_audio.rs`: opt-in WebKit check of audio routing, cross-origin fallback and reset.

@@ -133,6 +133,12 @@ impl AddressInput {
         }
     }
 
+    /// The same field for another purpose, such as the Cookies window's domain filter.
+    pub fn with_placeholder(mut self, placeholder: &'static str) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
     pub fn set_not_secure(&mut self, not_secure: bool) {
         self.not_secure = not_secure;
     }

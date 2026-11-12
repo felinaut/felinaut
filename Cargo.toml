@@ -40,10 +40,14 @@ block2 = "0.6"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "objc2-core-foundation",
+    # The Cookies window reads WebKit's cookie store.
+    "NSArray",
     "NSData",
+    "NSDate",
     "NSDictionary",
     "NSError",
     "NSGeometry",
+    "NSHTTPCookie",
     "NSProcessInfo",
     # Downloads: the destination, the response's length and byte progress.
     "NSProgress",
@@ -62,6 +66,9 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = [
     # Felinaut is its own download delegate, for progress and cancelling.
     "WKDownload",
     "WKDownloadDelegate",
+    # The Cookies window: the data store the pages use, and its cookies.
+    "WKHTTPCookieStore",
+    "WKWebsiteDataStore",
 ] }
 
 [[test]]

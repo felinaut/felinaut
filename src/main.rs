@@ -4,6 +4,9 @@ mod appearance;
 mod art;
 mod audio;
 mod brand;
+mod cookie_store;
+mod cookie_window;
+mod cookies;
 mod download_panel;
 mod downloads;
 mod engine;
@@ -4164,6 +4167,7 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.set_global(ThemeSettings::load());
         input::init(cx);
+        cookie_window::init(cx);
         #[cfg(target_os = "macos")]
         webview::forward_command_arrows();
         cx.bind_keys([
@@ -4199,6 +4203,8 @@ fn main() {
                 name: "Felinaut".into(),
                 items: vec![
                     MenuItem::action("About Felinaut", AboutFelinaut),
+                    MenuItem::separator(),
+                    MenuItem::action("Cookies…", cookie_window::ShowCookies),
                     MenuItem::separator(),
                     MenuItem::action("Quit Felinaut", Quit),
                 ],
