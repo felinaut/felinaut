@@ -1,6 +1,6 @@
 # Native CEF/GPUI lifecycle probe
 
-Developer-only macOS investigation, separate from the browser's Cargo graph. **This first checkpoint links no CEF engine or SDK.** It proves a proposed application-lifecycle boundary before acquiring a runtime or changing the default browser. `engine-cef` in the browser remains explicitly unsupported.
+Developer-only macOS arm64 investigation, separate from the browser's Cargo graph. The default build is SDK-free; the explicit `runtime` feature now loads a pinned CEF distribution and exercises a trusted loopback document inside an AppKit child view hosted by GPUI. **This is not the browser adapter or arbitrary-site support.** `engine-cef` in the browser remains explicitly unsupported. Native functional checks pass on the host below; actual CEF-window visual verification is pending because both window-capture paths failed.
 
 ## Build and test
 
@@ -86,8 +86,42 @@ python3 tools/cef-probe/bundle_probe.py --help
 
 `bundle_probe.py` performs explicit, offline assembly only beneath ignored `target/`, refusing existing destinations and redirected inputs. It verifies the prepared SDK, thin arm64 executable headers, copied hashes, framework links, all five CEF helper layouts and bundled license/credits files. It preserves framework bytes/signatures and performs no signing, installation, security changes or launch. Preparation/bundling behavioral tests cover invalid and hostile inputs as well as success; helper tests cover role arguments and sandbox-bypass rejection.
 
-## Not proved yet
+## Real CEF runtime probe
 
-No actual `CefAppProtocol` conformance, framework load, CEF initialization/pumping, helper sandbox, page rendering, input/IME, resize, WebKit coexistence, per-tab selection, packaging or distribution support is established by these SDK-free lifecycle/scheduler checks. A separately built official CEF example would not by itself prove GPUI coexistence either.
+After explicit SDK preparation:
 
-Next: use a matching pinned macOS arm64 CEF runtime/binding pair, implement real protocol conformance and bounded external-pump scheduling, initialize sandboxed helpers correctly, and render a trusted loopback page in the GPUI content area. Do not enable the browser's CEF flag or bypass sandbox checks merely because the application subclass works. See [the CEF feasibility report](../../docs/macos-cef-gecko.md).
+```sh
+python3 tools/cef-probe/run_probe.py                     # plan only; no launch/build
+python3 tools/cef-probe/run_probe.py --run --build       # bounded builds and native checks
+python3 tools/cef-probe/run_probe.py --run --capture     # additionally require a window-only screenshot
+```
+
+`--build` prevalidates the exact prepared SDK and passes its absolute `CEF_PATH` to each bounded Cargo invocation. It builds the runtime-enabled host and the separate helper. There is no SDK acquisition in the runner. The browser's own Cargo manifest/lockfile and engine gates are unchanged.
+
+The runner creates a new private bundle beneath `target/cef-probe-run-*`, serves only its self-contained loopback fixture with restrictive CSP, and launches with a fresh marked temporary HOME. The native executable rejects non-loopback HTTP URLs, credentials and unmarked/non-private homes. Native launch inherits only locale/text-encoding values, not shell credentials, proxy settings, loader overrides or arbitrary engine switches. Navigation and resource policies restrict the fixture origin, popups/downloads are refused, and redirect destinations are checked. This is not evidence that Chromium makes no background network requests.
+
+### Native boundary and test sequence
+
+- Uses the exact SDK's Objective-C `CefAppProtocol`, with protocol conformance checked at runtime. A small Objective-C translation unit avoids importing third-party C++ templates into the application bridge.
+- Initializes CEF before GPUI's run loop, with `no_sandbox = 0`, the external message pump and explicit bundle/helper/cache paths. Helpers initialize the sandbox before framework loading. **Effective helper confinement remains unverified**; requesting sandbox initialization is not proof of it.
+- Asynchronously creates an Alloy-style native child in a retained container, with a separate in-memory request context. CEF callbacks enqueue bounded events only; they never call GPUI directly.
+- Waits for document load/JavaScript, confirms editable-field focus, types the fixture phrase through AppKit key-down/key-up pairs, and clicks its HTML button. The fixture verifies the actual value and a trusted pointer event. Keyboard injection is intentionally limited to US-layout ASCII alphabet/space—not Unicode/IME coverage.
+- Resizes the GPUI/native window and requires the document to report the new 1000-pixel CSS viewport width.
+- Holds application quit, dispatches browser close exactly once (including quit before asynchronous creation completes), removes only the CEF container after `DoClose`, awaits `OnBeforeClose`, cancels pumping and calls `cef::shutdown` on the main native loop before releasing GPUI termination.
+- A 32-second fixture deadline, 45-second host watchdog and 60-second runner budget bound failure paths. Runner success requires all ordered markers and root exit 0. Capture failure remains a failed capture run, never a skipped success.
+
+### Disposable Keychain policy
+
+**This trusted-fixture-only probe enables Chromium's `use-mock-keychain` test switch.** Chromium's fake Keychain uses a public test key; it is not secure persistent secret storage and must never be copied into a real browser profile. The private test HOME has no login Keychain. A sampled earlier shutdown hung in `SecItemAdd → defaultKeychainUI → AuthorizationCopyRights`, with other Keychain tasks contending, until CEF's teardown watchdog fired. The scoped test switch prevents those authorization operations; real Keychain integration remains a production gate.
+
+Pinned source: [test switch](https://github.com/chromium/chromium/blob/156.0.8078.88/components/os_crypt/common/os_crypt_switches.h) and [key provider](https://github.com/chromium/chromium/blob/156.0.8078.88/components/os_crypt/async/browser/keychain_key_provider.mm). No real login Keychain, signature, xattr, TLS protection or sandbox setting was modified to obtain the passing run.
+
+### Evidence and limitations
+
+On the same macOS 27 arm64/Xcode 27 host, actual native runs passed protocol conformance, initialization, child creation, loopback HTTP 200/JavaScript, native text and trusted pointer interaction, viewport resize, `OnBeforeClose`, CEF shutdown and original GPUI termination. Tool unit tests also cover loopback/resource policy, invalid/private profiles, mode handling and close-before-create/duplicate-close transitions. Validation passed: tool formatting, default/runtime/helper Clippy with warnings denied, **9 runtime-enabled host unit tests**, **3 helper unit tests**, **86 Python tests** (32 SDK preparation, 21 bundle, 33 runner), native pump/conflicting-singleton/lifecycle checks, and the runner's actual `--run --build` sequence with root exit 0. The default host also passed its 3 SDK-free unit tests. These checks do not replace the missing native security/visual checks below.
+
+Private logs, reports and bundles stay under ignored `target/`; temporary homes are **retained even after success** until helper exit is independently verified. `helper_lifecycle: unverified` is explicit in the report. The runner stops only roots it owns; it does not issue global/process-group kills. Do not manually delete a retained profile until its run-owned helpers are confirmed stopped.
+
+**Visual verification pending:** `/usr/sbin/screencapture` could not create an image from the selected owned window. A separate window-only ScreenCaptureKit diagnostic also failed with `SCStreamErrorInternalError (-3811)` despite permission preflight succeeding. The desktop-session query reported `screen_locked=1`; rerun capture with the Mac unlocked. No display-wide fallback or personal-window capture was attempted. The screenshot above is still only the earlier SDK-free lifecycle window, not CEF evidence. Document load/input/resize markers do not establish correct visible pixels, contrast or layout.
+
+Not yet proved: effective renderer/GPU/utility confinement and helper exit, real persistent Keychain integration, Unicode/IME, accessibility, media, renderer-crash recovery, arbitrary-site behavior, WKWebView coexistence, per-tab selection, engine switching, signing/distribution or compatibility beyond this host. Resource/redirect negative cases currently have policy unit coverage, not an end-to-end hostile-response test. Do not enable the browser's CEF flag based on this prototype. Next: verify native pixels, confinement/helper lifecycle and WebKit coexistence, then implement the production adapter against the [backend contract](../../docs/engine-backends.md). See [the CEF feasibility report](../../docs/macos-cef-gecko.md).

@@ -1,6 +1,6 @@
 # macOS optional engines: CEF and Gecko feasibility
 
-**Research checked: 12 November 2026. Status: source/API research, not a working backend.**
+**Research checked: 12 November 2026. Status: standalone native CEF/GPUI functional probe passes; no browser adapter. Visual verification, effective confinement/helper exit and WebKit coexistence remain pending.**
 
 Scope: build-time optional engines, eventually selectable at runtime **per tab in one GPUI window**, starting with native macOS arm64. This report adds no dependencies, Cargo features, adapter, launcher, preference, or selector. Build-request gates and the existing Cocoa choices are documented separately in [engine builds](engine-builds.md); neither enables an alternate adapter. Read alongside [the backend contract](engine-backends.md), [porting plan](porting-plan.md), [GPUI controls](gpui-controls.md), and [macOS status](macos-backend-status.md).
 
@@ -10,13 +10,15 @@ Scope: build-time optional engines, eventually selectable at runtime **per tab i
 - **CEF is a realistic Chromium/Blink/V8 embedding candidate on macOS arm64.** Official C/C++ APIs, arm64 binary distributions, sandbox initialization, AppKit child views, and maintained Rust bindings exist. They are sufficient to specify a concrete prototype, not to claim integration already works.
 - **First resolve the GPUI application-class, event-pump, and shutdown boundary.** Published GPUI 0.2.2 is not an out-of-the-box CEF host. A child-view constructor alone does not solve this.
 - **Gecko remains unavailable as a Felinaut backend.** No maintained macOS desktop embedding SDK/binding with CEF-like lifecycle, native-view and security contracts was established by this investigation. GeckoView is Android; desktop Firefox and Firefox automation are not an embeddable AppKit control. This is a bounded research conclusion, not proof that a custom Gecko fork is impossible.
-- **Do not source-build Chromium/CEF or Firefox on this machine for this task.** The local free-space constraint (approximately **16 GiB**) rules out a full source-build attempt in this investigation. Only metadata and individual source/document pages were fetched; no SDK/archive, clone, install, dependency resolution, or engine build was performed.
+- **Do not source-build Chromium/CEF or Firefox on this machine for this task.** The initial free-space constraint (approximately **16 GiB**, now lower) rules out a full source-build attempt in this investigation. The original research used metadata/source pages only; the later standalone probe explicitly acquired a matching prebuilt CEF 156.0.26 SDK and compiled its host/helper. No full Chromium/Firefox source build or browser installation was performed.
 
 ## Native lifecycle checkpoint
 
 The [SDK-free GPUI lifecycle probe](../tools/cef-probe/README.md) now passes on this macOS 27 arm64 host. It creates a new subclass of the already registered `GPUIApplication` before singleton acquisition, preserves GPUI's inherited state/delegate, verifies nested/exception event scope, rejects an existing singleton, and holds quit until explicit asynchronous release. AppKit's KVO subclass requires ancestry checks rather than exact class equality. No GPUI patch, object-class replacement or blanket swizzling was needed for this probe.
 
-This narrows the application-class blocker; it does **not** prove CEF protocol conformance, framework initialization, pumping, sandboxing or a rendered web page. The original research sections below remain source evidence; the probe README records the separate native commands/results and actual window capture. The browser's CEF feature remains blocked.
+A later opt-in runtime checkpoint uses the published `cef`/`cef-dll-sys` **156.4.0+156.0.26** pair and matching prebuilt CEF **156.0.26+g8ea0c73+chromium-156.0.8078.88**, not the newer research-only 156.0.28 pin below. Native checks now pass real protocol conformance, framework initialization, reference-compatible pumping, native child creation, loopback HTTP/JavaScript, AppKit text/trusted pointer interaction, viewport resize and CEF shutdown before GPUI termination. The disposable fixture uses Chromium's mock-Keychain test switch; this is not production secret storage.
+
+**Effective helper confinement/exit, correct visible pixels and WKWebView coexistence are not yet verified.** Window-only capture failed through both `screencapture` and ScreenCaptureKit; visual verification is pending. The existing image depicts only the SDK-free lifecycle window. The [probe README](../tools/cef-probe/README.md#real-cef-runtime-probe) records reproducible commands, safety boundaries and remaining gates. The original research sections below remain historical source evidence; the browser's CEF feature remains blocked.
 
 ## 1. Evidence boundary and exact pins
 

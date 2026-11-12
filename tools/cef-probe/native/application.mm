@@ -7,6 +7,11 @@
 #include <string>
 #include <pthread.h>
 #include <dispatch/dispatch.h>
+#include <cmath>
+#ifdef FELINAUT_CEF_RUNTIME
+extern "C" Protocol *felinaut_cef_application_protocol();
+extern "C" bool felinaut_cef_has_application_protocols(id application);
+#endif
 
 namespace {
 Class probe_class = Nil;
@@ -14,6 +19,8 @@ Class gpui_class = Nil;
 BOOL handling_event = NO;
 bool close_requested = false;
 bool closing_allowed = false;
+NSView *container = nil;
+NSView *container_parent = nil;
 
 // CEF's public CrAppProtocol/CrAppControlProtocol require these two selectors.
 // Actual framework protocol conformance is checked when CEF is integrated;
@@ -81,6 +88,13 @@ extern "C" int felinaut_cef_bootstrap_application() {
         objc_disposeClassPair(candidate);
         return 7;
     }
+#ifdef FELINAUT_CEF_RUNTIME
+    Protocol *protocol = felinaut_cef_application_protocol();
+    if (!protocol || !class_addProtocol(candidate, protocol)) {
+        objc_disposeClassPair(candidate);
+        return 10;
+    }
+#endif
     objc_registerClassPair(candidate);
     probe_class = candidate;
     if (NSApp) return 2;
@@ -150,6 +164,142 @@ extern "C" bool felinaut_cef_finish_termination() {
     closing_allowed = true;
     // Called outside any GPUI borrow; normal AppKit termination reaches GPUI's delegate.
     dispatch_async(dispatch_get_main_queue(), ^{ [NSApp terminate:nil]; });
+    return true;
+}
+
+extern "C" bool felinaut_cef_verify_protocols() {
+#ifdef FELINAUT_CEF_RUNTIME
+    return owns_application() && felinaut_cef_has_application_protocols(NSApp);
+#else
+    return false;
+#endif
+}
+
+extern "C" bool felinaut_cef_defer_cleanup(void (*callback)()) {
+    if (!owns_application() || !callback) return false;
+    // Run outside the serial main GCD queue/GPUI task. CEF shutdown may need
+    // native-loop work serviced by that queue while draining its own threads.
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+        @autoreleasepool { callback(); }
+    });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+    return true;
+}
+
+extern "C" void *felinaut_cef_attach_container(void *parent_pointer) {
+    if (!owns_application() || !parent_pointer || container) return nullptr;
+    NSView *parent = static_cast<NSView *>(parent_pointer);
+    if (![parent isKindOfClass:[NSView class]] || ![parent window]) return nullptr;
+    container_parent = [parent retain];
+    container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 1, 1)];
+    [container setHidden:YES];
+    [parent addSubview:container];
+    return container;
+}
+
+extern "C" bool felinaut_cef_resize_container(double x, double y, double width, double height) {
+    if (!owns_application() || !container || ![container_parent window] ||
+        !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(width) || !std::isfinite(height) ||
+        width < 0 || height < 0 || width > 16384 || height > 16384) return false;
+    if (width == 0 || height == 0) {
+        [container setHidden:YES];
+        return true;
+    }
+    const double native_y = [container_parent isFlipped] ? y :
+        [container_parent bounds].size.height - y - height;
+    [container setFrame:NSMakeRect(x, native_y, width, height)];
+    for (NSView *child in [container subviews]) [child setFrame:[container bounds]];
+    [container setHidden:NO];
+    return true;
+}
+
+extern "C" bool felinaut_cef_resize_window(double width, double height) {
+    if (!owns_application() || !container || ![container_parent window] ||
+        !std::isfinite(width) || !std::isfinite(height) || width < 100 || height < 100 ||
+        width > 16384 || height > 16384) return false;
+    [[container_parent window] setContentSize:NSMakeSize(width, height)];
+    return true;
+}
+
+extern "C" bool felinaut_cef_click(double x, double y) {
+    if (!owns_application() || !container || ![container window] ||
+        !std::isfinite(x) || !std::isfinite(y) || x < 0 || y < 0 ||
+        x >= [container bounds].size.width || y >= [container bounds].size.height) return false;
+    NSWindow *window = [container window];
+    [window makeKeyAndOrderFront:nil];
+    const NSPoint local = NSMakePoint(x, [container isFlipped] ? y : [container bounds].size.height - y);
+    const NSPoint location = [container convertPoint:local toView:nil];
+    const NSPoint in_parent = [container convertPoint:local toView:[container superview]];
+    NSView *target = [[container hitTest:in_parent] retain];
+    if (!target || target == container || ![target isDescendantOf:container]) { [target release]; return false; }
+    fprintf(stderr, "CEF native pointer target %s, container %.0fx%.0f, window visible %d\n",
+        object_getClassName(target), [container bounds].size.width, [container bounds].size.height, [window isVisible]);
+    @try {
+        [window makeFirstResponder:target];
+        event_scope(^{
+            for (NSEventType type : {NSEventTypeMouseMoved, NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp}) {
+                NSEvent *event = [NSEvent mouseEventWithType:type location:location modifierFlags:0
+                    timestamp:[[NSProcessInfo processInfo] systemUptime] windowNumber:[window windowNumber]
+                    context:nil eventNumber:0 clickCount:(type == NSEventTypeMouseMoved ? 0 : 1) pressure:1.0];
+                if (type == NSEventTypeMouseMoved) [target mouseMoved:event];
+                else if (type == NSEventTypeLeftMouseDown) [target mouseDown:event];
+                else [target mouseUp:event];
+            }
+        });
+    } @catch (NSException *) { return false; }
+      @finally { [target release]; }
+    return true;
+}
+
+extern "C" bool felinaut_cef_type_ascii(const char *text) {
+    if (!owns_application() || !container || ![container window] || !text || std::strlen(text) > 128)
+        return false;
+    for (const unsigned char *p = reinterpret_cast<const unsigned char *>(text); *p; ++p)
+        if (*p < 32 || *p > 126) return false;
+    id responder = [[[container window] firstResponder] retain];
+    if (![responder isKindOfClass:[NSView class]] || ![static_cast<NSView *>(responder) isDescendantOf:container] ||
+        ![responder respondsToSelector:@selector(insertText:replacementRange:)]) {
+        [responder release]; return false;
+    }
+    // Deliberately narrow US-layout alphabet/space fixture, not general IME automation.
+    constexpr unsigned short codes[] = {0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6};
+    for (const char *p = text; *p; ++p) {
+        if (*p != ' ' && !(*p >= 'a' && *p <= 'z') && !(*p >= 'A' && *p <= 'Z')) {
+            [responder release]; return false;
+        }
+    }
+    NSWindow *window = [container window];
+    @try {
+        event_scope(^{
+            for (const char *p = text; *p; ++p) {
+                const bool shifted = *p >= 'A' && *p <= 'Z';
+                const char lower = shifted ? *p - 'A' + 'a' : *p;
+                const unsigned short code = *p == ' ' ? 49 : codes[lower - 'a'];
+                NSString *characters = [NSString stringWithFormat:@"%c", *p];
+                NSString *unmodified = [NSString stringWithFormat:@"%c", lower];
+                for (NSEventType type : {NSEventTypeKeyDown, NSEventTypeKeyUp}) {
+                    NSEvent *event = [NSEvent keyEventWithType:type location:NSZeroPoint
+                        modifierFlags:(shifted ? NSEventModifierFlagShift : 0)
+                        timestamp:[[NSProcessInfo processInfo] systemUptime]
+                        windowNumber:[window windowNumber] context:nil characters:characters
+                        charactersIgnoringModifiers:unmodified isARepeat:NO keyCode:code];
+                    if (type == NSEventTypeKeyDown) [responder keyDown:event];
+                    else [responder keyUp:event];
+                }
+            }
+        });
+    } @catch (NSException *) { return false; }
+      @finally { [responder release]; }
+    return true;
+}
+
+extern "C" bool felinaut_cef_release_container() {
+    if (!owns_application()) return false;
+    [container removeFromSuperview];
+    [container release];
+    container = nil;
+    [container_parent release];
+    container_parent = nil;
     return true;
 }
 

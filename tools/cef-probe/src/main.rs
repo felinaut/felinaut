@@ -1,3 +1,6 @@
+#[cfg(feature = "runtime")]
+mod runtime;
+
 use felinaut_cef_probe::{self as native, Mode};
 use gpui::{prelude::*, *};
 use std::{cell::Cell, process::ExitCode, rc::Rc, time::Duration};
@@ -28,6 +31,17 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if mode == Mode::Cef {
+        #[cfg(feature = "runtime")]
+        return runtime::run();
+        #[cfg(not(feature = "runtime"))]
+        {
+            eprintln!(
+                "CEF runtime support was not built; prepare the SDK and build this probe with --features runtime"
+            );
+            return ExitCode::from(2);
+        }
+    }
     if mode == Mode::Pump {
         if !native::pump::self_test() {
             fail("Bounded native external-pump scheduler checks failed");

@@ -7,6 +7,7 @@ pub enum Mode {
     Lifecycle,
     ExistingApplication,
     Pump,
+    Cef,
 }
 
 impl Mode {
@@ -15,8 +16,9 @@ impl Mode {
             [argument] if argument == "--run-lifecycle" => Ok(Self::Lifecycle),
             [argument] if argument == "--check-existing-app" => Ok(Self::ExistingApplication),
             [argument] if argument == "--check-pump" => Ok(Self::Pump),
+            [argument] if argument == "--run-cef" => Ok(Self::Cef),
             _ => Err(
-                "Usage: felinaut-cef-probe --run-lifecycle | --check-existing-app | --check-pump",
+                "Usage: felinaut-cef-probe --run-lifecycle | --check-existing-app | --check-pump | --run-cef",
             ),
         }
     }
@@ -43,6 +45,7 @@ fn bootstrap_result(code: i32) -> Result<(), &'static str> {
         7 => Err("Could not register application subclass methods"),
         8 => Err("AppKit raised an exception creating the application singleton"),
         9 => Err("AppKit did not select the requested application subclass"),
+        10 => Err("Could not register CEF application protocol conformance"),
         _ => Err("Unknown native bootstrap failure"),
     }
 }
@@ -88,6 +91,7 @@ mod tests {
             ("--run-lifecycle", Mode::Lifecycle),
             ("--check-existing-app", Mode::ExistingApplication),
             ("--check-pump", Mode::Pump),
+            ("--run-cef", Mode::Cef),
         ] {
             assert_eq!(Mode::parse(&[argument.to_owned()]), Ok(expected));
         }

@@ -1,0 +1,111 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CEF probe loading</title>
+<style>
+    body {
+        margin: 0;
+        background: #f7f6ff;
+        color: #151b35;
+        font:
+            18px system-ui,
+            sans-serif;
+    }
+    h1 {
+        position: absolute;
+        left: 32px;
+        top: 20px;
+        margin: 0;
+        font-size: 28px;
+    }
+    p {
+        position: absolute;
+        left: 32px;
+        top: 66px;
+        margin: 0;
+    }
+    label {
+        position: absolute;
+        left: 32px;
+        top: 103px;
+    }
+    input {
+        position: absolute;
+        left: 32px;
+        top: 130px;
+        width: 290px;
+        height: 40px;
+        box-sizing: border-box;
+        padding: 6px;
+        font: 18px system-ui;
+        border: 2px solid #65759c;
+        border-radius: 8px;
+    }
+    button {
+        position: absolute;
+        left: 32px;
+        top: 200px;
+        width: 210px;
+        height: 40px;
+        border: 0;
+        border-radius: 8px;
+        background: #27375e;
+        color: white;
+        font: 18px system-ui;
+    }
+    output {
+        position: absolute;
+        left: 32px;
+        top: 270px;
+        right: 32px;
+    }
+    aside {
+        position: absolute;
+        left: 32px;
+        bottom: 24px;
+        color: #52617e;
+        font-size: 14px;
+    }
+</style>
+<h1>Real Chromium inside GPUI</h1>
+<p>Trusted local fixture · native input, JavaScript and resize checks</p>
+<label for="probe-input">Test input</label>
+<input id="probe-input" autocomplete="off" aria-label="Test input" />
+<button id="verify">Verify native input</button>
+<output id="result">Waiting for native text and pointer events…</output>
+<aside>
+    No accounts, remote assets, filesystem bridge or application commands.
+</aside>
+<script>
+    let verified = false;
+    const field = document.getElementById("probe-input");
+    document.addEventListener("pointerup", (event) => {
+        document.title =
+            document.activeElement === field
+                ? "CEF_PROBE:focus:input"
+                : "CEF_PROBE:pointer:" +
+                  event.target.tagName +
+                  ":" +
+                  event.clientY;
+    });
+    field.addEventListener("focus", () => {
+        document.title = "CEF_PROBE:focus:input";
+    });
+    field.addEventListener("input", () => {
+        document.title = "CEF_PROBE:typing:" + field.value.length;
+    });
+    document.getElementById("verify").addEventListener("click", (event) => {
+        verified = event.isTrusted && field.value === "Hello from Felinaut";
+        document.getElementById("result").textContent = verified
+            ? "Native input verified: " +
+              field.value +
+              " · trusted pointer event"
+            : "Native input check failed";
+        document.title =
+            "CEF_PROBE:input:" + event.isTrusted + ":" + field.value;
+    });
+    addEventListener("resize", () => {
+        if (verified) document.title = "CEF_PROBE:resized:" + innerWidth;
+    });
+    document.title = "CEF_PROBE:ready:" + innerWidth;
+</script>
