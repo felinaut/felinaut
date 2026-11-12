@@ -1,5 +1,8 @@
 //! The existing macOS adapter; no engine selection or alternate runtime is implied.
 
+#[path = "macos/runtime.rs"]
+mod runtime;
+
 use std::rc::Rc;
 
 use gpui::{Bounds, Pixels, Window};
@@ -18,6 +21,7 @@ pub fn backend_info() -> BackendInfo {
         runtime_version: wry::webview_version()
             .ok()
             .filter(|version| !version.is_empty()),
+        runtime_identity: runtime::identity(),
         capabilities: Capabilities {
             zoom: true,
             audio_control: true,

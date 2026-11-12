@@ -48,12 +48,37 @@ pub struct Capabilities {
     pub certificate_exceptions: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RuntimeSource {
+    SystemSharedCache,
+    ExternalFramework,
+    #[default]
+    Unverified,
+}
+
+impl RuntimeSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SystemSharedCache => "system-shared-cache",
+            Self::ExternalFramework => "external-framework",
+            Self::Unverified => "unverified",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeIdentity {
+    pub source: RuntimeSource,
+    pub image_uuid: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BackendInfo {
     pub id: &'static str,
     pub engine_family: &'static str,
     /// The runtime's own version, not Felinaut's or a user-agent-derived version.
     pub runtime_version: Option<String>,
+    pub runtime_identity: RuntimeIdentity,
     pub capabilities: Capabilities,
 }
 
@@ -64,6 +89,10 @@ impl BackendInfo {
             "backend": self.id,
             "engine_family": self.engine_family,
             "runtime_version": self.runtime_version,
+            "runtime_identity": {
+                "source": self.runtime_identity.source.label(),
+                "image_uuid": self.runtime_identity.image_uuid,
+            },
             "capabilities": {
                 "zoom": self.capabilities.zoom,
                 "audio_control": self.capabilities.audio_control,
@@ -159,6 +188,7 @@ mod tests {
                 id: "test-backend",
                 engine_family: "test-family",
                 runtime_version: None,
+                runtime_identity: RuntimeIdentity::default(),
                 capabilities: Capabilities::default(),
             }
         }
@@ -310,6 +340,8 @@ mod tests {
         assert_eq!(info["engine_family"], "test-family");
         assert!(info["runtime_version"].is_null());
         assert_eq!(info["capabilities"]["trusted_input"], false);
-        assert_eq!(info.as_object().unwrap().len(), 4);
+        assert_eq!(info["runtime_identity"]["source"], "unverified");
+        assert!(info["runtime_identity"]["image_uuid"].is_null());
+        assert_eq!(info.as_object().unwrap().len(), 5);
     }
 }
