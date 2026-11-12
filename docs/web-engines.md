@@ -75,6 +75,20 @@ A safe initial design would be **one engine per browser profile, selected at sta
 
 Supporting multiple backends simultaneously would multiply lifecycle, storage, failure, and test cases. It should solve a demonstrated need, not be added only because a dropdown is easy to draw.
 
+## Proposed experimental backend picker
+
+A small picker is useful for controlled comparisons **after two backends actually work on the same OS**. It does not itself make WPE available on macOS. Keep native WKWebView as the macOS default and treat WPE-on-macOS as a separately scoped feasibility prototype, not a prerequisite for the Linux/Windows ports.
+
+For the first implementation, use a simple experimental/developer setting with one backend per profile at startup:
+
+- Offer **Native WebKit** and, only when a validated runtime is available on that machine, **WPE WebKit (Experimental)**. An unavailable candidate can be shown disabled with a clear reason, never as a working choice. Do not infer availability from a platform label or library filename alone.
+- Require a restart or launch an isolated comparison profile. Do not hot-swap live pages, silently replay form submissions, transfer logins or share engine website-data directories.
+- Show the active backend, actual engine/runtime version and relevant build configuration in diagnostics so screenshots and measurements identify what ran. A failed requested backend must produce an explicit error, not silently fall back and invalidate the comparison.
+- Compare the same local pages on the same Mac, viewport/scale, browser build mode and artwork settings. Use separate equivalent clean profiles, distinguish cold/warm caches, repeat trials, and measure the whole process tree. Different engine versions/configurations remain a confounder to disclose.
+- Test availability detection, unavailable/missing runtime, saved selection/older files, initialization failure, restart behavior and profile separation. Native integration tests must prove that the chosen adapter really rendered and received input. Any actual picker UI needs the usual screenshots/video and keyboard/accessibility validation.
+
+This is planned comparison tooling, not an implemented preference or a promise that WPE can currently run inside Felinaut on macOS. It should follow a working, safely embedded WPE macOS prototype; initially a startup override can exercise the contract without designing a large settings UI.
+
 ## Recommended next step
 
 **Continue shipping native WebKit.** If the goal is a pinned WebKit version or custom texture-based composition, first scope an isolated WPE feasibility prototype. Gate any product work on rendering, input/IME, media, sandboxing, and packaging working on both Mac architectures.

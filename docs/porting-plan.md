@@ -65,6 +65,10 @@ The following are **engineering targets to validate**, not measured current resu
 
 Use offline/loopback fixtures for empty New Tab, many tabs, a long sidebar, typing/IME, scrolling content, local media and downloads. Keep build mode, engine configuration and workload comparable, run repeated trials, and report measurement variance. Cross-OS/engine differences are not a valid controlled benchmark of GTK itself. GTK-free remains a Linux integration goal, not proof of greater speed.
 
+### Experimental backend comparison, after feasibility
+
+Plan a [small backend picker](web-engines.md#proposed-experimental-backend-picker) for comparing available adapters on the same machine. Native WebKit versus WPE on macOS is a useful research goal, but first requires a working, safely embedded WPE macOS prototype. This optional investigation must not block the shared contract or Linux/Windows work. Start with a startup/developer selection, isolate website data, identify the actual engine version, and compare equivalent local workloads; no live page migration or pretend WPE option.
+
 ### Readiness rule
 
 A platform is not ready merely because it compiles, draws the mascot, or passes fake-adapter tests. Require native input/accessibility, safe engine integration, real UI evidence, compatible persistence, measured performance, usable packaging and an engine-security-update owner. Missing features must be visible in the capability matrix, never replaced with successful no-ops.

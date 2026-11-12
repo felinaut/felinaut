@@ -44,7 +44,7 @@ The existing [`src/engine.rs`](../src/engine.rs) resolves address-bar text; desp
 
 ## Profiles and engine selection
 
-The first safe policy remains one backend per browser profile, selected at startup. This is an initial product constraint, not a design assumption that the adapter API can support only one backend implementation.
+The first safe policy remains one backend per browser profile, selected at startup. This is an initial product constraint, not a design assumption that the adapter API can support only one backend implementation. A [small experimental backend picker](web-engines.md#proposed-experimental-backend-picker) can support same-machine comparisons once two adapters are validated on that OS; selection UI must report real runtime availability and must not imply WPE macOS support before a prototype proves it.
 
 - Separate website-data directories and native contexts by both backend and profile, and never open one engine's databases with another. No silent cookie export/import or cross-engine authentication sharing. Require exclusive writable-profile access or an explicitly supported engine concurrency model across processes; finish shutdown before reusing a context/directory.
 - Preserve existing macOS data paths and native-backend defaults. Define versioned, backward-compatible settings only when selection is implemented; validate unknown IDs, unavailable backends, malformed/older files, rollback and migrations.
