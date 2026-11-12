@@ -10,6 +10,8 @@ For a GTK-free Linux browser, investigate **GPUI + WPE WebKit** first. For Windo
 
 WPE's documented platform support does not include Windows or macOS. Choosing it for Linux would not replace the native engine on the other platforms.
 
+Keep the architecture open to additional engine families, including a separately investigated Gecko/Firefox backend. Follow the [portable engine-backend contract](engine-backends.md): host platform, engine family, and embedding backend are separate concepts. Do not bake WebKit/Wry objects or a permanent OS-to-engine mapping into shared state.
+
 ## What Zed uses for input
 
 Zed draws its own UI with GPUI and connects to native windowing and text-input services. Its text fields are not GTK entry widgets or native text-field controls.
@@ -53,6 +55,21 @@ The Linux prototype must prove that we can present the page inside GPUI's conten
 
 WebKitGTK through Wry remains an alternative Linux approach if integration simplicity matters more than avoiding GTK. It is not a hidden fallback in a build advertised as GTK-free. CEF would be a different investigation with its own substantial runtime/distribution burden; it should not be added merely to replace a widget toolkit.
 
+## Shared branch and platform-agent handoff
+
+`multiplatform` is the shared development/integration branch. It starts with planning documents only; production `main` and the macOS release workflow remain unchanged. Linux and Windows native work will be validated on the user's corresponding machines; a macOS-only result is not evidence that those ports work.
+
+- Create focused work branches from the latest `origin/multiplatform`, for example `port-macos-backend-boundary`, `port-linux-wpe-spike`, or `port-windows-webview2-spike`. Open integration PRs **against `multiplatform`**, not `main`, unless explicitly agreed otherwise. Do not overwrite or force-push the shared branch.
+- Coordinate a small shared page/event/capability contract first. Platform agents may explore isolated prototypes while it is reviewed, but must not independently introduce incompatible shared interfaces.
+- The macOS/core coordinator owns the initial shared boundary, existing native adapter extraction, portable browser models, and contract tests. The Linux agent owns its GPUI/WPE presentation/input investigation; the Windows agent owns its GPUI/WebView2 investigation. New module layout is to be agreed before edits, not implied to exist by this plan.
+- Coordinate edits to `Cargo.toml`, `Cargo.lock`, shared UI/state, the backend contract and CI before making them. The macOS/core coordinator approves shared-boundary/manifest/GPUI/CI changes after review with affected platform owners; record the responsible owner and agreed base commit in the handoff. If ownership is unclear, propose the shared change for review rather than landing it independently. GPUI baseline/accessibility upgrades are separate reviewed work; do not have each platform upgrade independently. Keep platform changes in disjoint adapters wherever possible.
+- Every handoff/PR records the source commit, OS/architecture, prerequisites, actual commands/results, supported capabilities, unresolved failures and next step. Attach clean-profile screenshots/video for UI changes. Keep prototype commits separate from production adapter refactors; do not merge an unsafe or nonfunctional stub merely to unblock compilation. Before integrating a platform adapter, bring it onto the agreed integrated core revision and rerun relevant checks on its native machine; isolated spikes against different contracts do not prove they compose.
+- Run relevant checks on each native machine. Existing release CI targets macOS and does not automatically validate these work branches; decide and add platform smoke CI in a focused follow-up rather than claiming coverage from the existing release job.
+
+### First macOS/core slice
+
+Preserve current behavior while establishing the seam other agents can target: review the control/accessibility baseline, specify the minimum page/event/capability contract, and then isolate the current WKWebView implementation behind it with model/conformance tests. Preserve macOS profile locations, queued callbacks, navigation policy, downloads, native input, and popup stacking. Do not implement WPE on macOS, change engines, or add a selector in this first slice. Publish the reviewed contract before Linux/Windows production adapters depend on it.
+
 ## Phased plan and acceptance gates
 
 ### 0. Audit control coverage and choose an accessibility baseline
@@ -86,7 +103,7 @@ Windows and Linux experiments can proceed independently once the shell works:
 
 ### 3. Extract only the platform boundaries the prototypes need
 
-- Keep browser state and the existing queued page-event model platform-neutral. Define a narrow page-backend contract for navigation, bounds/visibility, focus, history, scripts, load failures, zoom, and capabilities.
+- Keep browser state and the existing queued page-event model platform-neutral. Implement the reviewed [engine-backend contract](engine-backends.md) for navigation, bounds/visibility, focus, history, scripts, load failures, zoom, and capabilities. Do not expose native WebKit, WPE, COM, CEF, or future Gecko objects through shared models.
 - Put native view ownership, input injection, engine snapshots, downloads, and permission/TLS decisions in backend-specific adapters. Unsupported features must return explicit capabilities/errors rather than silently succeed.
 - Make dependencies target-specific: a WPE Linux build must not pull Wry's Linux WebKitGTK stack just because Windows/macOS still use Wry.
 - Add platform services for profile/download locations, open/reveal-file actions, menus, appearance/accessibility preferences, and automation transport. Existing macOS profile paths must remain unchanged; Linux XDG directories and Windows known folders require their own implementations and tests.
@@ -127,7 +144,7 @@ Keep engine integration tests opt-in, loopback-only, and independent of personal
 
 ## First implementation slice
 
-After agreeing on the desired platforms and GTK-free requirement, start with **the control/accessibility audit and a native Linux GPUI shell/control-gallery smoke test**, followed by a separate WPE-in-GPUI rendering prototype. In parallel, a Windows GPUI/WebView2 prototype can test the lower-custom-integration route once the control/framework baseline is established.
+Start the macOS/core slice above on this machine and publish the reviewed contract for the other agents. On the Linux box, start with **the control/accessibility audit and a native GPUI shell/control-gallery smoke test**, followed by a separate WPE-in-GPUI rendering prototype. On the Windows box, investigate GPUI/WebView2 once the control/framework baseline is established. Coordinate shared-file ownership and keep native platform claims tied to actual results.
 
 Do not begin with a user-facing engine picker, a GUI toolkit rewrite, a WPE macOS port, or a large browser-state refactor. The first question is whether the proposed platform/backend pairs can render, accept input, and remain safe—not how the selector should look.
 

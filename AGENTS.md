@@ -14,6 +14,16 @@ Felinaut is a small macOS browser: Rust edition 2024, GPUI 0.2.2 chrome, and Wry
 
 Keep integration-specific extraction in its integration module rather than adding site-specific branches to the browser host. Prefer pure model functions for state transitions so they can be tested independently of GPUI and WebKit.
 
+## Multiplatform development branch
+
+`multiplatform` is the development/integration branch for portable backends; shipped support remains macOS-only until native validation says otherwise. Read `docs/porting-plan.md`, `docs/engine-backends.md`, and `docs/gpui-controls.md` before portability work.
+
+- Branch focused platform tasks from the latest `origin/multiplatform` and target integration PRs there unless instructed otherwise. Never force-push or rewrite the shared branch. Split commits by logical change, including prototypes versus production refactors.
+- Agree on the shared page/event/capability contract and file ownership before parallel edits. Coordinate changes to Cargo manifests/locks, the GPUI baseline, shared browser state and CI; do not independently upgrade the same dependencies on each platform.
+- Keep GPUI chrome, host-platform services, engine family and embedding backend separate. Shared models must not depend on WKWebView, WPE, COM, CEF or future Gecko objects. Keep optional features explicit and return unsupported/error states rather than silent no-ops. See the contract for threading, queued callbacks, cancellation, profile isolation and security requirements.
+- Use target-specific dependencies and preserve the existing macOS behavior/data paths. WPE is a Linux investigation, not a portable Windows/macOS backend. Gecko/other engines require a maintained embedding API and separate feasibility/security/licensing review; do not add dependencies or promise compatibility just to reserve an abstraction.
+- Each platform agent reports its source commit, native OS/architecture, prerequisites, commands/results, capability gaps and clean-profile UI evidence. Run behavioral unit tests for every implemented feature and opt-in loopback native tests on the actual target machine. Cross-compilation, skipped tests, and another OS's passing build are not native validation.
+
 ## Tests are part of every feature
 
 **Add or update unit tests for every feature.** Bug fixes need a regression test that fails before the fix. Cover success, empty/error cases, invalid input, and relevant boundaries—not only the happy path. Do not replace behavioral tests with assertions that source code contains particular strings.

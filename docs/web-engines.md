@@ -17,6 +17,8 @@ For a staged Windows/Linux investigation that keeps GPUI, explains Zed's native 
 
 Both use WebKit and JavaScriptCore. This is **not WebKit versus Chromium/Blink**, and WPE is not a way to get Chrome's engine. Different WebKit releases, build options, networking/media implementations, and platform integrations can produce different behavior, but switching ports does not guarantee that a broken website will work.
 
+This comparison does not limit Felinaut's architecture to two backends. The [portable engine-backend contract](engine-backends.md) separates platform services, embedding APIs, and engine families so we can evaluate Chromium, Gecko (Firefox's engine), or other candidates independently. Mozilla's GeckoView targets Android; a desktop Gecko adapter remains an unproven feasibility project, not a dependency or supported option.
+
 ## Differences and advantages
 
 | Area                      | Native macOS WebKit: what we have                                                                                                                                                           | WPE WebKit: what an integration would involve                                                                                                                                                                        |
@@ -71,7 +73,7 @@ A safe initial design would be **one engine per browser profile, selected at sta
 - **Backward-compatible persistence:** keep existing native profiles intact. Test old/malformed settings and session files, unavailable backends, rollback, and cross-engine isolation before saving an engine preference.
 - **Honest feature labels:** expose the backend and engine version, document unsupported media/system features, and fail clearly if the requested backend cannot start.
 
-Supporting both engines simultaneously would multiply lifecycle, storage, failure, and test cases. It should solve a demonstrated need, not be added only because a dropdown is easy to draw.
+Supporting multiple backends simultaneously would multiply lifecycle, storage, failure, and test cases. It should solve a demonstrated need, not be added only because a dropdown is easy to draw.
 
 ## Recommended next step
 
