@@ -44,6 +44,7 @@ impl Drop for NativePage {
     fn drop(&mut self) {
         if let Some(key) = self.failure_key {
             FAILURES.with_borrow_mut(|pages| pages.remove(&key));
+            crate::downloads::native::detach(key);
         }
     }
 }
@@ -106,6 +107,10 @@ impl NativePage {
             .build_as_child(window)
             .map_err(|error| error.to_string())?;
         let failure_key = watch_failures(&webview, failure_sender);
+        {
+            use wry::WebViewExtMacOS;
+            crate::downloads::native::attach(&webview.webview(), failure_key.is_some());
+        }
 
         Ok(Self {
             webview,
@@ -138,6 +143,11 @@ impl NativePage {
             .with_url(url)
             .build_as_child(window)
             .map_err(|error| error.to_string())?;
+        {
+            // A page nobody sees must never save a file.
+            use wry::WebViewExtMacOS;
+            crate::downloads::native::attach(&webview.webview(), false);
+        }
         Ok(Self {
             webview,
             events,

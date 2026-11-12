@@ -45,8 +45,13 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSError",
     "NSGeometry",
     "NSProcessInfo",
+    # Downloads: the destination, the response's length and byte progress.
+    "NSProgress",
     "NSRange",
     "NSString",
+    "NSURL",
+    "NSURLRequest",
+    "NSURLResponse",
 ] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = [
     "std",
@@ -54,6 +59,9 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = [
     "objc2-app-kit",
     "WKWebView",
     "WKSnapshotConfiguration",
+    # Felinaut is its own download delegate, for progress and cancelling.
+    "WKDownload",
+    "WKDownloadDelegate",
 ] }
 
 [[test]]

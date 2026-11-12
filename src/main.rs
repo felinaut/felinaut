@@ -4,6 +4,8 @@ mod appearance;
 mod art;
 mod audio;
 mod brand;
+mod download_panel;
+mod downloads;
 mod engine;
 mod history;
 mod icons;
@@ -287,7 +289,8 @@ actions!(
         NextTab,
         PreviousTab,
         ReopenTab,
-        NewLiveFolder
+        NewLiveFolder,
+        ShowDownloads
     ]
 );
 
@@ -498,6 +501,7 @@ struct Browser {
     live_layout: RefCell<(usize, HashMap<String, usize>)>,
     /// The hovered live folder item's title and address, for the status bar.
     live_hover: Option<String>,
+    downloads: downloads::Downloads,
 }
 impl Browser {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -617,6 +621,11 @@ impl Browser {
                     eprintln!("Could not save browsing history: {error}");
                 }
                 this.save_session();
+                if let Some((path, contents)) = this.downloads.take_snapshot()
+                    && let Err(error) = history::write(&path, &contents)
+                {
+                    eprintln!("Could not save downloads: {error}");
+                }
             });
             true
         });
@@ -690,6 +699,7 @@ impl Browser {
             hovered_live: None,
             live_layout: RefCell::new((0, HashMap::new())),
             live_hover: None,
+            downloads: downloads::Downloads::load(downloads::default_path()),
         };
         // Restored tabs load lazily; only the active one (and its split partner) needs a page.
         browser.load_if_needed(active, window);
@@ -1635,6 +1645,18 @@ impl Browser {
         for url in finished {
             self.recheck_live(&url);
         }
+        for event in downloads::native::drain() {
+            changed |= self.downloads.apply(event, history::now());
+        }
+        if let Some((path, contents)) = self.downloads.snapshot_due(Instant::now()) {
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(error) = history::write(&path, &contents) {
+                        eprintln!("Could not save downloads: {error}");
+                    }
+                })
+                .detach();
+        }
         self.poll_live(window, cx);
         self.update_peek(window, cx);
         self.flush_history(cx);
@@ -1743,6 +1765,13 @@ impl Browser {
     }
     fn volume_controls(&mut self, _: &VolumeControls, window: &mut Window, cx: &mut Context<Self>) {
         open_volume(cx.weak_entity(), None, window, cx);
+    }
+    fn show_downloads(&mut self, _: &ShowDownloads, window: &mut Window, cx: &mut Context<Self>) {
+        let browser = cx.weak_entity();
+        // The list reads the browser as it draws, so open it after this update.
+        window.defer(cx, move |window, cx| {
+            download_panel::toggle(browser, window, cx)
+        });
     }
     fn activate_tab_id(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
@@ -3956,6 +3985,7 @@ impl Render for Browser {
             .on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::reopen_tab))
             .on_action(cx.listener(Self::new_live_folder))
+            .on_action(cx.listener(Self::show_downloads))
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(
@@ -4027,6 +4057,11 @@ impl Render for Browser {
                             } else {
                                 self.address.clone().into_any_element()
                             }))
+                            .child(download_panel::button(&self.downloads, p).on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.show_downloads(&ShowDownloads, window, cx)
+                                }),
+                            ))
                             .child(self.volume_button(p, cx))
                             .child(
                                 self.button("appearance", "◈ Theme ▾", p)
@@ -4147,6 +4182,7 @@ fn main() {
             KeyBinding::new("cmd-+", Zoom(1), None),
             KeyBinding::new("cmd--", Zoom(-1), None),
             KeyBinding::new("cmd-0", Zoom(0), None),
+            KeyBinding::new("cmd-shift-j", ShowDownloads, None),
         ]);
         cx.bind_keys(
             (1..=8).map(|n| KeyBinding::new(&format!("cmd-{n}"), ActivateTab(n - 1), None)),
@@ -4186,6 +4222,7 @@ fn main() {
                 // Menu items keep these working while the page has keyboard focus.
                 items: [
                     MenuItem::action("Toggle Sidebar", ToggleSidebar),
+                    MenuItem::action("Downloads", ShowDownloads),
                     MenuItem::separator(),
                     MenuItem::action("Show Next Tab", NextTab),
                     MenuItem::action("Show Previous Tab", PreviousTab),
