@@ -104,13 +104,16 @@ struct Fetch {
     page: NativePage,
     started: Instant,
     loaded: bool,
-    tries: u32,
+
     next_try: Instant,
     result: Arc<Mutex<Option<String>>>,
 }
-/// GitHub renders its list after the load finishes, so the extractor runs until it has.
-const FETCH_TRIES: u32 = 15;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Poll through loading/navigation up to the deadline, not a smaller attempt budget.
+fn live_refresh_can_poll(started: Instant, next_try: Instant, now: Instant) -> bool {
+    now.duration_since(started) < FETCH_TIMEOUT && now >= next_try
+}
 
 /// The system font with tabular figures, so counts that change keep their width.
 fn tabular_font(weight: FontWeight) -> Font {
@@ -745,12 +748,11 @@ impl Browser {
                 .and_then(|mut answer| answer.take());
             // An API answers a lapsed session with an error rather than a sign-in page.
             signed_out |= answer.as_deref() == Some(live::SIGNED_OUT);
-            let mut done = answer
-                .and_then(|json| live::parse_items(&json, integration.host))
-                .map(Ok);
-            if done.is_none() && fetch.loaded && fetch.tries < FETCH_TRIES && now >= fetch.next_try
+            let mut done = answer.and_then(|json| live::parse_refresh(&json, integration.host));
+            if done.is_none()
+                && fetch.loaded
+                && live_refresh_can_poll(fetch.started, fetch.next_try, now)
             {
-                fetch.tries += 1;
                 fetch.next_try = now + Duration::from_secs(1);
                 let result = fetch.result.clone();
                 let _ = fetch.page.evaluate(extractor, move |json| {
@@ -759,7 +761,7 @@ impl Browser {
                     }
                 });
             }
-            if done.is_none() && fetch.started.elapsed() > FETCH_TIMEOUT {
+            if done.is_none() && now.duration_since(fetch.started) >= FETCH_TIMEOUT {
                 done = Some(Err(format!(
                     "{} did not answer. Click to try again.",
                     integration.name
@@ -804,7 +806,7 @@ impl Browser {
                     page,
                     started: now,
                     loaded: false,
-                    tries: 0,
+
                     next_try: now,
                     result: Arc::new(Mutex::new(None)),
                 });
@@ -4034,7 +4036,31 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{drop_index, restore_tabs, session::SavedTab};
+    use super::{
+        FETCH_TIMEOUT, drop_index, live_refresh_can_poll, restore_tabs, session::SavedTab,
+    };
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn live_refresh_polls_through_navigation_until_its_deadline() {
+        let started = Instant::now();
+        let mut next = started;
+        // Loading/departing documents may consume polls without producing a list.
+        // A final page ready after the old 15-attempt cap must still be evaluated.
+        for second in 0..20 {
+            let now = started + Duration::from_secs(second);
+            assert!(live_refresh_can_poll(started, next, now));
+            next = now + Duration::from_secs(1);
+            assert!(!live_refresh_can_poll(started, next, now));
+        }
+        let deadline = started + FETCH_TIMEOUT;
+        assert!(!live_refresh_can_poll(started, started, deadline));
+        assert!(!live_refresh_can_poll(
+            started,
+            started,
+            deadline + Duration::from_secs(1)
+        ));
+    }
 
     fn saved(url: &str, pinned: bool, split: bool, active: bool) -> SavedTab {
         SavedTab {

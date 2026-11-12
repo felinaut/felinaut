@@ -48,8 +48,9 @@ pub type Integration = &'static Spec;
 /// The extractor is one JavaScript expression, run about once a second once the page has
 /// loaded, until it answers or 20 seconds pass. It returns:
 /// - `null` while the list is not there yet. It may navigate the page meanwhile, as
-///   `api!`'s hop does, and is run again on the next page.
+///   the Asana extractor does, and is run again on the next page.
 /// - `'signed-out'` when the site says the session is not signed in.
+/// - `{error: string}` for a refresh failure; cached items must be retained.
 /// - `[{title, url, updated, detail}]` otherwise. `url` must be on the spec's host, `updated`
 ///   is any text that changes when the item does, `detail` is shown in the status bar.
 #[derive(Debug, PartialEq)]
@@ -76,22 +77,6 @@ macro_rules! dom {
             ".filter(([a, row]) => !row.matches('", $skip, "') && !row.querySelector('", $skip, "'))",
             ".map(([a, row]) => ({ title: (a.innerText || a.textContent || '').trim(), url: a.href, ",
             "updated: ", $updated, ", detail: ", $detail, " })); })()"
-        )
-    };
-}
-
-/// An extractor for a JSON API page. Each part is a JavaScript function of the parsed body:
-/// `signed_out` says the session lapsed, `hop` may return a URL to load next (for an id the
-/// first page tells), `list` gives the items and `map` turns one into `{title, url, updated,
-/// detail}`.
-#[rustfmt::skip]
-macro_rules! api {
-    (signed_out: $signed_out:expr, hop: $hop:expr, list: $list:expr, map: $map:expr $(,)?) => {
-        concat!(
-            "(() => { let d; try { d = JSON.parse(document.body.innerText); } catch (e) { return null; } ",
-            "if ((", $signed_out, ")(d)) return 'signed-out'; ",
-            "const next = (", $hop, ")(d); if (next) { location.replace(next); return null; } ",
-            "return (", $list, ")(d).map(", $map, "); })()"
         )
     };
 }
@@ -289,6 +274,26 @@ impl LiveFolder {
 
 /// What an extractor returns, as JSON, when the site says the session is not signed in.
 pub const SIGNED_OUT: &str = "\"signed-out\"";
+
+/// A completed list or an explicit failure. `None` means the extractor is still loading.
+/// Error text is bounded and normalized like item titles; it is never logged.
+pub fn parse_refresh(json: &str, host: &str) -> Option<Result<Vec<Item>, String>> {
+    if json.len() > 1024 * 1024 {
+        return Some(Err(
+            "Live folder response was too large. Try refreshing again.".into(),
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    if value.is_object() && value.get("error").is_some() {
+        let error = clip(&value["error"]);
+        return Some(Err(if error.is_empty() {
+            "Live folder refresh failed. Try refreshing again.".into()
+        } else {
+            error
+        }));
+    }
+    parse_items(json, host).map(Ok)
+}
 
 /// Turns the extractor's JSON into items: web links on `host` only, each once, at most 50,
 /// titles trimmed to 200 characters. `None` while the page has not rendered its list.
@@ -716,6 +721,54 @@ mod tests {
         folder.sections.clear();
         assert!(!folder.has_enabled_sections() && !folder.checking());
         assert_eq!(folder.due(), None);
+    }
+
+    #[test]
+    fn refresh_failures_preserve_cached_items_and_success_clears_errors() {
+        let now = Instant::now();
+        let mut section = LiveFolder::new(&asana::SPEC).sections.remove(0);
+        section.items = vec![Item {
+            dismissed: Some("1".into()),
+            ..updated("https://app.asana.com/0/1/2", "1")
+        }];
+        let cached = section.items.clone();
+        for message in [
+            "Asana API request failed",
+            "Asana pagination limit exceeded",
+        ] {
+            let json = serde_json::json!({"error": message}).to_string();
+            let result = parse_refresh(&json, "app.asana.com").unwrap();
+            assert!(section.finish_refresh(result, now).is_empty());
+            assert_eq!(section.items, cached);
+            assert_eq!(section.error.as_deref(), Some(message));
+            assert_eq!(section.last, Some(now));
+        }
+        let gone = section.finish_refresh(parse_refresh("[]", "app.asana.com").unwrap(), now);
+        assert_eq!(gone, vec![cached[0].url.clone()]);
+        assert!(section.items.is_empty() && section.error.is_none());
+    }
+
+    #[test]
+    fn refresh_protocol_distinguishes_pending_empty_errors_and_authentication() {
+        for pending in ["null", "broken JSON", "{}", SIGNED_OUT] {
+            assert_eq!(parse_refresh(pending, "app.asana.com"), None);
+        }
+        assert_eq!(parse_refresh("[]", "app.asana.com"), Some(Ok(vec![])));
+        assert_eq!(
+            parse_refresh(r#"{"error":"  Asana\n  API failed  "}"#, "app.asana.com"),
+            Some(Err("Asana API failed".into()))
+        );
+        for invalid in [r#"{"error":null}"#, r#"{"error":{}}"#, r#"{"error":""}"#] {
+            assert!(parse_refresh(invalid, "app.asana.com").unwrap().is_err());
+        }
+        let long = serde_json::json!({"error": "x".repeat(1000)}).to_string();
+        let error = parse_refresh(&long, "app.asana.com").unwrap().unwrap_err();
+        assert_eq!(error.len(), MAX_TITLE);
+        assert!(
+            parse_refresh(&" ".repeat(1024 * 1024 + 1), "app.asana.com")
+                .unwrap()
+                .is_err()
+        );
     }
 
     #[test]

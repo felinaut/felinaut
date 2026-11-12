@@ -1,19 +1,21 @@
 //! Asana: your incomplete tasks, and those due within a week, from Asana's own API. It answers
 //! the web session's cookie on a top-level load, but its pages block `fetch`, so the hidden
-//! view loads `users/me` for the workspace and hops to the task list from there.
+//! view loads `users/me` for the first workspace and traverses at most eight task pages.
+//! The extractor emits no partial lists: errors use the host's `{error: string}` protocol.
+//! Transient `window.name` state is cleared on completion/error; nothing is persisted.
 
 use super::{Source, Spec};
 
 const ME: &str = "https://app.asana.com/api/1.0/users/me?opt_fields=workspaces";
 
-/// shortcut: only the first workspace; loop over `workspaces` if someone has several.
 macro_rules! tasks {
-    ($filter:literal) => {
-        api!(
-            signed_out: "d => d.errors",
-            hop: "d => location.pathname.endsWith('/users/me') && (d.data.workspaces || [])[0] ? '/api/1.0/tasks?assignee=me&completed_since=now&limit=100&opt_fields=name,permalink_url,modified_at,due_on,due_at,memberships.project.name&workspace=' + d.data.workspaces[0].gid : null",
-            list: concat!("d => (Array.isArray(d.data) ? d.data : [])", $filter),
-            map: "t => ({ title: t.name, url: t.permalink_url, updated: t.modified_at, detail: [(t.memberships || [])[0]?.project?.name, (t.due_at || t.due_on) && 'due ' + new Date(t.due_at || t.due_on + 'T12:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })].filter(Boolean).join(' · ') })",
+    ($list:literal) => {
+        concat!(
+            "(() => { return (",
+            include_str!("asana_extract.js"),
+            ")('",
+            $list,
+            "'); })()"
         )
     };
 }
@@ -33,15 +35,81 @@ pub static SPEC: Spec = Spec {
             label: "Due this week",
             url: ME,
             // Overdue too; soonest first.
-            extractor: tasks!(
-                ".filter(t => (t.due_at || t.due_on) && Date.parse(t.due_at || t.due_on) < Date.now() + 7 * 864e5).sort((a, b) => Date.parse(a.due_at || a.due_on) - Date.parse(b.due_at || b.due_on))"
-            ),
+            extractor: tasks!("due"),
         },
         Source {
             key: "mine",
             label: "My tasks",
             url: ME,
-            extractor: tasks!(""),
+            extractor: tasks!("mine"),
         },
     ],
 };
+
+#[cfg(test)]
+mod tests {
+    use super::SPEC;
+    use std::{
+        io::{Read, Write},
+        process::{Command, Stdio},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn offline_pagination_and_errors() {
+        // JXA uses the system JavaScriptCore, with mocked pages and no network or UI.
+        // All inputs are embedded fixtures; bound both the input and process lifetime.
+        let scripts: Vec<_> = SPEC.sources.iter().map(|source| source.extractor).collect();
+        let input = format!(
+            "({})({})",
+            include_str!("asana_fixtures.js"),
+            serde_json::to_string(&scripts).unwrap()
+        );
+        assert!(input.len() <= 256 * 1024);
+        let mut child = Command::new("/usr/bin/osascript")
+            .args(["-l", "JavaScript", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("offline fixtures require macOS /usr/bin/osascript");
+        let mut stdin = child.stdin.take().unwrap();
+        let writer = thread::spawn(move || stdin.write_all(input.as_bytes()));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = writer.join();
+                panic!("Asana offline fixtures exceeded 15 seconds");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        writer.join().unwrap().unwrap();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .take(8192)
+            .read_to_string(&mut stdout)
+            .unwrap();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .take(8192)
+            .read_to_string(&mut stderr)
+            .unwrap();
+        assert!(status.success(), "Asana fixture runner: {stderr}");
+        assert!(
+            stdout.trim().starts_with("Asana offline fixtures passed ("),
+            "unexpected fixture result: {stdout}; {stderr}"
+        );
+    }
+}
