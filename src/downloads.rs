@@ -417,7 +417,7 @@ pub fn source_host(url: &str) -> String {
 }
 
 /// Bidirectional controls can make `exe.pdf` read as `fdp.exe`.
-fn is_bidi_control(character: char) -> bool {
+pub fn is_bidi_control(character: char) -> bool {
     matches!(
         character,
         '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'

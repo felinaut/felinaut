@@ -3,11 +3,13 @@ mod agent;
 mod appearance;
 mod art;
 mod audio;
+mod auth_prompt;
 mod brand;
 mod download_panel;
 mod downloads;
 mod engine;
 mod history;
+mod http_auth;
 mod icons;
 mod input;
 mod live;
@@ -1565,6 +1567,8 @@ impl Browser {
             let Some(page) = tab.page.clone() else {
                 continue;
             };
+            let shown = index == self.active || Some(index) == visible_partner;
+            changed |= auth_prompt::sync(&page, shown && !tab.home, cx);
             for event in page.drain_events() {
                 changed = true;
                 match event {
@@ -3870,6 +3874,14 @@ impl Browser {
         let tab = &self.tabs[index];
         if tab.home {
             return self.home_page(cx);
+        }
+        // A server asks for a user name and a password: the prompt covers everything else.
+        if let Some(prompt) = tab
+            .page
+            .as_ref()
+            .and_then(|page| auth_prompt::view(page, cx))
+        {
+            return prompt.into_any_element();
         }
         // While loading after a failure: a blank page, not the old error or the old document.
         match &tab.load_failure {

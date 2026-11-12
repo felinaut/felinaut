@@ -44,6 +44,8 @@ impl Drop for NativePage {
     fn drop(&mut self) {
         if let Some(key) = self.failure_key {
             FAILURES.with_borrow_mut(|pages| pages.remove(&key));
+            // Cancels the sign-in questions of this page while its WKWebView is still alive.
+            crate::http_auth::close_page(key);
             crate::downloads::native::detach(key);
         }
     }
@@ -58,6 +60,9 @@ impl NativePage {
         let title_sender = sender.clone();
         let link_sender = sender.clone();
         let failure_sender = sender.clone();
+        // The address of the WKWebView, known only after the build.
+        let page_key = std::rc::Rc::new(std::cell::Cell::new(0));
+        let committed = page_key.clone();
         let mut builder = WebViewBuilder::new();
         if agent_enabled() {
             builder =
@@ -98,7 +103,12 @@ impl NativePage {
                 // Wry has no load-failure callback. Finished means an actual native finish,
                 // not a timeout or a failed provisional navigation.
                 let event = match event {
-                    PageLoadEvent::Started => Event::Started(url),
+                    PageLoadEvent::Started => {
+                        // Wry reports this at the commit. A sign-in question from before
+                        // belongs to the old document or to a load that was replaced.
+                        crate::http_auth::close_page(committed.get());
+                        Event::Started(url)
+                    }
                     PageLoadEvent::Finished => Event::Finished(url),
                 };
                 let _ = load_sender.send(event);
@@ -107,6 +117,7 @@ impl NativePage {
             .build_as_child(window)
             .map_err(|error| error.to_string())?;
         let failure_key = watch_failures(&webview, failure_sender);
+        page_key.set(failure_key.unwrap_or(0));
         {
             use wry::WebViewExtMacOS;
             crate::downloads::native::attach(&webview.webview(), failure_key.is_some());
@@ -154,6 +165,11 @@ impl NativePage {
             last_url: RefCell::new(String::new()),
             failure_key: None,
         })
+    }
+
+    /// The name of this page for `http_auth`. A hidden page has none.
+    pub fn key(&self) -> Option<usize> {
+        self.failure_key
     }
 
     #[cfg(test)]
@@ -540,13 +556,22 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     unsafe extern "C-unwind" fn challenge(
         _: *mut AnyObject,
         _: Sel,
-        _: *mut AnyObject,
+        webview: *mut AnyObject,
         challenge: *mut AnyObject,
         handler: *mut Handler,
     ) {
         // SAFETY: WebKit passes a live challenge and completion handler on the main thread,
         // and expects the handler to be called exactly once.
         let handler = unsafe { &*handler };
+        // A Basic or Digest challenge of a visible page waits for the user. `http_auth` copies
+        // the handler and calls it later, one time.
+        let key = webview as usize;
+        let visible = FAILURES.with_borrow(|pages| pages.contains_key(&key));
+        if let Some(challenge) = unsafe { challenge.as_ref() }
+            && crate::http_auth::intercept(visible, key, challenge, handler)
+        {
+            return;
+        }
         match unsafe { challenge.as_ref() }.and_then(accepted_credential) {
             // NSURLSessionAuthChallengeUseCredential
             Some(credential) => handler.call((0, Retained::as_ptr(&credential).cast_mut())),
@@ -591,6 +616,10 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
 
 /// Runs inside a WebKit callback, so it only queues an event for the UI.
 fn report_failure(key: usize, error: Option<&objc2_foundation::NSError>, provisional: bool) {
+    if provisional {
+        // The load ended, so nothing waits for an answer to its sign-in question.
+        crate::http_auth::close_page(key);
+    }
     let failure = error.filter(|_| provisional).and_then(|error| {
         let info = error.userInfo();
         let url = info
