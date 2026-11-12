@@ -14,26 +14,38 @@ Shared Felinaut experience
                          |
        engine-neutral page/event/capability contract
                          |
-     macOS adapter / Windows adapter / Linux adapter
-       WKWebView       WebView2       WPE investigation
+          per-tab backend + isolated backend/profile context
+                         |
+        WebKit           Chromium           Gecko
+   macOS: WKWebView         CEF        desktop feasibility gate
+   Linux: WPE study    native OS validation
+   Windows: unproven
 
 Host services are separate: paths, dialogs, menus, clipboard, OS preferences.
-Future Gecko/CEF/other adapters must satisfy the same reviewed contract.
+Adapters own runtime/process topology and native presentation/input.
 ```
 
-This is the target separation, not a description of completed refactoring. Do not force all engines into native-child-view assumptions or reduce their features to a silent lowest common denominator.
+This is the target separation, not a description of completed refactoring. The agreed product direction is **per-tab WebKit / Chromium through CEF / feasibility-gated Gecko**, not one engine selected globally at startup. New tabs inherit a default; switching a loaded tab recreates its page and reloads the URL, without migrating its live state or silently sharing logins. Only validated backends are selectable. See the [selection and profile contract](engine-backends.md#profiles-and-engine-selection).
+
+“Upstream WebKit on other platforms” requires a specific port: WPE is the Linux investigation, not a portable Cocoa runtime or validated Windows backend. CEF is the selected Chromium candidate; Gecko still requires a maintained desktop embedder. Do not force all engines into native-child-view assumptions or reduce their features to a silent lowest common denominator.
+
+### Build inclusion and expanded engine evaluation
+
+[Cargo engine features and the binary's manifest](engine-builds.md) now distinguish requested, implemented and runtime-ready backends. System/upstream Cocoa WebKit are the working feature combinations; unimplemented candidate requests fail explicitly. This does not implement per-tab selection. Keep optional SDK acquisition/build/package work out of feature-off configurations.
+
+Add **Servo, Ladybird and Ultralight** to the feasibility checks, without treating them as three promised production adapters. The [macOS experimental-engine report](macos-experimental-engines.md) maps their actual APIs and blockers; the [CEF/Gecko report](macos-cef-gecko.md) maps lifecycle and desktop embedding constraints. Prioritize the CEF/GPUI lifecycle spike, then Servo's trusted-local embedding experiment with its arm64 sandbox gap explicit. Ladybird needs a frontend/Hub boundary; Ultralight needs licensing/security/accessibility review. No SDK/source build was performed for these candidates during research.
 
 ### Milestones, owners, and completion criteria
 
-| Milestone                                | Owner                                                                | Deliverable and completion gate                                                                                                                                                                                                                                                                        |
-| ---------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **M0 — Capture the baseline**            | macOS/core, with platform agents recording their environments        | Clean-profile captures of all six themes and representative controls; repeatable macOS performance measurements; agreed control/capability matrix. Record hardware, OS, display scale/refresh, engine/build version, workloads and commands. No performance advantage is assumed.                      |
-| **M1 — Prove the control foundation**    | Core/control work coordinated across platforms                       | Reviewed GPUI/accessibility baseline and a gallery of actual buttons, address input, choices, slider, lists and popovers. Keyboard, IME, focus and semantic accessibility gaps are known and have an implementation path. A dependency update is its own change, not mixed into an engine port.        |
-| **M2 — Establish the portable seam**     | macOS/core                                                           | A small shared page/event/capability contract with behavioral tests; current WKWebView implementation isolated behind it without changing macOS behavior/data. Agree the contract revision before production platform adapters depend on it.                                                           |
-| **M3 — Prove each native backend**       | Windows and Linux agents on their own machines; core maintains macOS | Windows: GPUI + WebView2 inside the actual browser window. Linux: GPUI + integrated WPE presentation/input on Wayland first, X11 separately verified. Prototypes demonstrate focus, composition, resize, media/runtime prerequisites, lifecycle and safe failure—not just a separate engine window.    |
-| **M4 — Reach a coherent browser**        | Each platform owner with shared-model review                         | Navigation/errors, tabs/pins/splits, history, live folders, audio, downloads, persistence and available native services work against the agreed capability matrix. Unsupported operations are explicit; profiles remain isolated. Re-run shared tests and native conformance checks after integration. |
-| **M5 — Pass the beauty and speed gates** | Core design/performance review plus each native owner                | The visual and performance checklist below passes on an integrated build; popup layering, input, accessibility and real web content are validated together. Review actual captures and measured data rather than approving from source alone.                                                          |
-| **M6 — Package experimental builds**     | Platform owners; release changes coordinated by core                 | Native package/install/update-prerequisite checks, sandbox/security review, licensed dependencies, documented limitations, UI evidence and smoke CI. Publish an OS only after its own gates pass; continue the existing macOS release guarantees.                                                      |
+| Milestone                                | Owner                                                                | Deliverable and completion gate                                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **M0 — Capture the baseline**            | macOS/core, with platform agents recording their environments        | Clean-profile captures of all six themes and representative controls; repeatable macOS performance measurements; agreed control/capability matrix. Record hardware, OS, display scale/refresh, engine/build version, workloads and commands. No performance advantage is assumed.                                                                   |
+| **M1 — Prove the control foundation**    | Core/control work coordinated across platforms                       | Reviewed GPUI/accessibility baseline and a gallery of actual buttons, address input, choices, slider, lists and popovers. Keyboard, IME, focus and semantic accessibility gaps are known and have an implementation path. A dependency update is its own change, not mixed into an engine port.                                                     |
+| **M2 — Establish the portable seam**     | macOS/core                                                           | A small shared page/event/capability contract with behavioral tests; current WKWebView implementation isolated behind it without changing macOS behavior/data. Agree the contract revision before production platform adapters depend on it.                                                                                                        |
+| **M3 — Prove each native backend**       | Windows and Linux agents on their own machines; core maintains macOS | macOS: prove CEF coexistence with WKWebView. Windows: GPUI + CEF inside the actual browser window. Linux: GPUI + integrated WPE presentation/input on Wayland first, X11 and CEF separately verified. Prototypes demonstrate focus, composition, resize, media/runtime prerequisites, lifecycle and safe failure—not just a separate engine window. |
+| **M4 — Reach a coherent browser**        | Each platform owner with shared-model review                         | Navigation/errors, tabs/pins/splits, history, live folders, audio, downloads, persistence and available native services work against the agreed capability matrix. Unsupported operations are explicit; profiles remain isolated. Re-run shared tests and native conformance checks after integration.                                              |
+| **M5 — Pass the beauty and speed gates** | Core design/performance review plus each native owner                | The visual and performance checklist below passes on an integrated build; popup layering, input, accessibility and real web content are validated together. Review actual captures and measured data rather than approving from source alone.                                                                                                       |
+| **M6 — Package experimental builds**     | Platform owners; release changes coordinated by core                 | Native package/install/update-prerequisite checks, sandbox/security review, licensed dependencies, documented limitations, UI evidence and smoke CI. Publish an OS only after its own gates pass; continue the existing macOS release guarantees.                                                                                                   |
 
 Platform agents can explore M1/M3 in parallel while core establishes M2. The dependency is on an agreed contract and framework baseline, not on waiting for every other platform to finish. No calendar estimate is committed until the native prototypes expose their actual blockers.
 
@@ -67,7 +79,9 @@ Use offline/loopback fixtures for empty New Tab, many tabs, a long sidebar, typi
 
 ### Experimental backend comparison, after feasibility
 
-Plan a [small backend picker](web-engines.md#proposed-experimental-backend-picker) for comparing available adapters on the same machine. Native WebKit versus WPE on macOS is a useful research goal, but first requires a working, safely embedded WPE macOS prototype. This optional investigation must not block the shared contract or Linux/Windows work. Start with a startup/developer selection, isolate website data, identify the actual engine version, and compare equivalent local workloads; no live page migration or pretend WPE option.
+Plan a [per-tab backend picker](web-engines.md#proposed-experimental-backend-picker) after system WebKit and CEF are proven together on this Mac. Validate native page presentation, event loops, input/focus, profiles and helper shutdown before exposing a choice. Compare equivalent local workloads and report each tab's actual runtime. Switching is a URL reload, not live page migration; handle unsaved work, POST requests, continuing downloads and stale callbacks explicitly. WPE-on-macOS remains an optional unresolved investigation, not a prerequisite for this product direction or Linux/Windows work.
+
+A [system/upstream Cocoa WebKit developer comparison](macos-webkit-comparison.md) now passes functional smoke in the current `multiplatform` working implementation on macOS 27 arm64. It uses a native picker and separate temporary processes/profiles, not WPE, a production engine preference, live switching or a performance benchmark. The WPE feasibility gate above remains unresolved.
 
 ### Readiness rule
 
@@ -79,7 +93,7 @@ A platform is not ready merely because it compiles, draws the mascot, or passes 
 
 Keep **GPUI** for browser chrome and input. Port Felinaut's platform-specific integrations, not Zed's entire editor or a new GUI toolkit.
 
-For a GTK-free Linux browser, investigate **GPUI + WPE WebKit** first. For Windows, investigate **GPUI + Wry/WebView2**. Keep **GPUI + Wry/WKWebView** on macOS. These are proposed platform defaults, not two interchangeable engine choices on every OS.
+For a GTK-free Linux WebKit adapter, investigate **GPUI + WPE WebKit** first. Keep **GPUI + Wry/WKWebView** on macOS and prove **CEF** as the additional Chromium adapter, also targeted for Windows/Linux native investigation. Wry/WebView2 remains an optional Windows baseline, not the selected CEF implementation. Available per-tab choices depend on validated adapters on each OS; no promise of all three engines everywhere.
 
 WPE's documented platform support does not include Windows or macOS. Choosing it for Linux would not replace the native engine on the other platforms.
 
@@ -119,22 +133,22 @@ The Linux prototype must prove that we can present the page inside GPUI's conten
 
 ## Proposed platform matrix
 
-| Platform        | Chrome/input                    | Proposed web backend                               | Main investigation                                                                                                                  |
-| --------------- | ------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| macOS           | Existing GPUI platform support. | Existing Wry + system `WKWebView`.                 | Preserve behavior and existing profiles while isolating native adapters.                                                            |
-| Windows         | GPUI Win32 support.             | Wry + WebView2.                                    | Embed/focus the webview, handle runtime availability, and implement Windows browser services. This uses Chromium/Blink, not WebKit. |
-| Linux / Wayland | GPUI Wayland support.           | Experimental WPE adapter.                          | Shared presentation and event-loop integration, page input/IME, media, and sandboxed distribution without GTK.                      |
-| Linux / X11     | GPUI X11 support.               | Evaluate the same WPE adapter after Wayland proof. | Confirm the chosen buffer/presentation design works on X11; do not assume it follows automatically from GPUI support.               |
+| Platform        | Chrome/input                    | Proposed web backend                               | Main investigation                                                                                                                          |
+| --------------- | ------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS           | Existing GPUI platform support. | Existing Wry + system `WKWebView`.                 | Preserve behavior and existing profiles while isolating native adapters.                                                                    |
+| Windows         | GPUI Win32 support.             | CEF investigation.                                 | Embed/focus Chromium through CEF, validate helpers/runtime deployment and implement Windows browser services. WebKit remains unproven here. |
+| Linux / Wayland | GPUI Wayland support.           | Experimental WPE adapter.                          | Shared presentation and event-loop integration, page input/IME, media, and sandboxed distribution without GTK.                              |
+| Linux / X11     | GPUI X11 support.               | Evaluate the same WPE adapter after Wayland proof. | Confirm the chosen buffer/presentation design works on X11; do not assume it follows automatically from GPUI support.                       |
 
-WebKitGTK through Wry remains an alternative Linux approach if integration simplicity matters more than avoiding GTK. It is not a hidden fallback in a build advertised as GTK-free. CEF would be a different investigation with its own substantial runtime/distribution burden; it should not be added merely to replace a widget toolkit.
+WebKitGTK through Wry remains an alternative Linux approach if integration simplicity matters more than avoiding GTK. It is not a hidden fallback in a build advertised as GTK-free. CEF is the selected additional Chromium candidate, not a widget-toolkit replacement; its native dependencies and substantial runtime/distribution burden require their own review, including any GTK-free claim.
 
 ## Shared branch and platform-agent handoff
 
 `multiplatform` is the shared development/integration branch. It starts with planning documents only; production `main` and the macOS release workflow remain unchanged. Linux and Windows native work will be validated on the user's corresponding machines; a macOS-only result is not evidence that those ports work.
 
-- Create focused work branches from the latest `origin/multiplatform`, for example `port-macos-backend-boundary`, `port-linux-wpe-spike`, or `port-windows-webview2-spike`. Open integration PRs **against `multiplatform`**, not `main`, unless explicitly agreed otherwise. Do not overwrite or force-push the shared branch.
+- Create focused work branches from the latest `origin/multiplatform`, for example `port-macos-backend-boundary`, `port-linux-wpe-spike`, or `port-windows-cef-spike`. Open integration PRs **against `multiplatform`**, not `main`, unless explicitly agreed otherwise. Do not overwrite or force-push the shared branch.
 - Coordinate a small shared page/event/capability contract first. Platform agents may explore isolated prototypes while it is reviewed, but must not independently introduce incompatible shared interfaces.
-- The macOS/core coordinator owns the initial shared boundary, existing native adapter extraction, portable browser models, and contract tests. The Linux agent owns its GPUI/WPE presentation/input investigation; the Windows agent owns its GPUI/WebView2 investigation. New module layout is to be agreed before edits, not implied to exist by this plan.
+- The macOS/core coordinator owns the initial shared boundary, existing native adapter extraction, portable browser models, and contract tests. The Linux agent owns its GPUI/WPE presentation/input investigation; the Windows agent owns its GPUI/CEF investigation. Coordinate CEF runtime/adapter decisions with macOS/core and Linux rather than selecting incompatible baselines independently. New module layout is to be agreed before edits, not implied to exist by this plan.
 - Coordinate edits to `Cargo.toml`, `Cargo.lock`, shared UI/state, the backend contract and CI before making them. The macOS/core coordinator approves shared-boundary/manifest/GPUI/CI changes after review with affected platform owners; record the responsible owner and agreed base commit in the handoff. If ownership is unclear, propose the shared change for review rather than landing it independently. GPUI baseline/accessibility upgrades are separate reviewed work; do not have each platform upgrade independently. Keep platform changes in disjoint adapters wherever possible.
 - Every handoff/PR records the source commit, OS/architecture, prerequisites, actual commands/results, supported capabilities, unresolved failures and next step. Attach clean-profile screenshots/video for UI changes. Keep prototype commits separate from production adapter refactors; do not merge an unsafe or nonfunctional stub merely to unblock compilation. Before integrating a platform adapter, bring it onto the agreed integrated core revision and rerun relevant checks on its native machine; isolated spikes against different contracts do not prove they compose.
 - Run relevant checks on each native machine. Existing release CI targets macOS and does not automatically validate these work branches; decide and add platform smoke CI in a focused follow-up rather than claiming coverage from the existing release job.
@@ -168,7 +182,8 @@ Use the [GPUI control inventory](gpui-controls.md) to distinguish core primitive
 
 Windows and Linux experiments can proceed independently once the shell works:
 
-- **Windows:** display a loopback page in Wry/WebView2 inside the GPUI window. Exercise focus handoff, browser shortcuts, typing, resize/HiDPI, popovers, popup requests, and a clean shutdown. Detect a missing WebView2 runtime explicitly.
+- **macOS:** prove a CEF page coexisting with `WKWebView` in GPUI, including main-thread/event-loop integration, native view stacking/input, sandboxed helpers, resize and shutdown. Do not substitute loading a second Cocoa WebKit build in the same process.
+- **Windows:** display a loopback page through CEF inside the GPUI window. Exercise focus handoff, browser shortcuts, typing, resize/HiDPI, popovers, popup requests, and a clean shutdown. Detect missing/incompatible runtime files explicitly.
 - **Linux:** pin a released WPE version and prove a page rendered inside GPUI, not in an unrelated toplevel. Coordinate the GLib/WPE and GPUI event loops without blocking rendering or re-entering GPUI callbacks. Exercise text input, scrolling, resize, tab visibility, and renderer crash/shutdown behavior. Keep engine subprocess isolation enabled.
 - Record dependencies, actual graphics-buffer paths, copy costs, desktop prerequisites, and available sandboxing. Prove operation without GTK libraries for the intended GTK-free configuration.
 
@@ -204,7 +219,7 @@ Test:
 
 - Compare the same local workloads and comparable engine versions/build configurations where possible. Track UI input-to-frame latency, page scrolling, startup, idle CPU, all engine-process memory, frame copies, media playback, and power. Report backend/platform differences instead of attributing every change to GTK.
 - Add native CI jobs and package checks only for targets we can build and validate. Preserve the current macOS architecture/signing gates. New engine libraries/helpers need exact architecture, runtime-dependency, license, and signature checks appropriate to their platform.
-- Validate WPE subprocess sandboxing and patch/update distribution. Validate WebView2 runtime deployment/update expectations separately. No engine switch may weaken the native message interface or navigation rules.
+- Validate WPE and CEF subprocess sandboxing and patch/update distribution. If a WebView2 alternative is pursued, validate its runtime deployment/update expectations separately. No engine switch may weaken the native message interface or navigation rules.
 - Publish clearly labeled experimental Windows/Linux artifacts only after the corresponding gates pass, with installation prerequisites and known limitations. Keep macOS-only claims until real builds have been validated.
 
 **Gate:** reproducible packages, a security-update owner/process, native smoke tests, and real UI screenshots/videos for the PR/release documentation. Do not choose a new default based on an unmeasured claim that a toolkit is faster.
@@ -217,7 +232,7 @@ Keep engine integration tests opt-in, loopback-only, and independent of personal
 
 ## First implementation slice
 
-Start the macOS/core slice above on this machine and publish the reviewed contract for the other agents. On the Linux box, start with **the control/accessibility audit and a native GPUI shell/control-gallery smoke test**, followed by a separate WPE-in-GPUI rendering prototype. On the Windows box, investigate GPUI/WebView2 once the control/framework baseline is established. Coordinate shared-file ownership and keep native platform claims tied to actual results.
+Start the macOS/core slice above on this machine and publish the reviewed contract for the other agents. On the Linux box, start with **the control/accessibility audit and a native GPUI shell/control-gallery smoke test**, followed by a separate WPE-in-GPUI rendering prototype. On this Mac, next prove CEF alongside system WKWebView before implementing per-tab selection. On the Windows box, investigate GPUI/CEF once the control/framework baseline is established. Coordinate shared-file ownership and keep native platform claims tied to actual results.
 
 Do not begin with a user-facing engine picker, a GUI toolkit rewrite, a WPE macOS port, or a large browser-state refactor. The first question is whether the proposed platform/backend pairs can render, accept input, and remain safe—not how the selector should look.
 

@@ -47,7 +47,7 @@ The first build downloads dependencies from crates.io. The new-tab page contains
 
 Build-time engine inclusion is now explicit. The default is `engine-webkit-system`; use `--no-default-features` to replace it, or add `--features engine-webkit-upstream` for both Cocoa comparison choices. `./target/debug/felinaut --list-engines` reports this binary's build without opening a profile or window. The picker disables excluded choices.
 
-See [engine build configurations](docs/engine-builds.md). These additional engines are **not integrated**: their `engine-*` requests fail with explicit adapter-not-implemented errors, never a silent WebKit fallback. Per-tab mixed-engine selection remains planned.
+See [engine build configurations](docs/engine-builds.md), the [CEF/Gecko macOS evaluation](docs/macos-cef-gecko.md), and the [Servo/Ladybird/Ultralight evaluation](docs/macos-experimental-engines.md). These additional engines are **not integrated**: their `engine-*` requests fail with explicit adapter-not-implemented errors, never a silent WebKit fallback. Per-tab mixed-engine selection remains planned.
 
 ### Developer comparison: system and upstream Cocoa WebKit
 

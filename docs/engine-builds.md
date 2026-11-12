@@ -73,8 +73,8 @@ This outputs JSON (`schema_version: 1`) before profile/window initialization. Ea
 
 ## macOS evaluation and next implementation gates
 
-- CEF and Gecko source/API investigation (next research checkpoint): CEF is the next broad-compatibility candidate; first prove its application class, event pump, view ownership, sandboxed helpers and shutdown with GPUI 0.2.2. Gecko lacks an established maintained desktop SDK for this app.
-- Servo, Ladybird and Ultralight source/API investigation (next research checkpoint): concrete entry points, pins, licenses, input/presentation requirements and security blockers. These reports do not claim that an SDK was downloaded or an alternate page ran here.
+- [CEF and Gecko source/API investigation](macos-cef-gecko.md): CEF is the next broad-compatibility candidate; first prove its application class, event pump, view ownership, sandboxed helpers and shutdown with GPUI 0.2.2. Gecko lacks an established maintained desktop SDK for this app.
+- [Servo, Ladybird and Ultralight source/API investigation](macos-experimental-engines.md): concrete entry points, pins, licenses, input/presentation requirements and security blockers. These reports do not claim that an SDK was downloaded or an alternate page ran here.
 - Servo is the next independent open-source embedding experiment after the CEF lifecycle spike, scoped to trusted loopback content until the inspected arm64 sandbox gap is resolved. Ladybird needs a frontend/Hub boundary investigation. Ultralight is a trusted-UI experiment only after license review, not a safe arbitrary-site backend by default.
 
 For each implemented adapter, replace its explicit unsupported gate only with real adapter/context construction, target-specific optional dependencies, runtime checks, behavioral tests and native loopback evidence. Do not turn `adapter_implemented` on to make an empty feature build green.

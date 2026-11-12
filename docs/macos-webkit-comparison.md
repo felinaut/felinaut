@@ -1,6 +1,6 @@
 # macOS system/upstream Cocoa WebKit comparison
 
-**Status, 12 November 2026:** real Felinaut functional smoke **PASS for both runtimes** with the uncommitted implementation based on `ac9f00c` on `multiplatform`. This is trusted-local developer tooling, not a shipped engine preference, WPE integration, performance benchmark or distributable engine bundle. Normal browser launches and the installed app remain unchanged.
+**Status, 12 November 2026:** real Felinaut functional smoke **PASS for both runtimes** with the implementation now committed on `multiplatform`: `c725750` (identity), `fa0fd6a` (build/isolation policy), and `acff4cd` (launcher). The exact launcher checkpoint was rebuilt and its two-runtime smoke revalidated before pushing. This is trusted-local developer tooling, not a shipped engine preference, WPE integration, performance benchmark or distributable engine bundle. Normal browser launches and the installed app remain unchanged.
 
 ## Recorded environment and runtime identity
 

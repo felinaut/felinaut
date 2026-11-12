@@ -1,6 +1,6 @@
 # Web engines: native WebKit and WPE WebKit
 
-**Status:** feasibility notes, not an implemented feature or platform-support promise. Reviewed against the sources below on 12 November 2026. Felinaut currently ships **only native macOS WebKit**, embedded with Wry 0.57.1.
+**Status:** WPE feasibility notes, not a platform-support promise. Reviewed against the sources below on 12 November 2026. Felinaut currently ships **only native macOS WebKit**, embedded with Wry 0.57.1. The `multiplatform` working implementation also has a [local system/upstream Cocoa WebKit comparison](macos-webkit-comparison.md); that is not WPE or a production engine setting.
 
 ## Short answer
 
@@ -46,9 +46,9 @@ Tools/Scripts/build-webkit --release
 Tools/Scripts/run-minibrowser --release
 ```
 
-These commands have **not** been run for this investigation. No WebKit checkout or alternate engine runtime has been added to Felinaut. Upstream also documents `run-webkit-app` for launching an app against development framework builds; that is a development mechanism, not a validated production bundling solution.
+A full WebKit source build was **not** attempted: this Mac had about 15 GiB available. Instead, manually prepared products from upstream's official Cocoa build archive `326536@main` are available locally under `target/engine-comparison/upstream/Release`; they are not bundled with Felinaut. The [runnable comparison guide](macos-webkit-comparison.md) records the archive pin, reference digest, prerequisites and limits. Upstream's `run-webkit-app` is also a development mechanism, not a validated production bundling solution.
 
-A useful separate experiment would first prove a pinned Cocoa WebKit build in MiniBrowser, then investigate an isolated Felinaut launch against it, verifying the framework actually loaded through runtime diagnostics. Prefer separate launches/profiles for different framework builds, not loading two versions into one running process. Do not replace system frameworks or disable system protections. Helper processes, framework loading, sandboxing, signing, licenses and security updates still need review before redistribution.
+The committed Cocoa comparison (`c725750`, `fa0fd6a` and `acff4cd` on `multiplatform`) has passed a real Felinaut functional smoke against **both system and upstream Cocoa WebKit** on macOS 27 arm64. A native picker or CLI starts separate processes with temporary homes and nonpersistent per-view stores. Runtime checks identify the mapped image supplying `WKWebView` by source and UUID and reject an unverified or mismatched selection; they do not establish WebCore, JavaScriptCore or helper provenance or audit sandboxing. The archive's development/ad-hoc signing and framework layout are not release-ready. No system framework, signature or security setting is changed.
 
 **System WebKit versus a separately built Cocoa WebKit tests revisions/configurations of the native port. It is not native WebKit versus WPE**, and should not be labeled as such in a picker or benchmark. Preserve WPE-on-macOS as its own unresolved feasibility investigation.
 
@@ -84,11 +84,11 @@ If a prototype succeeds, introduce a narrow backend adapter for the operations w
 
 ## What engine selection should mean for a user
 
-A safe initial design would be **one engine per browser profile, selected at startup**, with native WebKit as the default. This is a proposed design, not an existing setting.
+The agreed target is **per-tab selection in one window**: WebKit through the appropriate platform adapter, Chromium through CEF, and Gecko only after its desktop embedding feasibility gate passes. Keep system WebKit as the macOS default. A new-tab default and per-tab “reopen with” action are planned, not implemented settings. See the [backend contract](engine-backends.md#agreed-target-per-tab-engine-families).
 
 - **Separate website data:** cookies, local storage, IndexedDB, caches, service workers, and permissions belong to their engine/profile. The same account may need a fresh sign-in. Do not share database directories or silently copy session cookies. Our current native WebKit storage is app-managed; using Apple's engine does not mean sharing Safari's logged-in sessions.
 - **No invisible engine fallback:** a switch should be explicit. Do not replay form submissions or quietly retry a failed TLS/authentication request in another engine.
-- **No live-document transfer:** changing engines cannot preserve a running page's DOM, JavaScript heap, native history, or in-flight operations. Require a restart initially. A later per-tab “reopen with” feature would reload the page and need unsaved-work/download handling.
+- **No live-document transfer:** changing engines creates a new backend page and reloads the URL, without migrating DOM, JavaScript heaps, form contents or native history. The goal is no application restart for validated coexisting backends. Handle unsaved work, non-idempotent navigation and active downloads explicitly; keep the original page available if replacement initialization fails. The two Cocoa runtime builds still require separate host processes.
 - **Backward-compatible persistence:** keep existing native profiles intact. Test old/malformed settings and session files, unavailable backends, rollback, and cross-engine isolation before saving an engine preference.
 - **Honest feature labels:** expose the backend and engine version, document unsupported media/system features, and fail clearly if the requested backend cannot start.
 
@@ -96,23 +96,25 @@ Supporting multiple backends simultaneously would multiply lifecycle, storage, f
 
 ## Proposed experimental backend picker
 
-A small picker is useful for controlled comparisons **after two backends actually work on the same OS**. It does not itself make WPE available on macOS. Keep native WKWebView as the macOS default and treat WPE-on-macOS as a separately scoped feasibility prototype, not a prerequisite for the Linux/Windows ports.
+The [Cocoa comparison launcher](macos-webkit-comparison.md) now offers a native developer picker for **System WebKit**, **Upstream Cocoa WebKit**, or both in separate processes. This compares revisions/configurations of the same Cocoa backend, not two embedding backends, and saves no production preference.
 
-For the first implementation, use a simple experimental/developer setting with one backend per profile at startup:
+A broader backend picker is useful for controlled comparisons **after two backends actually work on the same OS**. It does not itself make WPE available on macOS. Keep native WKWebView as the macOS default and treat WPE-on-macOS as a separately scoped feasibility prototype, not a prerequisite for the Linux/Windows ports.
 
-- Offer **Native WebKit** and, only when a validated runtime is available on that machine, **WPE WebKit (Experimental)**. An unavailable candidate can be shown disabled with a clear reason, never as a working choice. Do not infer availability from a platform label or library filename alone.
-- Require a restart or launch an isolated comparison profile. Do not hot-swap live pages, silently replay form submissions, transfer logins or share engine website-data directories.
+For the next product prototype, prove system `WKWebView` and CEF coexisting in the actual GPUI window on macOS, then implement per-tab selection behind a developer gate:
+
+- Offer **WebKit** and **Chromium (CEF)** only when each adapter/runtime has passed native availability and integration checks. WPE is the Linux WebKit investigation; Gecko remains feasibility-gated. Unavailable choices must be disabled with a clear reason, never presented as working. Do not infer availability from a platform label or library filename alone.
+- A per-tab switch recreates the page and reloads its URL, without restarting the window or changing other tabs. Do not migrate live documents, silently replay form submissions, transfer logins or share engine website-data directories. Retain backend/profile ownership for downloads and background pages.
 - Show the active backend, actual engine/runtime version and relevant build configuration in diagnostics so screenshots and measurements identify what ran. A failed requested backend must produce an explicit error, not silently fall back and invalidate the comparison.
 - Compare the same local pages on the same Mac, viewport/scale, browser build mode and artwork settings. Use separate equivalent clean profiles, distinguish cold/warm caches, repeat trials, and measure the whole process tree. Different engine versions/configurations remain a confounder to disclose.
-- Test availability detection, unavailable/missing runtime, saved selection/older files, initialization failure, restart behavior and profile separation. Native integration tests must prove that the chosen adapter really rendered and received input. Any actual picker UI needs the usual screenshots/video and keyboard/accessibility validation.
+- Test availability detection, unavailable/missing runtime, saved per-tab selection/older files, initialization and switching failure, mixed-backend event routing, context shutdown and profile separation. Native integration tests must prove that the chosen adapter really rendered and received input. Any actual picker UI needs the usual screenshots/video and keyboard/accessibility validation.
 
-This is planned comparison tooling, not an implemented preference or a promise that WPE can currently run inside Felinaut on macOS. It should follow a working, safely embedded WPE macOS prototype; initially a startup override can exercise the contract without designing a large settings UI.
+This per-tab picker is planned, not implemented. It does not require or promise WPE on macOS. The available system/upstream Cocoa developer launcher remains separate-process tooling; it does not establish CEF coexistence or cross-process page embedding.
 
 ## Recommended next step
 
-**Continue shipping native WebKit.** If the goal is a pinned WebKit version or custom texture-based composition, first scope an isolated WPE feasibility prototype. Gate any product work on rendering, input/IME, media, sandboxing, and packaging working on both Mac architectures.
+**Continue shipping system WebKit while proving a CEF adapter on macOS.** First demonstrate a real loopback page inside GPUI alongside `WKWebView`, with correct event-loop integration, native input/IME, resize/focus, sandboxed helpers and shutdown. Then add tested per-tab replacement and persistence. CEF adds a substantial runtime, licensing/packaging and security-update responsibility; adding a dependency alone is not an engine integration.
 
-If the goal is instead “a different engine when WebKit cannot run a website,” evaluate a genuinely different engine family, such as Chromium through CEF, separately. That would also be a substantial integration and security-maintenance commitment, not a recommendation to add a dependency now.
+For a pinned Cocoa WebKit revision, retain the trusted-local [Cocoa comparison](macos-webkit-comparison.md) as developer research, not a redistribution solution or prerequisite for CEF. Continue WPE as the Linux integration investigation. Investigate Gecko's maintained desktop embedding path before promising a third working engine.
 
 Any future backend feature needs unit tests for selection, capabilities, persistence, failure handling, and profile isolation; offline extractor fixtures for each supported backend; and opt-in native tests using loopback pages and clean profiles. Compare identical builds/pages for memory, startup, rendering latency, media, and power before claiming a performance advantage.
 

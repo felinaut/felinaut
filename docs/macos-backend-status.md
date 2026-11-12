@@ -4,7 +4,7 @@
 
 ## Current Cocoa comparison progress
 
-Recorded on **12 November 2026** with the **uncommitted implementation based on `ac9f00c` on `multiplatform`**, on **macOS 27.0 (26A428), arm64, Xcode 27.0 (27A266a)**:
+Recorded on **12 November 2026**, on **macOS 27.0 (26A428), arm64, Xcode 27.0 (27A266a)**. Implementation checkpoints on `multiplatform` are **`c725750`** (mapped runtime identity), **`fa0fd6a`** (build gates and isolated startup), and **`acff4cd`** (build-aware launcher/picker). Initial native evidence was gathered from the working tree based on `ac9f00c`; the committed checkpoints were then revalidated in a separate checkout.
 
 | Requested runtime | Reported WebKit version | Mapped `WKWebView` image source | Image UUID                             |
 | ----------------- | ----------------------- | ------------------------------- | -------------------------------------- |
@@ -17,7 +17,7 @@ Current validation passed: browser and packaging-launcher formatter/Clippy check
 
 All three opt-in native harnesses (`native_webview`, `native_audio`, `brand_ui`) actually ran and printed `PASS`, including a rerun with both Cocoa features enabled; the webview harness emitted two sandbox-extension file warnings without failing its behavioral checks. `python3 scripts/smoke_macos_backend.py --run` also passed through normal system-runtime startup, and a fresh `python3 scripts/compare_macos_webkit.py --engine both --smoke --capture` passed both isolated runtimes. The native picker was displayed/captured against the actual system-only and combined build manifests in bounded checks, then its processes were stopped; button selection was not automated. The historical counts below describe only the earlier boundary work.
 
-[Engine build configurations](engine-builds.md) document feature combinations, the profile-free `--list-engines` manifest and disabled picker choices. Normal startup now rejects unverified runtime provenance before loading profiles; missing dyld evidence is an explicit compatibility failure, not a silent external-runtime downgrade. Mixed-engine per-tab selection remains unimplemented.
+[Engine build configurations](engine-builds.md) document feature combinations, the profile-free `--list-engines` manifest and disabled picker choices. Normal startup now rejects unverified runtime provenance before loading profiles; missing dyld evidence is an explicit compatibility failure, not a silent external-runtime downgrade. Mixed-engine per-tab selection remains unimplemented. The exact `acff4cd` checkout also passed all 255 Python tests and a rebuilt two-runtime smoke with window captures before publication.
 
 Clean captures of the actual rebuilt comparison windows:
 
