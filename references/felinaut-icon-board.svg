@@ -1,0 +1,505 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200">
+  <title>Felinaut icon board — conceptual reference</title>
+  <desc>Original vector design reference, not an actual browser screenshot. Canonical astronaut-cat assets and all six current theme palettes. Current static compositions and future personality concepts are labeled separately.</desc>
+  <rect x="0" y="0" width="1600" height="1200" rx="0" fill="#F6F3EF" />
+  <text x="64" y="45" fill="#222942" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="14" font-weight="400" text-anchor="start">FELINAUT  /  FIELD NOTES 04</text>
+  <text x="1536" y="45" fill="#586179" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">CONCEPTUAL REFERENCE · NOT A PRODUCT SCREENSHOT</text>
+  <path d="M64 65H1536" fill="none" stroke="#D9D6E3" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+  <text x="64" y="126" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="45" font-weight="700" text-anchor="start">A recognizable helmet. Useful controls.</text>
+  <text x="64" y="157" fill="#586179" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="17" font-weight="400" text-anchor="start">Canonical full-color identity at optical sizes; existing monochrome UI icons keep their functional meaning.</text>
+  <rect x="64" y="184" width="462" height="419" rx="20" fill="#FFFFFF" stroke="#D9D6E3" />
+  <text x="91" y="226" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="24" font-weight="700" text-anchor="start">Application tile · concept</text>
+  <rect x="170" y="250" width="244" height="244" rx="54" fill="#0B1026" />
+  <svg width="176" height="176" viewBox="0 0 64 64" fill="none" x="204" y="279" data-source="assets/felinaut-symbol.svg">
+    <title>Felinaut astronaut cat symbol</title>
+    <desc>Felinaut, the happy female orange-and-cream explorer cat, has pointed ears and joyful crescent eyes inside a round cyan astronaut helmet. One open smile and a tiny tongue keep her face welcoming. A white and lavender rim and compact neck seal preserve the silhouette at small sizes. Original vector artwork on transparency.</desc>
+    <defs>
+      <linearGradient id="icon-001-rim" x1="17" y1="7" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFFFFF" />
+        <stop offset="1" stop-color="#C5B6E9" />
+      </linearGradient>
+      <linearGradient id="icon-001-glass" x1="22" y1="9" x2="42" y2="51" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#CEFAFF" />
+        <stop offset="1" stop-color="#55C7D6" />
+      </linearGradient>
+      <linearGradient id="icon-001-fur" x1="25" y1="18" x2="39" y2="47" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFBF71" />
+        <stop offset="1" stop-color="#F3944F" />
+      </linearGradient>
+    </defs>
+    <path d="M21 51H43L45 59C39 63 25 63 19 59Z" fill="#B5A1DD" stroke="#383353" stroke-width="2" stroke-linejoin="round" />
+    <path d="M23 56H41" stroke="#F8F5FF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="32" cy="29" r="26" fill="url(#icon-001-rim)" stroke="#383353" stroke-width="2.5" />
+    <circle cx="32" cy="29" r="22" fill="url(#icon-001-glass)" stroke="#438DA0" stroke-width="1.5" />
+    <path d="M16 27C14 22 14 15 17 12C22 13 26 17 28 21C30 20 34 20 36 21C39 16 43 13 47 12C50 18 49 24 47 28C51 34 50 40 46 44C42 48 37 49 32 49C25 49 20 47 16 43C12 39 12 32 16 27Z" fill="url(#icon-001-fur)" stroke="#79503B" stroke-width="1.8" stroke-linejoin="round" />
+    <path d="M18 17L24 24L18 26ZM45 17L39 24L46 26Z" fill="#E89592" />
+    <path d="M29 22L30 27M35 22L34 27" stroke="#D27A42" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M17 37C21 33 26 36 32 36C38 36 43 33 47 37C46 44 40 47 32 47C24 47 18 44 17 37Z" fill="#FFF0D1" />
+    <path d="M20 32C22 28 26 28 28 32M36 32C38 28 42 28 44 32" stroke="#493B42" stroke-width="2.8" stroke-linecap="round" />
+    <path d="M29 35Q32 33 35 35L32 38Z" fill="#93544D" />
+    <path d="M26 39Q32 43 38 39Q36 46 32 45Q28 45 26 39Z" fill="#593D49" />
+    <path d="M29 43Q32 41 35 43Q32 47 29 43Z" fill="#F5A7AC" />
+    <path d="M16 37L21 38M43 38L48 37" stroke="#BD815E" stroke-width="1.5" stroke-linecap="round" />
+    <path d="M15 22C17 16 22 11 28 10" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="7" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+    <circle cx="57" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+  </svg>
+  <circle cx="199" cy="280" r="3" fill="#FFB45E" />
+  <circle cx="390" cy="461" r="2" fill="#78D9EF" />
+  <text x="91" y="542" fill="#586179" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="start">Soft deep-space tile, not a new character.</text>
+  <text x="91" y="569" fill="#586179" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="start">An illustration study, not a shipped .icns export.</text>
+  <rect x="550" y="184" width="400" height="419" rx="20" fill="#EAE5F4" />
+  <text x="578" y="226" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="23" font-weight="700" text-anchor="start">Keep the silhouette open</text>
+  <rect x="631" y="269" width="238" height="238" rx="0" fill="#F8F6FD" stroke="#A294C3" stroke-dasharray="5 5" />
+  <svg width="200" height="200" viewBox="0 0 64 64" fill="none" x="650" y="288" data-source="assets/felinaut-symbol.svg">
+    <title>Felinaut astronaut cat symbol</title>
+    <desc>Felinaut, the happy female orange-and-cream explorer cat, has pointed ears and joyful crescent eyes inside a round cyan astronaut helmet. One open smile and a tiny tongue keep her face welcoming. A white and lavender rim and compact neck seal preserve the silhouette at small sizes. Original vector artwork on transparency.</desc>
+    <defs>
+      <linearGradient id="icon-002-rim" x1="17" y1="7" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFFFFF" />
+        <stop offset="1" stop-color="#C5B6E9" />
+      </linearGradient>
+      <linearGradient id="icon-002-glass" x1="22" y1="9" x2="42" y2="51" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#CEFAFF" />
+        <stop offset="1" stop-color="#55C7D6" />
+      </linearGradient>
+      <linearGradient id="icon-002-fur" x1="25" y1="18" x2="39" y2="47" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFBF71" />
+        <stop offset="1" stop-color="#F3944F" />
+      </linearGradient>
+    </defs>
+    <path d="M21 51H43L45 59C39 63 25 63 19 59Z" fill="#B5A1DD" stroke="#383353" stroke-width="2" stroke-linejoin="round" />
+    <path d="M23 56H41" stroke="#F8F5FF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="32" cy="29" r="26" fill="url(#icon-002-rim)" stroke="#383353" stroke-width="2.5" />
+    <circle cx="32" cy="29" r="22" fill="url(#icon-002-glass)" stroke="#438DA0" stroke-width="1.5" />
+    <path d="M16 27C14 22 14 15 17 12C22 13 26 17 28 21C30 20 34 20 36 21C39 16 43 13 47 12C50 18 49 24 47 28C51 34 50 40 46 44C42 48 37 49 32 49C25 49 20 47 16 43C12 39 12 32 16 27Z" fill="url(#icon-002-fur)" stroke="#79503B" stroke-width="1.8" stroke-linejoin="round" />
+    <path d="M18 17L24 24L18 26ZM45 17L39 24L46 26Z" fill="#E89592" />
+    <path d="M29 22L30 27M35 22L34 27" stroke="#D27A42" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M17 37C21 33 26 36 32 36C38 36 43 33 47 37C46 44 40 47 32 47C24 47 18 44 17 37Z" fill="#FFF0D1" />
+    <path d="M20 32C22 28 26 28 28 32M36 32C38 28 42 28 44 32" stroke="#493B42" stroke-width="2.8" stroke-linecap="round" />
+    <path d="M29 35Q32 33 35 35L32 38Z" fill="#93544D" />
+    <path d="M26 39Q32 43 38 39Q36 46 32 45Q28 45 26 39Z" fill="#593D49" />
+    <path d="M29 43Q32 41 35 43Q32 47 29 43Z" fill="#F5A7AC" />
+    <path d="M16 37L21 38M43 38L48 37" stroke="#BD815E" stroke-width="1.5" stroke-linecap="round" />
+    <path d="M15 22C17 16 22 11 28 10" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="7" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+    <circle cx="57" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+  </svg>
+  <text x="578" y="542" fill="#586179" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="start">Visible ears · round visor · one smile</text>
+  <text x="578" y="569" fill="#586179" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="start">No tiny suit or yarn scene in the symbol.</text>
+  <rect x="974" y="184" width="562" height="419" rx="20" fill="#FFFFFF" stroke="#D9D6E3" />
+  <text x="1002" y="226" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="24" font-weight="700" text-anchor="start">Actual optical sizes</text>
+  <rect x="1000" y="251" width="510" height="115" rx="12" fill="#F6F3EF" />
+  <svg width="16" height="16" viewBox="0 0 64 64" fill="none" x="1052.0" y="287.0" data-source="assets/felinaut-symbol.svg">
+    <title>Felinaut astronaut cat symbol</title>
+    <desc>Felinaut, the happy female orange-and-cream explorer cat, has pointed ears and joyful crescent eyes inside a round cyan astronaut helmet. One open smile and a tiny tongue keep her face welcoming. A white and lavender rim and compact neck seal preserve the silhouette at small sizes. Original vector artwork on transparency.</desc>
+    <defs>
+      <linearGradient id="icon-003-rim" x1="17" y1="7" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFFFFF" />
+        <stop offset="1" stop-color="#C5B6E9" />
+      </linearGradient>
+      <linearGradient id="icon-003-glass" x1="22" y1="9" x2="42" y2="51" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#CEFAFF" />
+        <stop offset="1" stop-color="#55C7D6" />
+      </linearGradient>
+      <linearGradient id="icon-003-fur" x1="25" y1="18" x2="39" y2="47" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFBF71" />
+        <stop offset="1" stop-color="#F3944F" />
+      </linearGradient>
+    </defs>
+    <path d="M21 51H43L45 59C39 63 25 63 19 59Z" fill="#B5A1DD" stroke="#383353" stroke-width="2" stroke-linejoin="round" />
+    <path d="M23 56H41" stroke="#F8F5FF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="32" cy="29" r="26" fill="url(#icon-003-rim)" stroke="#383353" stroke-width="2.5" />
+    <circle cx="32" cy="29" r="22" fill="url(#icon-003-glass)" stroke="#438DA0" stroke-width="1.5" />
+    <path d="M16 27C14 22 14 15 17 12C22 13 26 17 28 21C30 20 34 20 36 21C39 16 43 13 47 12C50 18 49 24 47 28C51 34 50 40 46 44C42 48 37 49 32 49C25 49 20 47 16 43C12 39 12 32 16 27Z" fill="url(#icon-003-fur)" stroke="#79503B" stroke-width="1.8" stroke-linejoin="round" />
+    <path d="M18 17L24 24L18 26ZM45 17L39 24L46 26Z" fill="#E89592" />
+    <path d="M29 22L30 27M35 22L34 27" stroke="#D27A42" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M17 37C21 33 26 36 32 36C38 36 43 33 47 37C46 44 40 47 32 47C24 47 18 44 17 37Z" fill="#FFF0D1" />
+    <path d="M20 32C22 28 26 28 28 32M36 32C38 28 42 28 44 32" stroke="#493B42" stroke-width="2.8" stroke-linecap="round" />
+    <path d="M29 35Q32 33 35 35L32 38Z" fill="#93544D" />
+    <path d="M26 39Q32 43 38 39Q36 46 32 45Q28 45 26 39Z" fill="#593D49" />
+    <path d="M29 43Q32 41 35 43Q32 47 29 43Z" fill="#F5A7AC" />
+    <path d="M16 37L21 38M43 38L48 37" stroke="#BD815E" stroke-width="1.5" stroke-linecap="round" />
+    <path d="M15 22C17 16 22 11 28 10" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="7" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+    <circle cx="57" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+  </svg>
+  <text x="1060" y="350" fill="#222942" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="13" font-weight="400" text-anchor="middle">16 px</text>
+  <svg width="24" height="24" viewBox="0 0 64 64" fill="none" x="1171.0" y="283.0" data-source="assets/felinaut-symbol.svg">
+    <title>Felinaut astronaut cat symbol</title>
+    <desc>Felinaut, the happy female orange-and-cream explorer cat, has pointed ears and joyful crescent eyes inside a round cyan astronaut helmet. One open smile and a tiny tongue keep her face welcoming. A white and lavender rim and compact neck seal preserve the silhouette at small sizes. Original vector artwork on transparency.</desc>
+    <defs>
+      <linearGradient id="icon-004-rim" x1="17" y1="7" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFFFFF" />
+        <stop offset="1" stop-color="#C5B6E9" />
+      </linearGradient>
+      <linearGradient id="icon-004-glass" x1="22" y1="9" x2="42" y2="51" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#CEFAFF" />
+        <stop offset="1" stop-color="#55C7D6" />
+      </linearGradient>
+      <linearGradient id="icon-004-fur" x1="25" y1="18" x2="39" y2="47" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFBF71" />
+        <stop offset="1" stop-color="#F3944F" />
+      </linearGradient>
+    </defs>
+    <path d="M21 51H43L45 59C39 63 25 63 19 59Z" fill="#B5A1DD" stroke="#383353" stroke-width="2" stroke-linejoin="round" />
+    <path d="M23 56H41" stroke="#F8F5FF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="32" cy="29" r="26" fill="url(#icon-004-rim)" stroke="#383353" stroke-width="2.5" />
+    <circle cx="32" cy="29" r="22" fill="url(#icon-004-glass)" stroke="#438DA0" stroke-width="1.5" />
+    <path d="M16 27C14 22 14 15 17 12C22 13 26 17 28 21C30 20 34 20 36 21C39 16 43 13 47 12C50 18 49 24 47 28C51 34 50 40 46 44C42 48 37 49 32 49C25 49 20 47 16 43C12 39 12 32 16 27Z" fill="url(#icon-004-fur)" stroke="#79503B" stroke-width="1.8" stroke-linejoin="round" />
+    <path d="M18 17L24 24L18 26ZM45 17L39 24L46 26Z" fill="#E89592" />
+    <path d="M29 22L30 27M35 22L34 27" stroke="#D27A42" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M17 37C21 33 26 36 32 36C38 36 43 33 47 37C46 44 40 47 32 47C24 47 18 44 17 37Z" fill="#FFF0D1" />
+    <path d="M20 32C22 28 26 28 28 32M36 32C38 28 42 28 44 32" stroke="#493B42" stroke-width="2.8" stroke-linecap="round" />
+    <path d="M29 35Q32 33 35 35L32 38Z" fill="#93544D" />
+    <path d="M26 39Q32 43 38 39Q36 46 32 45Q28 45 26 39Z" fill="#593D49" />
+    <path d="M29 43Q32 41 35 43Q32 47 29 43Z" fill="#F5A7AC" />
+    <path d="M16 37L21 38M43 38L48 37" stroke="#BD815E" stroke-width="1.5" stroke-linecap="round" />
+    <path d="M15 22C17 16 22 11 28 10" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="7" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+    <circle cx="57" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+  </svg>
+  <text x="1183" y="350" fill="#222942" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="13" font-weight="400" text-anchor="middle">24 px</text>
+  <svg width="32" height="32" viewBox="0 0 64 64" fill="none" x="1290.0" y="279.0" data-source="assets/felinaut-symbol.svg">
+    <title>Felinaut astronaut cat symbol</title>
+    <desc>Felinaut, the happy female orange-and-cream explorer cat, has pointed ears and joyful crescent eyes inside a round cyan astronaut helmet. One open smile and a tiny tongue keep her face welcoming. A white and lavender rim and compact neck seal preserve the silhouette at small sizes. Original vector artwork on transparency.</desc>
+    <defs>
+      <linearGradient id="icon-005-rim" x1="17" y1="7" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFFFFF" />
+        <stop offset="1" stop-color="#C5B6E9" />
+      </linearGradient>
+      <linearGradient id="icon-005-glass" x1="22" y1="9" x2="42" y2="51" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#CEFAFF" />
+        <stop offset="1" stop-color="#55C7D6" />
+      </linearGradient>
+      <linearGradient id="icon-005-fur" x1="25" y1="18" x2="39" y2="47" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFBF71" />
+        <stop offset="1" stop-color="#F3944F" />
+      </linearGradient>
+    </defs>
+    <path d="M21 51H43L45 59C39 63 25 63 19 59Z" fill="#B5A1DD" stroke="#383353" stroke-width="2" stroke-linejoin="round" />
+    <path d="M23 56H41" stroke="#F8F5FF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="32" cy="29" r="26" fill="url(#icon-005-rim)" stroke="#383353" stroke-width="2.5" />
+    <circle cx="32" cy="29" r="22" fill="url(#icon-005-glass)" stroke="#438DA0" stroke-width="1.5" />
+    <path d="M16 27C14 22 14 15 17 12C22 13 26 17 28 21C30 20 34 20 36 21C39 16 43 13 47 12C50 18 49 24 47 28C51 34 50 40 46 44C42 48 37 49 32 49C25 49 20 47 16 43C12 39 12 32 16 27Z" fill="url(#icon-005-fur)" stroke="#79503B" stroke-width="1.8" stroke-linejoin="round" />
+    <path d="M18 17L24 24L18 26ZM45 17L39 24L46 26Z" fill="#E89592" />
+    <path d="M29 22L30 27M35 22L34 27" stroke="#D27A42" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M17 37C21 33 26 36 32 36C38 36 43 33 47 37C46 44 40 47 32 47C24 47 18 44 17 37Z" fill="#FFF0D1" />
+    <path d="M20 32C22 28 26 28 28 32M36 32C38 28 42 28 44 32" stroke="#493B42" stroke-width="2.8" stroke-linecap="round" />
+    <path d="M29 35Q32 33 35 35L32 38Z" fill="#93544D" />
+    <path d="M26 39Q32 43 38 39Q36 46 32 45Q28 45 26 39Z" fill="#593D49" />
+    <path d="M29 43Q32 41 35 43Q32 47 29 43Z" fill="#F5A7AC" />
+    <path d="M16 37L21 38M43 38L48 37" stroke="#BD815E" stroke-width="1.5" stroke-linecap="round" />
+    <path d="M15 22C17 16 22 11 28 10" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="7" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+    <circle cx="57" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+  </svg>
+  <text x="1306" y="350" fill="#222942" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="13" font-weight="400" text-anchor="middle">32 px</text>
+  <svg width="64" height="64" viewBox="0 0 64 64" fill="none" x="1397.0" y="263.0" data-source="assets/felinaut-symbol.svg">
+    <title>Felinaut astronaut cat symbol</title>
+    <desc>Felinaut, the happy female orange-and-cream explorer cat, has pointed ears and joyful crescent eyes inside a round cyan astronaut helmet. One open smile and a tiny tongue keep her face welcoming. A white and lavender rim and compact neck seal preserve the silhouette at small sizes. Original vector artwork on transparency.</desc>
+    <defs>
+      <linearGradient id="icon-006-rim" x1="17" y1="7" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFFFFF" />
+        <stop offset="1" stop-color="#C5B6E9" />
+      </linearGradient>
+      <linearGradient id="icon-006-glass" x1="22" y1="9" x2="42" y2="51" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#CEFAFF" />
+        <stop offset="1" stop-color="#55C7D6" />
+      </linearGradient>
+      <linearGradient id="icon-006-fur" x1="25" y1="18" x2="39" y2="47" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFBF71" />
+        <stop offset="1" stop-color="#F3944F" />
+      </linearGradient>
+    </defs>
+    <path d="M21 51H43L45 59C39 63 25 63 19 59Z" fill="#B5A1DD" stroke="#383353" stroke-width="2" stroke-linejoin="round" />
+    <path d="M23 56H41" stroke="#F8F5FF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="32" cy="29" r="26" fill="url(#icon-006-rim)" stroke="#383353" stroke-width="2.5" />
+    <circle cx="32" cy="29" r="22" fill="url(#icon-006-glass)" stroke="#438DA0" stroke-width="1.5" />
+    <path d="M16 27C14 22 14 15 17 12C22 13 26 17 28 21C30 20 34 20 36 21C39 16 43 13 47 12C50 18 49 24 47 28C51 34 50 40 46 44C42 48 37 49 32 49C25 49 20 47 16 43C12 39 12 32 16 27Z" fill="url(#icon-006-fur)" stroke="#79503B" stroke-width="1.8" stroke-linejoin="round" />
+    <path d="M18 17L24 24L18 26ZM45 17L39 24L46 26Z" fill="#E89592" />
+    <path d="M29 22L30 27M35 22L34 27" stroke="#D27A42" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M17 37C21 33 26 36 32 36C38 36 43 33 47 37C46 44 40 47 32 47C24 47 18 44 17 37Z" fill="#FFF0D1" />
+    <path d="M20 32C22 28 26 28 28 32M36 32C38 28 42 28 44 32" stroke="#493B42" stroke-width="2.8" stroke-linecap="round" />
+    <path d="M29 35Q32 33 35 35L32 38Z" fill="#93544D" />
+    <path d="M26 39Q32 43 38 39Q36 46 32 45Q28 45 26 39Z" fill="#593D49" />
+    <path d="M29 43Q32 41 35 43Q32 47 29 43Z" fill="#F5A7AC" />
+    <path d="M16 37L21 38M43 38L48 37" stroke="#BD815E" stroke-width="1.5" stroke-linecap="round" />
+    <path d="M15 22C17 16 22 11 28 10" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="7" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+    <circle cx="57" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+  </svg>
+  <text x="1429" y="350" fill="#222942" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="13" font-weight="400" text-anchor="middle">64 px</text>
+  <rect x="1000" y="380" width="510" height="115" rx="12" fill="#0B1026" />
+  <svg width="16" height="16" viewBox="0 0 64 64" fill="none" x="1052.0" y="416.0" data-source="assets/felinaut-symbol.svg">
+    <title>Felinaut astronaut cat symbol</title>
+    <desc>Felinaut, the happy female orange-and-cream explorer cat, has pointed ears and joyful crescent eyes inside a round cyan astronaut helmet. One open smile and a tiny tongue keep her face welcoming. A white and lavender rim and compact neck seal preserve the silhouette at small sizes. Original vector artwork on transparency.</desc>
+    <defs>
+      <linearGradient id="icon-007-rim" x1="17" y1="7" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFFFFF" />
+        <stop offset="1" stop-color="#C5B6E9" />
+      </linearGradient>
+      <linearGradient id="icon-007-glass" x1="22" y1="9" x2="42" y2="51" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#CEFAFF" />
+        <stop offset="1" stop-color="#55C7D6" />
+      </linearGradient>
+      <linearGradient id="icon-007-fur" x1="25" y1="18" x2="39" y2="47" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFBF71" />
+        <stop offset="1" stop-color="#F3944F" />
+      </linearGradient>
+    </defs>
+    <path d="M21 51H43L45 59C39 63 25 63 19 59Z" fill="#B5A1DD" stroke="#383353" stroke-width="2" stroke-linejoin="round" />
+    <path d="M23 56H41" stroke="#F8F5FF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="32" cy="29" r="26" fill="url(#icon-007-rim)" stroke="#383353" stroke-width="2.5" />
+    <circle cx="32" cy="29" r="22" fill="url(#icon-007-glass)" stroke="#438DA0" stroke-width="1.5" />
+    <path d="M16 27C14 22 14 15 17 12C22 13 26 17 28 21C30 20 34 20 36 21C39 16 43 13 47 12C50 18 49 24 47 28C51 34 50 40 46 44C42 48 37 49 32 49C25 49 20 47 16 43C12 39 12 32 16 27Z" fill="url(#icon-007-fur)" stroke="#79503B" stroke-width="1.8" stroke-linejoin="round" />
+    <path d="M18 17L24 24L18 26ZM45 17L39 24L46 26Z" fill="#E89592" />
+    <path d="M29 22L30 27M35 22L34 27" stroke="#D27A42" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M17 37C21 33 26 36 32 36C38 36 43 33 47 37C46 44 40 47 32 47C24 47 18 44 17 37Z" fill="#FFF0D1" />
+    <path d="M20 32C22 28 26 28 28 32M36 32C38 28 42 28 44 32" stroke="#493B42" stroke-width="2.8" stroke-linecap="round" />
+    <path d="M29 35Q32 33 35 35L32 38Z" fill="#93544D" />
+    <path d="M26 39Q32 43 38 39Q36 46 32 45Q28 45 26 39Z" fill="#593D49" />
+    <path d="M29 43Q32 41 35 43Q32 47 29 43Z" fill="#F5A7AC" />
+    <path d="M16 37L21 38M43 38L48 37" stroke="#BD815E" stroke-width="1.5" stroke-linecap="round" />
+    <path d="M15 22C17 16 22 11 28 10" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="7" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+    <circle cx="57" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+  </svg>
+  <text x="1060" y="479" fill="#B9C5E2" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="13" font-weight="400" text-anchor="middle">16 px</text>
+  <svg width="24" height="24" viewBox="0 0 64 64" fill="none" x="1171.0" y="412.0" data-source="assets/felinaut-symbol.svg">
+    <title>Felinaut astronaut cat symbol</title>
+    <desc>Felinaut, the happy female orange-and-cream explorer cat, has pointed ears and joyful crescent eyes inside a round cyan astronaut helmet. One open smile and a tiny tongue keep her face welcoming. A white and lavender rim and compact neck seal preserve the silhouette at small sizes. Original vector artwork on transparency.</desc>
+    <defs>
+      <linearGradient id="icon-008-rim" x1="17" y1="7" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFFFFF" />
+        <stop offset="1" stop-color="#C5B6E9" />
+      </linearGradient>
+      <linearGradient id="icon-008-glass" x1="22" y1="9" x2="42" y2="51" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#CEFAFF" />
+        <stop offset="1" stop-color="#55C7D6" />
+      </linearGradient>
+      <linearGradient id="icon-008-fur" x1="25" y1="18" x2="39" y2="47" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFBF71" />
+        <stop offset="1" stop-color="#F3944F" />
+      </linearGradient>
+    </defs>
+    <path d="M21 51H43L45 59C39 63 25 63 19 59Z" fill="#B5A1DD" stroke="#383353" stroke-width="2" stroke-linejoin="round" />
+    <path d="M23 56H41" stroke="#F8F5FF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="32" cy="29" r="26" fill="url(#icon-008-rim)" stroke="#383353" stroke-width="2.5" />
+    <circle cx="32" cy="29" r="22" fill="url(#icon-008-glass)" stroke="#438DA0" stroke-width="1.5" />
+    <path d="M16 27C14 22 14 15 17 12C22 13 26 17 28 21C30 20 34 20 36 21C39 16 43 13 47 12C50 18 49 24 47 28C51 34 50 40 46 44C42 48 37 49 32 49C25 49 20 47 16 43C12 39 12 32 16 27Z" fill="url(#icon-008-fur)" stroke="#79503B" stroke-width="1.8" stroke-linejoin="round" />
+    <path d="M18 17L24 24L18 26ZM45 17L39 24L46 26Z" fill="#E89592" />
+    <path d="M29 22L30 27M35 22L34 27" stroke="#D27A42" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M17 37C21 33 26 36 32 36C38 36 43 33 47 37C46 44 40 47 32 47C24 47 18 44 17 37Z" fill="#FFF0D1" />
+    <path d="M20 32C22 28 26 28 28 32M36 32C38 28 42 28 44 32" stroke="#493B42" stroke-width="2.8" stroke-linecap="round" />
+    <path d="M29 35Q32 33 35 35L32 38Z" fill="#93544D" />
+    <path d="M26 39Q32 43 38 39Q36 46 32 45Q28 45 26 39Z" fill="#593D49" />
+    <path d="M29 43Q32 41 35 43Q32 47 29 43Z" fill="#F5A7AC" />
+    <path d="M16 37L21 38M43 38L48 37" stroke="#BD815E" stroke-width="1.5" stroke-linecap="round" />
+    <path d="M15 22C17 16 22 11 28 10" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="7" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+    <circle cx="57" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+  </svg>
+  <text x="1183" y="479" fill="#B9C5E2" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="13" font-weight="400" text-anchor="middle">24 px</text>
+  <svg width="32" height="32" viewBox="0 0 64 64" fill="none" x="1290.0" y="408.0" data-source="assets/felinaut-symbol.svg">
+    <title>Felinaut astronaut cat symbol</title>
+    <desc>Felinaut, the happy female orange-and-cream explorer cat, has pointed ears and joyful crescent eyes inside a round cyan astronaut helmet. One open smile and a tiny tongue keep her face welcoming. A white and lavender rim and compact neck seal preserve the silhouette at small sizes. Original vector artwork on transparency.</desc>
+    <defs>
+      <linearGradient id="icon-009-rim" x1="17" y1="7" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFFFFF" />
+        <stop offset="1" stop-color="#C5B6E9" />
+      </linearGradient>
+      <linearGradient id="icon-009-glass" x1="22" y1="9" x2="42" y2="51" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#CEFAFF" />
+        <stop offset="1" stop-color="#55C7D6" />
+      </linearGradient>
+      <linearGradient id="icon-009-fur" x1="25" y1="18" x2="39" y2="47" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFBF71" />
+        <stop offset="1" stop-color="#F3944F" />
+      </linearGradient>
+    </defs>
+    <path d="M21 51H43L45 59C39 63 25 63 19 59Z" fill="#B5A1DD" stroke="#383353" stroke-width="2" stroke-linejoin="round" />
+    <path d="M23 56H41" stroke="#F8F5FF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="32" cy="29" r="26" fill="url(#icon-009-rim)" stroke="#383353" stroke-width="2.5" />
+    <circle cx="32" cy="29" r="22" fill="url(#icon-009-glass)" stroke="#438DA0" stroke-width="1.5" />
+    <path d="M16 27C14 22 14 15 17 12C22 13 26 17 28 21C30 20 34 20 36 21C39 16 43 13 47 12C50 18 49 24 47 28C51 34 50 40 46 44C42 48 37 49 32 49C25 49 20 47 16 43C12 39 12 32 16 27Z" fill="url(#icon-009-fur)" stroke="#79503B" stroke-width="1.8" stroke-linejoin="round" />
+    <path d="M18 17L24 24L18 26ZM45 17L39 24L46 26Z" fill="#E89592" />
+    <path d="M29 22L30 27M35 22L34 27" stroke="#D27A42" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M17 37C21 33 26 36 32 36C38 36 43 33 47 37C46 44 40 47 32 47C24 47 18 44 17 37Z" fill="#FFF0D1" />
+    <path d="M20 32C22 28 26 28 28 32M36 32C38 28 42 28 44 32" stroke="#493B42" stroke-width="2.8" stroke-linecap="round" />
+    <path d="M29 35Q32 33 35 35L32 38Z" fill="#93544D" />
+    <path d="M26 39Q32 43 38 39Q36 46 32 45Q28 45 26 39Z" fill="#593D49" />
+    <path d="M29 43Q32 41 35 43Q32 47 29 43Z" fill="#F5A7AC" />
+    <path d="M16 37L21 38M43 38L48 37" stroke="#BD815E" stroke-width="1.5" stroke-linecap="round" />
+    <path d="M15 22C17 16 22 11 28 10" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="7" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+    <circle cx="57" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+  </svg>
+  <text x="1306" y="479" fill="#B9C5E2" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="13" font-weight="400" text-anchor="middle">32 px</text>
+  <svg width="64" height="64" viewBox="0 0 64 64" fill="none" x="1397.0" y="392.0" data-source="assets/felinaut-symbol.svg">
+    <title>Felinaut astronaut cat symbol</title>
+    <desc>Felinaut, the happy female orange-and-cream explorer cat, has pointed ears and joyful crescent eyes inside a round cyan astronaut helmet. One open smile and a tiny tongue keep her face welcoming. A white and lavender rim and compact neck seal preserve the silhouette at small sizes. Original vector artwork on transparency.</desc>
+    <defs>
+      <linearGradient id="icon-010-rim" x1="17" y1="7" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFFFFF" />
+        <stop offset="1" stop-color="#C5B6E9" />
+      </linearGradient>
+      <linearGradient id="icon-010-glass" x1="22" y1="9" x2="42" y2="51" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#CEFAFF" />
+        <stop offset="1" stop-color="#55C7D6" />
+      </linearGradient>
+      <linearGradient id="icon-010-fur" x1="25" y1="18" x2="39" y2="47" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#FFBF71" />
+        <stop offset="1" stop-color="#F3944F" />
+      </linearGradient>
+    </defs>
+    <path d="M21 51H43L45 59C39 63 25 63 19 59Z" fill="#B5A1DD" stroke="#383353" stroke-width="2" stroke-linejoin="round" />
+    <path d="M23 56H41" stroke="#F8F5FF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="32" cy="29" r="26" fill="url(#icon-010-rim)" stroke="#383353" stroke-width="2.5" />
+    <circle cx="32" cy="29" r="22" fill="url(#icon-010-glass)" stroke="#438DA0" stroke-width="1.5" />
+    <path d="M16 27C14 22 14 15 17 12C22 13 26 17 28 21C30 20 34 20 36 21C39 16 43 13 47 12C50 18 49 24 47 28C51 34 50 40 46 44C42 48 37 49 32 49C25 49 20 47 16 43C12 39 12 32 16 27Z" fill="url(#icon-010-fur)" stroke="#79503B" stroke-width="1.8" stroke-linejoin="round" />
+    <path d="M18 17L24 24L18 26ZM45 17L39 24L46 26Z" fill="#E89592" />
+    <path d="M29 22L30 27M35 22L34 27" stroke="#D27A42" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M17 37C21 33 26 36 32 36C38 36 43 33 47 37C46 44 40 47 32 47C24 47 18 44 17 37Z" fill="#FFF0D1" />
+    <path d="M20 32C22 28 26 28 28 32M36 32C38 28 42 28 44 32" stroke="#493B42" stroke-width="2.8" stroke-linecap="round" />
+    <path d="M29 35Q32 33 35 35L32 38Z" fill="#93544D" />
+    <path d="M26 39Q32 43 38 39Q36 46 32 45Q28 45 26 39Z" fill="#593D49" />
+    <path d="M29 43Q32 41 35 43Q32 47 29 43Z" fill="#F5A7AC" />
+    <path d="M16 37L21 38M43 38L48 37" stroke="#BD815E" stroke-width="1.5" stroke-linecap="round" />
+    <path d="M15 22C17 16 22 11 28 10" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+    <circle cx="7" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+    <circle cx="57" cy="32" r="3" fill="#F3EFFF" stroke="#655B81" stroke-width="1.5" />
+  </svg>
+  <text x="1429" y="479" fill="#B9C5E2" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="13" font-weight="400" text-anchor="middle">64 px</text>
+  <text x="1002" y="558" fill="#586179" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="start">Color artwork uses img(); masks use svg().</text>
+  <rect x="64" y="627" width="1472" height="343" rx="20" fill="#FFFFFF" stroke="#D9D6E3" />
+  <text x="92" y="672" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="25" font-weight="700" text-anchor="start">Existing monochrome controls &amp; integration marks</text>
+  <text x="92" y="702" fill="#586179" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="start">Canonical 24 × 24 geometry, tinted for this board. No invented downloads, private-mode or sync controls.</text>
+  <rect x="115" y="725" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#63528F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" x="184" y="734" data-source="assets/icons/speaker-muted.svg">
+    <title>Felinaut muted speaker</title>
+    <path d="M3.5 9.5H7L11.5 5.5V18.5L7 14.5H3.5Z" fill="#63528F" />
+    <path d="M15.5 9.5L20.5 14.5M20.5 9.5L15.5 14.5" />
+  </svg>
+  <text x="202" y="791" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">Muted</text>
+  <rect x="358" y="725" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#63528F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" x="427" y="734" data-source="assets/icons/speaker-low.svg">
+    <title>Felinaut quiet speaker</title>
+    <path d="M3.5 9.5H7L11.5 5.5V18.5L7 14.5H3.5Z" fill="#63528F" />
+    <path d="M15 9.5A3.5 3.5 0 0 1 15 14.5" />
+  </svg>
+  <text x="445" y="791" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">Quiet</text>
+  <rect x="601" y="725" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#63528F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" x="670" y="734" data-source="assets/icons/speaker.svg">
+    <title>Felinaut speaker</title>
+    <path d="M3.5 9.5H7L11.5 5.5V18.5L7 14.5H3.5Z" fill="#63528F" />
+    <path d="M15 9.5A3.5 3.5 0 0 1 15 14.5" />
+    <path d="M17.5 7A7 7 0 0 1 17.5 17" />
+  </svg>
+  <text x="688" y="791" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">Speaker</text>
+  <rect x="844" y="725" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#63528F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" x="913" y="734" data-source="assets/icons/speaker-boost.svg">
+    <title>Felinaut boosted speaker</title>
+    <path d="M3.5 9.5H7L11.5 5.5V18.5L7 14.5H3.5Z" fill="#63528F" />
+    <path d="M15 9.5A3.5 3.5 0 0 1 15 14.5" />
+    <path d="M17.5 7A7 7 0 0 1 17.5 17" />
+    <path d="M20 4.5A10.5 10.5 0 0 1 20 19.5" />
+  </svg>
+  <text x="931" y="791" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">Boost</text>
+  <rect x="1087" y="725" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#63528F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" x="1156" y="734" data-source="assets/icons/voice.svg">
+    <title>Felinaut voice preset</title>
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5.5 11A6.5 6.5 0 0 0 18.5 11" />
+    <path d="M12 17.5V21M8.5 21H15.5" />
+  </svg>
+  <text x="1174" y="791" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">Voice</text>
+  <rect x="1330" y="725" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#63528F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" x="1399" y="734" data-source="assets/icons/bass.svg">
+    <title>Felinaut bass preset</title>
+    <circle cx="12" cy="12" r="8.5" />
+    <circle cx="12" cy="12" r="3.5" fill="#63528F" />
+  </svg>
+  <text x="1417" y="791" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">Bass</text>
+  <rect x="115" y="833" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#63528F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" x="184" y="842" data-source="assets/icons/natural.svg">
+    <title>Felinaut natural sound preset</title>
+    <path d="M2.5 12C4.5 7 6.5 7 8.5 12S12.5 17 14.5 12 18.5 7 21.5 12" />
+  </svg>
+  <text x="202" y="899" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">Natural</text>
+  <rect x="358" y="833" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#63528F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" x="427" y="842" data-source="assets/icons/sidebar.svg">
+    <title>Felinaut sidebar</title>
+    <rect x="3.5" y="5" width="17" height="14" rx="2.5" />
+    <path d="M9.5 5V19" />
+  </svg>
+  <text x="445" y="899" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">Sidebar</text>
+  <rect x="601" y="833" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#63528F" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" x="670" y="842" data-source="assets/icons/chevron.svg">
+    <title>Felinaut disclosure chevron</title>
+    <path d="M9.5 6L15.5 12L9.5 18" />
+  </svg>
+  <text x="688" y="899" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">Disclosure</text>
+  <rect x="844" y="833" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#63528F" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" x="913" y="842" data-source="assets/icons/check.svg">
+    <title>Felinaut check mark</title>
+    <path d="M5 12.5L10 17.5L19 7" />
+  </svg>
+  <text x="931" y="899" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">Check</text>
+  <rect x="1087" y="833" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 16 16" fill="#63528F" x="1156" y="842" data-source="assets/icons/github.svg">
+    <title>GitHub</title>
+    <path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z" />
+  </svg>
+  <text x="1174" y="899" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">GitHub</text>
+  <rect x="1330" y="833" width="174" height="82" rx="12" fill="#F6F3FC" />
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="#63528F" x="1399" y="842" data-source="assets/icons/asana.svg">
+    <title>Asana</title>
+    <circle cx="12" cy="7" r="4.6" />
+    <circle cx="6" cy="16.2" r="4.6" />
+    <circle cx="18" cy="16.2" r="4.6" />
+  </svg>
+  <text x="1417" y="899" fill="#222942" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="middle">Asana</text>
+  <text x="64" y="1015" fill="#222942" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="12" font-weight="400" text-anchor="start">USE THE CANONICAL FILES</text>
+  <text x="365" y="1015" fill="#586179" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="start">assets/felinaut-symbol.svg · 64 × 64 viewBox · preview 16 / 24 / 32 / 64 px · preserve the colored face</text>
+  <g data-theme="milky-way">
+    <rect x="64" y="1073" width="232" height="64" rx="12" fill="#131B36" stroke="#4B5C82" stroke-width="1" />
+    <circle cx="84" cy="1097" r="6" fill="#B3A0FF" />
+    <text x="99" y="1101" fill="#F7F6FF" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" text-anchor="start">Milky Way</text>
+    <text x="80" y="1122" fill="#B9C5E2" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="11" font-weight="400" text-anchor="start">milky-way</text>
+  </g>
+  <g data-theme="midnight-party">
+    <rect x="312" y="1073" width="232" height="64" rx="12" fill="#3C126F" stroke="#70499A" stroke-width="1" />
+    <circle cx="332" cy="1097" r="6" fill="#FF3EA5" />
+    <text x="347" y="1101" fill="#F8F7FF" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" text-anchor="start">Midnight Party</text>
+    <text x="328" y="1122" fill="#C6B5DE" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="11" font-weight="400" text-anchor="start">midnight-party</text>
+  </g>
+  <g data-theme="confetti-sunset">
+    <rect x="560" y="1073" width="232" height="64" rx="12" fill="#FFFFFF" stroke="#D9B7D5" stroke-width="1" />
+    <circle cx="580" cy="1097" r="6" fill="#BA165E" />
+    <text x="595" y="1101" fill="#2B0A54" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" text-anchor="start">Confetti Sunset</text>
+    <text x="576" y="1122" fill="#77566E" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="11" font-weight="400" text-anchor="start">confetti-sunset</text>
+  </g>
+  <g data-theme="neon-wool">
+    <rect x="808" y="1073" width="232" height="64" rx="12" fill="#341364" stroke="#6B4694" stroke-width="1" />
+    <circle cx="828" cy="1097" r="6" fill="#AE80FF" />
+    <text x="843" y="1101" fill="#F8F7FF" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" text-anchor="start">Neon Wool</text>
+    <text x="824" y="1122" fill="#C4B4DF" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="11" font-weight="400" text-anchor="start">neon-wool</text>
+  </g>
+  <g data-theme="alpine-pop">
+    <rect x="1056" y="1073" width="232" height="64" rx="12" fill="#FFFFFF" stroke="#AFCADF" stroke-width="1" />
+    <circle cx="1076" cy="1097" r="6" fill="#007C9E" />
+    <text x="1091" y="1101" fill="#2B0A54" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" text-anchor="start">Alpine Pop</text>
+    <text x="1072" y="1122" fill="#52657C" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="11" font-weight="400" text-anchor="start">alpine-pop</text>
+  </g>
+  <g data-theme="forest-carnival">
+    <rect x="1304" y="1073" width="232" height="64" rx="12" fill="#FFFFFF" stroke="#ACCFAE" stroke-width="1" />
+    <circle cx="1324" cy="1097" r="6" fill="#007E38" />
+    <text x="1339" y="1101" fill="#1B0638" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" text-anchor="start">Forest Carnival</text>
+    <text x="1320" y="1122" fill="#536B57" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="11" font-weight="400" text-anchor="start">forest-carnival</text>
+  </g>
+  <path d="M64 1160H1536" fill="none" stroke="#D9D6E3" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+  <text x="64" y="1183" fill="#586179" font-family="Menlo, DejaVu Sans Mono, monospace" font-size="11" font-weight="400" text-anchor="start">SOURCE  BRAND.md · assets/felinaut-{mascot,symbol,box}.svg · src/theme.rs</text>
+  <text x="1536" y="1183" fill="#586179" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" text-anchor="end">Offline vector composition · future concepts labeled · no remote artwork</text>
+</svg>

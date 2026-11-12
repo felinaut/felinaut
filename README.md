@@ -4,7 +4,7 @@ A simple Rust desktop browser: **GPUI for the interface, Wry / WKWebView for the
 
 ## Felinaut identity and compatibility
 
-Our mascot is **Felinaut**, a happy female astronaut cat and curious explorer who loves colorful things—especially wool balls and planets that look like yarn. She now has a little cardboard exploration box on New Tab. The design source of truth is [`BRAND.md`](BRAND.md).
+Our mascot is **Felinaut**, a happy female astronaut cat and curious explorer who loves colorful things—especially wool balls and planets that look like yarn. She now has a little cardboard exploration box on New Tab. The design source of truth is [`BRAND.md`](BRAND.md); [`references/README.md`](references/README.md) links the four rebuilt brand/theme/artwork/icon boards and their reproducible SVG/PNG generator. Original reference images remain unchanged in a clearly labeled historical archive.
 
 **Shipped now:** astronaut-cat artwork and icons, box composition, six selectable themes, gentle existing bob/scene motion, and updated application/distribution names. **Future personality concepts:** tab batting, zoomies, idle naps, easter eggs, contextual cat reactions and opt-in sounds are specified in the guide, not implemented or advertised as working features. No surprise audio, input changes, website transformations, tracker-blocking claims, or browsing telemetry were added.
 
