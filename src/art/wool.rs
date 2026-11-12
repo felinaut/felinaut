@@ -145,28 +145,14 @@ pub(super) fn compose(
             );
         }
 
-        // Tiny rising embers connect the neon wool to the flaming-yarn mascot.
+        // Tiny rising starlights connect this yarn system to the orbital scenes.
         for ember in 0..5 {
             let cycle = (t * 0.24 + ember as f64 * 0.2 + shift).rem_euclid(1.0) as f32;
             let x = mirror(0.045 + ember as f32 * 0.032 + 0.009 * flow);
             let y = 0.82 - cycle * 0.23;
             let center = at(x, y);
             let r = line * (1.3 + (1.0 - cycle) * 1.4);
-            let mut spark = PathBuilder::fill();
-            spark.move_to(point(center.x, center.y - px(r * 1.8)));
-            spark.curve_to(
-                point(center.x + px(r), center.y),
-                point(center.x + px(r), center.y - px(r)),
-            );
-            spark.curve_to(
-                point(center.x, center.y + px(r)),
-                point(center.x + px(r), center.y + px(r)),
-            );
-            spark.curve_to(
-                point(center.x - px(r * 0.6), center.y),
-                point(center.x - px(r), center.y + px(r)),
-            );
-            spark.close();
+            let spark = super::orbital::star(center, r);
             paint(
                 spark,
                 ink(p.highlight, (1.0 - cycle) * 0.6 * strength, color, 0.15),

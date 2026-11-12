@@ -6,12 +6,13 @@ use gpui::{App, Global};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Theme {
-    #[default]
     MidnightParty,
     ConfettiSunset,
     NeonWool,
     AlpinePop,
     ForestCarnival,
+    #[default]
+    MilkyWay,
 }
 
 #[derive(Clone, Copy)]
@@ -32,12 +33,13 @@ pub struct Palette {
 }
 
 impl Theme {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::MidnightParty,
         Self::ConfettiSunset,
         Self::NeonWool,
         Self::AlpinePop,
         Self::ForestCarnival,
+        Self::MilkyWay,
     ];
 
     pub fn name(self) -> &'static str {
@@ -47,11 +49,27 @@ impl Theme {
             Self::NeonWool => "Neon Wool",
             Self::AlpinePop => "Alpine Pop",
             Self::ForestCarnival => "Forest Carnival",
+            Self::MilkyWay => "Milky Way",
         }
     }
 
     pub fn palette(self) -> Palette {
         match self {
+            Self::MilkyWay => Palette {
+                theme: self,
+                background: 0x0b1026,
+                surface: 0x131b36,
+                elevated: 0x1d2948,
+                input: 0x090e21,
+                text: 0xf7f6ff,
+                muted: 0xb9c5e2,
+                border: 0x4b5c82,
+                primary: 0xb3a0ff,
+                secondary: 0x8fe4cc,
+                accent: 0xffb45e,
+                highlight: 0x78d9ef,
+                dark: true,
+            },
             Self::MidnightParty => Palette {
                 theme: self,
                 background: 0x2b0a54,
@@ -164,8 +182,16 @@ impl AddressDisplay {
 }
 
 impl Theme {
-    fn key(self) -> String {
-        self.name().to_lowercase().replace(' ', "-")
+    // Persisted identifiers are independent of display names and branding.
+    fn key(self) -> &'static str {
+        match self {
+            Self::MidnightParty => "midnight-party",
+            Self::ConfettiSunset => "confetti-sunset",
+            Self::NeonWool => "neon-wool",
+            Self::AlpinePop => "alpine-pop",
+            Self::ForestCarnival => "forest-carnival",
+            Self::MilkyWay => "milky-way",
+        }
     }
 }
 
@@ -357,6 +383,62 @@ mod tests {
     }
 
     #[test]
+    fn every_theme_round_trips_and_preserves_legacy_keys() {
+        let keys = [
+            ("midnight-party", Theme::MidnightParty),
+            ("confetti-sunset", Theme::ConfettiSunset),
+            ("neon-wool", Theme::NeonWool),
+            ("alpine-pop", Theme::AlpinePop),
+            ("forest-carnival", Theme::ForestCarnival),
+            ("milky-way", Theme::MilkyWay),
+        ];
+        assert_eq!(Theme::ALL.len(), keys.len());
+        for (key, theme) in keys {
+            assert_eq!(theme.key(), key);
+            assert_eq!(ThemeSettings::parse(&format!("theme={key}")).theme, theme);
+            for animate in [false, true] {
+                let settings = ThemeSettings {
+                    theme,
+                    animate,
+                    ..ThemeSettings::default()
+                };
+                let parsed = ThemeSettings::parse(&settings.serialize());
+                assert_eq!(parsed.theme, theme);
+                assert_eq!(parsed.animate, animate);
+                assert_eq!(parsed.address, settings.address);
+                assert_eq!(parsed.sidebar, settings.sidebar);
+                assert_eq!(parsed.sidebar_width, settings.sidebar_width);
+            }
+        }
+    }
+
+    #[test]
+    fn new_missing_and_invalid_themes_default_to_milky_way() {
+        assert_eq!(Theme::default(), Theme::MilkyWay);
+        assert_eq!(ThemeSettings::default().theme, Theme::MilkyWay);
+        for text in [
+            "",
+            "theme=",
+            "theme=unknown",
+            "theme=Milky Way",
+            "theme=milky_way",
+            "theme=💫",
+            "theme=milky-way=oops",
+            "invalid",
+        ] {
+            assert_eq!(
+                ThemeSettings::parse(text).theme,
+                Theme::MilkyWay,
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            ThemeSettings::parse(" theme = milky-way \n").theme,
+            Theme::MilkyWay
+        );
+    }
+
+    #[test]
     fn mountain_theme_is_named_alpine_pop() {
         assert_eq!(Theme::AlpinePop.name(), "Alpine Pop");
         assert!(Theme::ALL.contains(&Theme::AlpinePop));
@@ -378,11 +460,13 @@ mod tests {
                     theme.name()
                 );
             }
-            assert!(
-                contrast(p.primary, p.surface) >= 3.,
-                "{}: accent",
-                theme.name()
-            );
+            for background in [p.background, p.surface, p.elevated, p.input] {
+                assert!(
+                    contrast(p.primary, background) >= 3.,
+                    "{}: primary control accent",
+                    theme.name()
+                );
+            }
         }
     }
 }

@@ -171,7 +171,7 @@ fn main() {
                 assert_eq!(cx.windows().len(), 1, "CloseAbout removes only About");
                 assert!(parent.read(cx).is_ok(), "parent survives About close");
                 result.set(true);
-                println!("PASS: SVG rasterization, five-theme art rendering, theme selection, actual animation timer start/stop and Reduce Motion, About lifecycle");
+                println!("PASS: SVG rasterization, six-theme art rendering, theme selection, actual animation timer start/stop and Reduce Motion, About lifecycle");
                 parent.update(cx, |_, window, _| window.remove_window()).unwrap();
                 cx.quit();
             }).unwrap();

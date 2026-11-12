@@ -6,6 +6,10 @@ mod alpine;
 mod forest;
 #[path = "art/midnight.rs"]
 mod midnight;
+#[path = "art/milky_way.rs"]
+mod milky_way;
+#[path = "art/orbital.rs"]
+mod orbital;
 #[path = "art/sunset.rs"]
 mod sunset;
 #[path = "art/wool.rs"]
@@ -37,7 +41,11 @@ fn compose(
 ) {
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
-    if !w.is_finite() || !h.is_finite() || w <= 0. || h <= 0. {
+    let x = f32::from(bounds.origin.x);
+    let y = f32::from(bounds.origin.y);
+    // Reject invalid origins too, and leave arithmetic headroom for off-canvas
+    // Bézier controls and stroke expansion before handing geometry to lyon.
+    if w <= 0. || h <= 0. || !(w * 4. + x.abs()).is_finite() || !(h * 4. + y.abs()).is_finite() {
         return;
     }
     let phase = if phase.is_finite() {
@@ -51,7 +59,9 @@ fn compose(
         Theme::NeonWool => wool::compose(bounds, p, phase, paint),
         Theme::AlpinePop => alpine::compose(bounds, p, phase, paint),
         Theme::ForestCarnival => forest::compose(bounds, p, phase, paint),
+        Theme::MilkyWay => milky_way::compose(bounds, p, phase, paint),
     }
+    orbital::compose(bounds, p, phase, paint);
 }
 
 #[cfg(test)]
@@ -89,13 +99,74 @@ mod tests {
         }
     }
 
+    fn geometry(bounds: Bounds<Pixels>, theme: Theme, phase: f32) -> Vec<String> {
+        let mut result = Vec::new();
+        compose(bounds, theme.palette(), phase, &mut |builder, _| {
+            let path = format!(
+                "{:?}",
+                builder
+                    .build()
+                    .expect("responsive geometry must tessellate")
+            );
+            assert!(
+                !path.contains("NaN") && !path.contains("inf"),
+                "{theme:?}: nonfinite geometry"
+            );
+            result.push(path);
+        });
+        result
+    }
+
     #[test]
-    fn empty_bounds_do_not_paint() {
-        compose(
-            Bounds::default(),
-            Theme::default().palette(),
-            0.,
-            &mut |_, _| panic!("empty canvas"),
-        );
+    fn all_scenes_tessellate_at_small_wide_tall_and_offset_bounds() {
+        for theme in Theme::ALL {
+            for (w, h) in [(1., 1.), (320., 800.), (2400., 320.), (1440., 900.)] {
+                let bounds = Bounds::new(point(px(-17.), px(31.)), size(px(w), px(h)));
+                for phase in [0., 1., -1., 3599., f32::MAX, f32::MIN] {
+                    let paths = geometry(bounds, theme, phase);
+                    assert!(!paths.is_empty());
+                    assert!(paths.len() <= 140, "bounded per-frame path budget");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nonfinite_phases_use_the_complete_still_frame_and_finite_phases_wrap() {
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(600.), px(500.)));
+        for theme in Theme::ALL {
+            let still = geometry(bounds, theme, 0.);
+            for phase in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 3600.] {
+                assert_eq!(still, geometry(bounds, theme, phase));
+            }
+            assert_eq!(geometry(bounds, theme, -1.), geometry(bounds, theme, 3599.));
+            assert_eq!(geometry(bounds, theme, 1.), geometry(bounds, theme, 3601.));
+        }
+    }
+
+    #[test]
+    fn empty_nonfinite_and_overflowing_bounds_do_not_paint() {
+        for theme in Theme::ALL {
+            for (x, y, w, h) in [
+                (0., 0., 0., 0.),
+                (0., 0., 0., 800.),
+                (0., 0., 1200., 0.),
+                (0., 0., -1., 800.),
+                (0., 0., 1200., -1.),
+                (f32::NAN, 0., 1200., 800.),
+                (0., f32::INFINITY, 1200., 800.),
+                (f32::NEG_INFINITY, 0., 1200., 800.),
+                (0., 0., f32::NAN, 800.),
+                (0., 0., 1200., f32::NAN),
+                (0., 0., f32::INFINITY, 800.),
+                (0., 0., 1200., f32::NEG_INFINITY),
+                (0., 0., f32::MAX, f32::MAX),
+            ] {
+                let bounds = Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+                compose(bounds, theme.palette(), 0., &mut |_, _| {
+                    panic!("invalid canvas painted")
+                });
+            }
+        }
     }
 }

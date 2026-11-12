@@ -10,6 +10,27 @@ use crate::theme::{self, AddressDisplay, Theme, ThemeSettings};
 
 actions!(appearance, [CloseAppearance]);
 
+const THEME_ROW_HEIGHT: f32 = 44.;
+const ROW_GAP: f32 = 4.;
+
+fn popup_height(theme_count: usize, reduced_motion: bool, available: f32) -> f32 {
+    // Header, address choices, motion control, padding and borders, plus room for
+    // the system motion explanation. Short displays scroll instead of clipping.
+    let fixed = 28. // Outer padding and borders.
+        + 30. // Heading.
+        + 137. // Address section: margin, padding, border, label and three rows.
+        + 51. // Motion section: margin, padding, border and checkbox row.
+        + 2. * ROW_GAP;
+    let preferred = fixed
+        + theme_count as f32 * (THEME_ROW_HEIGHT + ROW_GAP)
+        + if reduced_motion { 32. } else { 0. };
+    preferred.min(if available.is_finite() {
+        available.max(1.)
+    } else {
+        preferred
+    })
+}
+
 #[derive(Default)]
 struct PopupWindow(Option<WindowHandle<Appearance>>);
 impl Global for PopupWindow {}
@@ -21,7 +42,7 @@ pub fn open(parent: &mut Window, cx: &mut App) {
         cx.bind_keys([KeyBinding::new(
             "escape",
             CloseAppearance,
-            Some("FelifoxAppearance"),
+            Some("FelinautAppearance"),
         )]);
     }
     if let Some(handle) = cx.global_mut::<PopupWindow>().0.take()
@@ -34,9 +55,19 @@ pub fn open(parent: &mut Window, cx: &mut App) {
 
     let parent_handle = parent.window_handle();
     let parent_bounds = parent.bounds();
-    let dimensions = size(px(280.), px(540.));
-    let mut origin = parent_bounds.origin + point(parent_bounds.size.width - px(290.), px(116.));
     let display = parent.display(cx);
+    let available = display.as_ref().map_or(f32::INFINITY, |display| {
+        f32::from(display.bounds().size.height)
+    });
+    let dimensions = size(
+        px(280.),
+        px(popup_height(
+            Theme::ALL.len(),
+            theme::system_reduced_motion(),
+            available,
+        )),
+    );
+    let mut origin = parent_bounds.origin + point(parent_bounds.size.width - px(290.), px(116.));
     if let Some(display) = &display {
         let screen = display.bounds();
         origin.x = origin
@@ -173,7 +204,7 @@ impl Render for Appearance {
         let address = settings.address;
         div()
             .id("appearance")
-            .key_context("FelifoxAppearance")
+            .key_context("FelinautAppearance")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CloseAppearance, window, cx| {
                 cx.stop_propagation();
@@ -183,9 +214,9 @@ impl Render for Appearance {
             .flex()
             .flex_col()
             .p_3()
-            .gap_1()
+            .gap(px(ROW_GAP))
             .rounded_xl()
-            .overflow_hidden()
+            .overflow_y_scroll()
             .bg(rgb(p.surface))
             .border_2()
             .border_color(rgb(p.primary))
@@ -209,7 +240,7 @@ impl Render for Appearance {
                     .items_center()
                     .gap_2()
                     .px_2()
-                    .h(px(44.))
+                    .h(px(THEME_ROW_HEIGHT))
                     .flex_shrink_0()
                     .rounded_lg()
                     .cursor_pointer()
@@ -234,6 +265,7 @@ impl Render for Appearance {
             }))
             .child(
                 div()
+                    .flex_shrink_0()
                     .mt_2()
                     .pt_3()
                     .border_t_1()
@@ -286,6 +318,7 @@ impl Render for Appearance {
             )
             .child(
                 div()
+                    .flex_shrink_0()
                     .mt_2()
                     .pt_3()
                     .border_t_1()
@@ -327,5 +360,38 @@ impl Render for Appearance {
                         )
                     }),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn popup_grows_by_one_complete_theme_row() {
+        let five = popup_height(5, false, 1000.);
+        let six = popup_height(Theme::ALL.len(), false, 1000.);
+        assert_eq!(six - five, THEME_ROW_HEIGHT + ROW_GAP);
+        assert_eq!(six, 542.);
+        assert_eq!(popup_height(6, true, 1000.), six + 32.);
+    }
+
+    #[test]
+    fn popup_fits_short_displays_and_handles_invalid_available_height() {
+        for reduced_motion in [false, true] {
+            for available in [1., 200., 480.] {
+                assert_eq!(popup_height(6, reduced_motion, available), available);
+            }
+            for available in [-100., 0.] {
+                assert_eq!(popup_height(6, reduced_motion, available), 1.);
+            }
+            for available in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                assert_eq!(
+                    popup_height(6, reduced_motion, available),
+                    popup_height(6, reduced_motion, 1000.)
+                );
+            }
+        }
+        assert!(popup_height(0, false, 1000.) > 0.);
     }
 }

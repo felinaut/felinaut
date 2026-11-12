@@ -6,7 +6,7 @@ A simple Rust desktop browser: **GPUI for the interface, Wry / WKWebView for the
 
 Our mascot is **Felinaut**, a happy female astronaut cat and curious explorer who loves colorful things—especially wool balls and planets that look like yarn. She now has a little cardboard exploration box on New Tab. The design source of truth is [`BRAND.md`](BRAND.md).
 
-**Shipped now:** astronaut-cat artwork and icons, box composition, five selectable themes, gentle existing bob/scene motion, and updated application/distribution names. **Future personality concepts:** tab batting, zoomies, idle naps, easter eggs, contextual cat reactions and opt-in sounds are specified in the guide, not implemented or advertised as working features. No surprise audio, input changes, website transformations, tracker-blocking claims, or browsing telemetry were added.
+**Shipped now:** astronaut-cat artwork and icons, box composition, six selectable themes, gentle existing bob/scene motion, and updated application/distribution names. **Future personality concepts:** tab batting, zoomies, idle naps, easter eggs, contextual cat reactions and opt-in sounds are specified in the guide, not implemented or advertised as working features. No surprise audio, input changes, website transformations, tracker-blocking claims, or browsing telemetry were added.
 
 **Existing data stays put.** The profile remains `~/Library/Application Support/Felifox/`, and the bundle identifier remains `io.github.casaroli.felifox` to avoid resetting existing app-managed state and WebKit identity or invalidating existing provisioning-profile associations. No profile migration or deletion occurs. The executable names are now `felinaut` and `felinaut-ctl`; reinstall the renamed app and update local launch scripts. The repository URL is unchanged.
 
@@ -219,10 +219,10 @@ Limitation: media served from another origin without CORS would go silent in Web
 
 ## Artwork and appearance
 
-The toolbar's **Theme ▾** button opens five curated palettes: Midnight Party (default), Confetti Sunset, Neon Wool, Alpine Pop, and Forest Carnival. Themes recolor Felinaut's chrome, address field, New Tab page and About window—not websites. Theme, animation and address-bar choices are saved to `~/Library/Application Support/Felinaut/settings` (three `key=value` lines) and restored on launch.
+The toolbar's **Theme ▾** button opens six curated palettes: **Milky Way** (the new-profile default), Midnight Party, Confetti Sunset, Neon Wool, Alpine Pop, and Forest Carnival. Existing saved selections keep their original theme keys. Themes recolor Felinaut's chrome, address field, New Tab page and About window—not websites. Theme, animation and address-bar choices are saved to `~/Library/Application Support/Felifox/settings` (`key=value` lines, including sidebar choices) and restored on launch.
 
 - **Original embedded SVG artwork:** a happy orange-and-cream astronaut cat exploring colorful yarn planets, a simplified helmet symbol, and a floating cardboard exploration box on New Tab. She has one clear smile, a cyan bubble visor, and a white/lavender suit. No fox emoji, external assets or large background bitmaps.
-- **Five distinct procedural scenes:** Midnight Party has tumbling confetti, streamers, golden stars and neon ribbons; Confetti Sunset has a golden sun, peach/coral hills and falling confetti; Alpine Pop has snowcapped ice mountains, glacier facets, drifting snow and ridge glints; Neon Wool has rolling yarn balls and flowing loose threads; Forest Carnival has swaying foliage, citrus, cherries, flowers and fluttering petals.
+- **Six distinct procedural scenes:** Milky Way has layered galactic nebulae, subtle stars, moons and cross-wound yarn planets. All themes share restrained orbital threads and wool-planet discoveries; Midnight Party has tumbling confetti, streamers, golden stars and neon ribbons; Confetti Sunset has a golden sun, peach/coral hills and falling confetti; Alpine Pop has snowcapped ice mountains, glacier facets, drifting snow and ridge glints; Neon Wool has rolling yarn balls and flowing loose threads; Forest Carnival has swaying foliage, citrus, cherries, flowers and fluttering petals.
 - **Visible native animation:** backgrounds are drawn from responsive GPUI paths, with perceptible movement within a second rather than tiny nearly-static color shifts. The mascot also gently bobs; no background image frames or new animation dependencies are used.
 - **Motion:** the dropdown includes an Animate artwork checkbox. Animation stops while the window is inactive or web content replaces New Tab, and follows the live macOS Reduce Motion setting. Active animation is limited to about 30 fps; pausing does not affect website animation.
 - **About:** open **Felinaut → About Felinaut**, click the toolbar's **ⓘ**, or use the About link on New Tab. The independently closable window displays the **beta label, numeric version and build commit**, the mascot, and Rust / GPUI / WebKit credits. Escape or Cmd-W closes About, not the browser.
@@ -272,7 +272,7 @@ FELINAUT_NATIVE_TEST=1 cargo test --test native_audio
 
 Add `-F gpui/runtime_shaders` to these commands on machines without full Xcode.
 
-The native webview test verifies actual WebKit JavaScript execution, DOM title changes, localStorage, native history, URL polling of a tab whose host never resolved, and injected DOM-event handling for hover, Cmd-click, middle-click and the right-click menu. The brand UI test also verifies that the actual artwork timer advances when enabled and stops when disabled (or when macOS Reduce Motion applies). Geometry tests cover distinct scenes, tessellation and changes over time for all five themes. Native tests use programmatically dispatched DOM events or shared UI handlers, not physical mouse automation. It is skipped by default because WebKit needs a macOS desktop session and main-thread event loop.
+The native webview test verifies actual WebKit JavaScript execution, DOM title changes, localStorage, native history, URL polling of a tab whose host never resolved, and injected DOM-event handling for hover, Cmd-click, middle-click and the right-click menu. The brand UI test also verifies that the actual artwork timer advances when enabled and stops when disabled (or when macOS Reduce Motion applies). Geometry tests cover distinct scenes, tessellation and changes over time for all six themes. Native tests use programmatically dispatched DOM events or shared UI handlers, not physical mouse automation. It is skipped by default because WebKit needs a macOS desktop session and main-thread event loop.
 
 ## Source
 
@@ -284,7 +284,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/icons.rs`, `src/page_icon.js`: site icons handed over by the page as validated PNGs, stored per host, with monogram fallback.
 - `src/webview.rs`: Wry child views, native callbacks, history, bounds and focus.
 - `src/theme.rs`: shared palettes, contrast checks, native Reduce Motion support and the saved Appearance settings.
-- `src/art.rs` and `src/art/`: theme dispatch and five independent procedural scenes; no textures or animation framework.
+- `src/art.rs` and `src/art/`: theme dispatch and six procedural scenes with shared orbital/yarn geometry; no textures or animation framework.
 - `src/link_interactions.js`: document-level link status, modifier-click and accessible context-menu handling.
 - `src/audio.rs`, `src/audio_control.js`: per-tab volume model, slider mapping, the audio bridge and Web Audio routing.
 - `src/volume.rs`: the native volume popover.
