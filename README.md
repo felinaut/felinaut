@@ -175,6 +175,7 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 - New-window links open as tabs instead of unmanaged native windows.
 - Native menus keep browser shortcuts available while the webview has focus.
 - **Per-tab volume** from 0 % to 600 %, with mute and sound presets (see below).
+- **Camera and microphone** need your permission for each site: a bar under the toolbar names the site that asks (see below).
 - **Downloads** are saved to `~/Downloads` and listed under the toolbar's **↓** button, with progress, cancel, open and show in Finder (see below).
 
 | Shortcut         | Action                                                          |
@@ -271,6 +272,28 @@ How it works: Wry's download callbacks report neither progress nor the download 
 
 Limitations: there is no pause or resume, no "ask where to save", no per-site folder, and no retry; start the download again from its page. Felinaut does not check whether a listed file was moved or deleted afterwards, so **Open** and **Show in Finder** then do nothing. A download stops when Felinaut quits.
 
+## Camera and microphone
+
+A site gets the camera or the microphone only after you allow it. When a page asks, a bar appears between the toolbar and the page. It names the site that asks (scheme, host and port; HTTPS is implied and a long name keeps its end) and what it wants:
+
+- **Not Now** refuses this request. **Never Allow** refuses it and each later request of the site. **Allow Once** allows this request. **Always Allow** allows it and each later request of the site for the same device.
+- Keyboard: the bar takes the keys when it appears, unless you type in the address bar. `Tab` or `→` and `⇧Tab` or `←` select a choice, `↩` or `Space` confirms it, `Esc` is **Not Now**. No choice is selected at first, and an allow choice does not count in the first half second, so a key press or a click that was meant for the page cannot allow anything.
+- The request is refused when you close the tab or the tab leaves the site. A request of a tab in the background waits until you select that tab.
+- macOS asks one time whether Felinaut itself may use the camera or the microphone. That question comes from macOS, after you allow a site.
+
+Decisions are kept in `permissions.tsv` (see _Scope and limitations_), one line for each site and device: `allow` or `deny`, `camera` or `microphone`, and the origin. Delete the file to forget every decision. A line that Felinaut cannot read is ignored, and never becomes a permission.
+
+Refused without a question:
+
+- a site that is not HTTPS and not on this computer (`localhost`, `127.0.0.1`, `::1`);
+- a frame from another site than the page in the address bar, for example an embedded video call;
+- the hidden pages that read live folders;
+- a kind of request that Felinaut does not know.
+
+How it works: Wry answers each camera or microphone request with a grant when no handler is set, and its handler can neither wait for an answer nor see the site. Felinaut therefore replaces the `requestMediaCapturePermissionForOrigin` method of Wry's UI delegate (`src/permissions/native.rs`), keeps WebKit's decision handler until you answer, and calls it exactly one time. An answer that nobody gives is a denial. Only public WebKit API is used.
+
+**Not supported: location and notifications.** WKWebView on macOS has no public API to answer these requests, and Felinaut does not use the private one. WebKit therefore refuses them: `navigator.geolocation` reports "permission denied", and `Notification.requestPermission()` answers `denied`. The opt-in native test checks both. Screen sharing (`getDisplayMedia`) is not handled either: WebKit's default applies, and Felinaut has not tested it.
+
 ## Artwork and appearance
 
 The toolbar's **Theme ▾** button opens six curated palettes: **Milky Way** (the new-profile default), Midnight Party, Confetti Sunset, Neon Wool, Alpine Pop, and Forest Carnival. Existing saved selections keep their original theme keys. Themes recolor Felinaut's chrome, address field, New Tab page and About window—not websites. Theme, animation and address-bar choices are saved to `~/Library/Application Support/Felifox/settings` (`key=value` lines, including sidebar choices) and restored on launch.
@@ -301,9 +324,9 @@ The previous WebRender/SWGL pipeline, HTML extraction, custom HTTP loader and `-
 
 ## Scope and limitations
 
-Keep it small: no bookmarks manager, extensions, permission UI, tracker-blocker promise, or private-mode promise. Felinaut persists browsing history and site icons (`~/Library/Application Support/Felifox/history/`, delete it to clear them), Appearance choices (`…/Felifox/settings`), saved tabs (`…/Felifox/tabs.tsv`), live folders (`…/Felifox/live.tsv`) and the downloads list (`…/Felifox/downloads.tsv`: state, start time, size, source host and file path of at most 200 downloads, never the download URL; delete it to clear the list, the files stay). Volume choices last for the session only. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
+Keep it small: no bookmarks manager, extensions, tracker-blocker promise, or private-mode promise. The only site permissions are camera and microphone. Felinaut persists browsing history and site icons (`~/Library/Application Support/Felifox/history/`, delete it to clear them), Appearance choices (`…/Felifox/settings`), saved tabs (`…/Felifox/tabs.tsv`), live folders (`…/Felifox/live.tsv`) and the downloads list (`…/Felifox/downloads.tsv`: state, start time, size, source host and file path of at most 200 downloads, never the download URL; delete it to clear the list, the files stay) and the camera and microphone decisions (`…/Felifox/permissions.tsv`: `allow` or `deny`, the device and the site's origin, never a page address; delete it to forget them). Volume choices last for the session only. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
 
-- Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
+- Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, location, notifications, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
 - This is an early browser shell, not a security-audited Safari replacement. WebKit's engine security updates come from macOS updates.
 - Only macOS is configured and tested. Windows and Linux backends are not configured.
@@ -321,11 +344,13 @@ FELINAUT_NATIVE_TEST=1 cargo test --test native_webview
 FELINAUT_NATIVE_TEST=1 cargo test --test brand_ui
 # Per-tab audio in real WebKit (plays a quiet tone from two loopback origins):
 FELINAUT_NATIVE_TEST=1 cargo test --test native_audio
+# Camera, microphone, location and notifications stay refused (never grants, uses no device):
+FELINAUT_NATIVE_TEST=1 cargo test --test native_permissions
 ```
 
 Add `-F gpui/runtime_shaders` to these commands on machines without full Xcode.
 
-The native webview test verifies actual WebKit JavaScript execution, DOM title changes, localStorage, native history, URL polling of a tab whose host never resolved, and injected DOM-event handling for hover, Cmd-click, middle-click and the right-click menu. It also downloads a loopback attachment whose name points outside the downloads folder (into a temporary home, never the real `~/Downloads`) and checks that the file stays inside it and that a hidden page's download is refused. The brand UI test also verifies that the actual artwork timer advances when enabled and stops when disabled (or when macOS Reduce Motion applies). Geometry tests cover distinct scenes, tessellation and changes over time for all six themes. Native tests use programmatically dispatched DOM events or shared UI handlers, not physical mouse automation. It is skipped by default because WebKit needs a macOS desktop session and main-thread event loop.
+The native webview test verifies actual WebKit JavaScript execution, DOM title changes, localStorage, native history, URL polling of a tab whose host never resolved, and injected DOM-event handling for hover, Cmd-click, middle-click and the right-click menu. It also downloads a loopback attachment whose name points outside the downloads folder (into a temporary home, never the real `~/Downloads`) and checks that the file stays inside it and that a hidden page's download is refused. The brand UI test also verifies that the actual artwork timer advances when enabled and stops when disabled (or when macOS Reduce Motion applies). The permission test calls the replaced delegate method directly, then lets a loopback page and a hidden page ask for the microphone, the location and notifications; it refuses the one request that reaches Felinaut and checks that nothing was granted. It never allows a request, so macOS shows no permission dialog. Geometry tests cover distinct scenes, tessellation and changes over time for all six themes. Native tests use programmatically dispatched DOM events or shared UI handlers, not physical mouse automation. It is skipped by default because WebKit needs a macOS desktop session and main-thread event loop.
 
 ## Source
 
@@ -341,11 +366,14 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/link_interactions.js`: document-level link status, modifier-click and accessible context-menu handling.
 - `src/audio.rs`, `src/audio_control.js`: per-tab volume model, slider mapping, the audio bridge and Web Audio routing.
 - `src/volume.rs`: the native volume popover.
+- `src/permissions.rs`, `src/permissions/native.rs`: camera and microphone decisions per origin and their file, and the replaced WebKit permission method.
+- `src/permission_ui.rs`: the prompt bar.
 - `src/brand.rs` and `assets/`: embedded original SVG mascot, symbol and monochrome UI icons.
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.
 - `tests/native_audio.rs`: opt-in WebKit check of audio routing, cross-origin fallback and reset.
+- `tests/native_permissions.rs`: opt-in WebKit check that no page gets a device, the location or notifications by default.
 
 Felinaut source is MIT licensed. Dependencies retain their own licenses, including GPUI (Apache-2.0) and Wry (Apache-2.0 OR MIT).

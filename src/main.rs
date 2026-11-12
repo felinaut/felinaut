@@ -12,6 +12,8 @@ mod icons;
 mod input;
 mod live;
 mod load_error;
+mod permission_ui;
+mod permissions;
 mod session;
 mod suggestions;
 mod theme;
@@ -502,6 +504,12 @@ struct Browser {
     /// The hovered live folder item's title and address, for the status bar.
     live_hover: Option<String>,
     downloads: downloads::Downloads,
+    /// The stored camera and microphone decisions, by origin.
+    permissions: permissions::Permissions,
+    /// The camera or microphone request the prompt bar shows.
+    permission_prompt: Option<permission_ui::Prompt>,
+    /// Focus for the prompt bar, so its keys work.
+    permission_focus: FocusHandle,
 }
 impl Browser {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -626,6 +634,11 @@ impl Browser {
                 {
                     eprintln!("Could not save downloads: {error}");
                 }
+                if let Some((path, contents)) = this.permissions.take_snapshot()
+                    && let Err(error) = history::write(&path, &contents)
+                {
+                    eprintln!("Could not save site permissions: {error}");
+                }
             });
             true
         });
@@ -700,6 +713,9 @@ impl Browser {
             live_layout: RefCell::new((0, HashMap::new())),
             live_hover: None,
             downloads: downloads::Downloads::load(downloads::default_path()),
+            permissions: permissions::Permissions::load(permissions::default_path()),
+            permission_prompt: None,
+            permission_focus: cx.focus_handle(),
         };
         // Restored tabs load lazily; only the active one (and its split partner) needs a page.
         browser.load_if_needed(active, window);
@@ -1663,6 +1679,7 @@ impl Browser {
                 })
                 .detach();
         }
+        changed |= self.poll_permissions(window, cx);
         self.poll_live(window, cx);
         self.update_peek(window, cx);
         self.flush_history(cx);
@@ -4084,6 +4101,7 @@ impl Render for Browser {
                     } else {
                         p.border
                     })))
+                    .children(self.permission_bar(p, cx))
                     .child(
                         div()
                             .flex_1()
@@ -4164,6 +4182,7 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.set_global(ThemeSettings::load());
         input::init(cx);
+        permission_ui::init(cx);
         #[cfg(target_os = "macos")]
         webview::forward_command_arrows();
         cx.bind_keys([
