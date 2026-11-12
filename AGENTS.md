@@ -61,4 +61,6 @@ Never commit signing keys, provisioning profiles, credentials, or generated `dis
 
 ## Working style
 
+**Always split commits by logical change.** Never bundle unrelated features, bug fixes, refactors, or formatting into one commit. When asked to commit changes or open a PR, create separate, focused commits for independently reviewable changes, with clear messages. Keep each commit buildable and include its relevant tests and documentation. Opening a PR is not permission to squash all work into one commit; do not squash unless explicitly asked.
+
 Preserve unrelated user changes. Fix root causes with small, idiomatic changes and no warning suppression merely to make CI green. Update README documentation for changed controls, storage, prerequisites, or limitations. Do not claim unsupported platforms or untested macOS compatibility. Summarize changed files, behavior, validation, and any remaining risk. Do not commit, push, or publish manually unless asked.
