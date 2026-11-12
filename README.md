@@ -339,7 +339,7 @@ FELINAUT_NATIVE_TEST=1 cargo test --test native_webview
 FELINAUT_NATIVE_TEST=1 cargo test --test brand_ui
 # Per-tab audio in real WebKit (plays a quiet tone from two loopback origins):
 FELINAUT_NATIVE_TEST=1 cargo test --test native_audio
-# Cookie persistence across a restart in real WebKit (loopback only):
+# Cookie persistence across a restart, and the Cookies window against real WebKit (loopback only):
 FELINAUT_NATIVE_TEST=1 cargo test --test native_cookies
 ```
 
@@ -347,7 +347,7 @@ Add `-F gpui/runtime_shaders` to these commands on machines without full Xcode.
 
 The native webview test verifies actual WebKit JavaScript execution, DOM title changes, localStorage, native history, URL polling of a tab whose host never resolved, and injected DOM-event handling for hover, Cmd-click, middle-click and the right-click menu. It also downloads a loopback attachment whose name points outside the downloads folder (into a temporary home, never the real `~/Downloads`) and checks that the file stays inside it and that a hidden page's download is refused. The brand UI test also verifies that the actual artwork timer advances when enabled and stops when disabled (or when macOS Reduce Motion applies). Geometry tests cover distinct scenes, tessellation and changes over time for all six themes. Native tests use programmatically dispatched DOM events or shared UI handlers, not physical mouse automation. It is skipped by default because WebKit needs a macOS desktop session and main-thread event loop.
 
-The native cookie test runs itself twice as a child process: the first loads a loopback page that sets a cookie with an expiry and a session cookie; the second, a fresh process, must send the first back and not the second. It uses the test binary's own WebKit storage, not Felinaut's, and expires its cookies afterwards.
+The native cookie test runs itself twice as a child process: the first sets cookies from two loopback hosts, checks that the Cookies window lists them, that the menu action reuses the one window, that a site is only deleted after the confirmation and that a single cookie is deleted at once; the second, a fresh process, must get the cookie with an expiry back and not the session cookie. It uses the test binary's own WebKit storage, not Felinaut's, and removes its cookies afterwards.
 
 ## Source
 
@@ -372,6 +372,6 @@ The native cookie test runs itself twice as a child process: the first loads a l
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.
 - `tests/native_audio.rs`: opt-in WebKit check of audio routing, cross-origin fallback and reset.
-- `tests/native_cookies.rs`: opt-in check that a cookie with an expiry survives a restart and a session cookie does not.
+- `tests/native_cookies.rs`: opt-in check of cookie persistence across a restart and of the Cookies window's list and delete.
 
 Felinaut source is MIT licensed. Dependencies retain their own licenses, including GPUI (Apache-2.0) and Wry (Apache-2.0 OR MIT).
