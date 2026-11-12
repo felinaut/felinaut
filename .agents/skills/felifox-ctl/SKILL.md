@@ -60,6 +60,9 @@ The references are valid only until the next snapshot. A snapshot does not show 
 | `live refresh <index>` / `live remove <index>` | Refreshes or removes a live folder |
 | `live open <folder> <section> <item>` | Shows a live folder item in its tab |
 | `live close <folder> <section> <item>` | Closes an item (and its tab) until the site updates it |
+| `downloads` | Lists the downloads as JSON: id, name, host, state (`running`, `done`, `failed`, `cancelled`, `interrupted`), received, total, path |
+| `downloads show` | Opens or closes the downloads list |
+| `downloads cancel <id>` | Stops a running download and deletes its partial file |
 
 The exit status is 0 on success and 1 on an error. The error text goes to stderr.
 

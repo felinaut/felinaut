@@ -89,6 +89,33 @@ pub fn cancel(downloads: &mut Downloads, id: u64) -> bool {
         .is_some()
 }
 
+/// Agent control's `downloads`: the list, oldest first, after cancelling one if asked.
+pub fn agent(
+    downloads: &mut Downloads,
+    command: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if let Some(id) = command["cancel"].as_u64()
+        && !cancel(downloads, id)
+    {
+        return Err("No such running download".into());
+    }
+    Ok(downloads
+        .items()
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "id": item.id,
+                "name": item.name(),
+                "host": item.host,
+                "state": item.state.tag(),
+                "received": item.received,
+                "total": item.total,
+                "path": item.path,
+            })
+        })
+        .collect())
+}
+
 #[derive(Default)]
 struct PopupWindow(Option<WindowHandle<DownloadPanel>>);
 impl Global for PopupWindow {}

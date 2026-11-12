@@ -200,6 +200,7 @@ cargo run --bin felinaut-ctl -- snapshot   # or: target/debug/felinaut-ctl snaps
 | `click <@ref>`, `type <@ref> <text>`, `press <key>` | Operate the page                                                                  |
 | `eval <expression>`                                 | Evaluate one JavaScript expression                                                |
 | `screenshot [path]`                                 | Save WebKit's own PNG snapshot of the page                                        |
+| `downloads`, `downloads show`, `downloads cancel <id>` | List the downloads (name, state, bytes, path), open or close the list, or stop a running download |
 
 `click`, `type` and `press` send synthetic JavaScript events by default. Some sites ignore these events (`isTrusted` is false). Add `--native` to send a real mouse or keyboard event to the WKWebView.
 

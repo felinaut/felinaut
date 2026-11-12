@@ -34,7 +34,8 @@ pub enum State {
 }
 
 impl State {
-    fn tag(self) -> &'static str {
+    /// The name in `downloads.tsv` and in agent control's answers.
+    pub fn tag(self) -> &'static str {
         match self {
             Self::Running => "running",
             Self::Done => "done",

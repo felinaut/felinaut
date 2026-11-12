@@ -29,6 +29,9 @@ Usage: felinaut-ctl <command>      (start Felinaut with FELINAUT_AGENT=1)
                           Refresh or remove a live folder
   live open|close <folder> <section> <item>
                           Show a live folder item in its tab, or close it until it is updated
+  downloads               List the downloads: name, state, bytes and path
+  downloads show          Open or close the downloads list
+  downloads cancel <id>   Stop a running download
 
   --native                With click, type or press: send a real mouse or keyboard event.
                           Use it when a site ignores the default synthetic events.";
@@ -48,6 +51,11 @@ fn command(args: &[String]) -> Option<Value> {
             "open": [folder.parse::<u64>().ok()?, section.parse::<u64>().ok()?, item.parse::<u64>().ok()?],
             "close": action == "close",
         }),
+        ["downloads"] => json!({"cmd": "downloads"}),
+        ["downloads", "show"] => json!({"cmd": "downloads", "show": true}),
+        ["downloads", "cancel", id] => {
+            json!({"cmd": "downloads", "cancel": id.parse::<u64>().ok()?})
+        }
         ["navigate", url] => json!({"cmd": "navigate", "url": url}),
         ["click", reference] => json!({"cmd": "click", "ref": reference}),
         ["type", reference, text] => json!({"cmd": "type", "ref": reference, "text": text}),
@@ -154,11 +162,23 @@ mod tests {
             parse(&["live", "close", "0", "1", "2"]),
             Some(json!({"cmd": "live", "open": [0, 1, 2], "close": true}))
         );
+        assert_eq!(parse(&["downloads"]), Some(json!({"cmd": "downloads"})));
+        assert_eq!(
+            parse(&["downloads", "show"]),
+            Some(json!({"cmd": "downloads", "show": true}))
+        );
+        assert_eq!(
+            parse(&["downloads", "cancel", "3"]),
+            Some(json!({"cmd": "downloads", "cancel": 3}))
+        );
         for args in [
             vec![],
             vec!["unknown"],
             vec!["tab", "-1"],
             vec!["live", "open", "0", "x", "2"],
+            vec!["downloads", "cancel"],
+            vec!["downloads", "cancel", "all"],
+            vec!["downloads", "open", "1"],
         ] {
             assert_eq!(parse(&args), None);
         }

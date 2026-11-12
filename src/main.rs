@@ -1182,6 +1182,12 @@ impl Browser {
                 _ => Err("No such tab".into()),
             },
             "live" => self.agent_live(command, window, cx),
+            "downloads" => {
+                if command["show"].as_bool() == Some(true) {
+                    self.show_downloads(&ShowDownloads, window, cx);
+                }
+                download_panel::agent(&mut self.downloads, command)
+            }
             "navigate" => {
                 self.navigate(command["url"].as_str().unwrap_or_default(), window, cx);
                 let tab = &self.tabs[self.active];
