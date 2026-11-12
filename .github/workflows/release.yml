@@ -1,0 +1,171 @@
+name: Main prerelease
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Deliberately no concurrency group: newer pushes must not cancel queued commits.
+jobs:
+  build:
+    name: Validate and build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            arch: x86_64
+            target: x86_64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install Rust with validation tools
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          rustc -vV
+          test "$(rustc -vV | sed -n 's/^host: //p')" = '${{ matrix.target }}'
+      - name: Check full Xcode and Metal compiler
+        run: |
+          developer_dir="$(xcode-select -p)"
+          test -d "$developer_dir/../.."
+          test -f "$developer_dir/../../Contents/Info.plist"
+          xcodebuild -version
+          if ! xcrun --sdk macosx metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun --sdk macosx metal --version
+      - name: Check formatting
+        run: |
+          cargo fmt --all --check
+          cargo fmt --manifest-path tools/dist/Cargo.toml --all --check
+      - name: Clippy (warnings are errors)
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path tools/dist/Cargo.toml --all-targets -- -D warnings
+      - name: Rust unit tests
+        run: |
+          cargo test --locked --bins
+          cargo test --locked --manifest-path tools/dist/Cargo.toml
+      - name: Python packaging tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Build and verify ad-hoc signed app
+        run: |
+          cargo dist --app-only
+          codesign --verify --deep --strict dist/Felifox.app
+          lipo -verify_arch '${{ matrix.arch }}' dist/Felifox.app/Contents/MacOS/felifox
+      - name: ZIP app (preserve macOS metadata and bundle root)
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path('Cargo.toml').read_text())['package']['version']
+          short = subprocess.check_output(['git', 'rev-parse', '--short=12', 'HEAD'], text=True).strip()
+          name = f"Felifox-{version}-{short}-macos-{os.environ['ARCH']}.zip"
+          Path('release-assets').mkdir()
+          subprocess.run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent',
+                          'dist/Felifox.app', f'release-assets/{name}'], check=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: release-assets/*.zip
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  publish:
+    name: Publish complete prerelease
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-macos-*
+          path: release-assets
+          merge-multiple: true
+      - name: Require both architectures and checksum all ZIPs
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path('Cargo.toml').read_text())['package']['version']
+          sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          short = subprocess.check_output(['git', 'rev-parse', '--short=12', 'HEAD'], text=True).strip()
+          assets = Path('release-assets')
+          expected = {f'Felifox-{version}-{short}-macos-{arch}.zip' for arch in ('arm64', 'x86_64')}
+          assert {p.name for p in assets.iterdir()} == expected, 'Missing or unexpected release assets'
+          lines = []
+          for name in sorted(expected):
+              with (assets / name).open('rb') as file:
+                  digest = hashlib.file_digest(file, 'sha256').hexdigest()
+              lines.append(f'{digest}  {name}\n')
+          (assets / 'SHA256SUMS').write_text(''.join(lines))
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'RELEASE_TAG=main-{sha}\nRELEASE_TITLE=Felifox {version} ({short})\n')
+          PY
+          (cd release-assets && sha256sum --check SHA256SUMS)
+      - name: Create or resume draft, upload, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cat > release-notes.md <<'NOTES'
+          Automated, native macOS builds from the commit targeted by this release.
+          Choose arm64 for Apple Silicon or x86_64 for Intel; extract the ZIP and move Felifox.app into Applications.
+          Verify the ZIPs with SHA256SUMS before extracting.
+
+          These apps have local ad-hoc signatures only: no Developer ID signing or Apple notarization.
+          Gatekeeper may block downloaded builds. Only override the warning if you trust this source and commit.
+          No Finder DMG, universal binary, updater, or interactive native UI testing is provided by this workflow.
+          NOTES
+          if gh release view "$RELEASE_TAG" --json isDraft > release-state.json; then
+            if [ "$(python3 -c 'import json; print(json.load(open("release-state.json"))["isDraft"])')" = False ]; then
+              echo "This commit already has a published release; leaving its assets unchanged."
+              exit 0
+            fi
+          else
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TITLE" \
+              --draft --prerelease \
+              --generate-notes --notes-file release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/*.zip release-assets/SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
