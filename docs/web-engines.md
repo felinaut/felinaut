@@ -35,6 +35,25 @@ This comparison does not limit Felinaut's architecture to two backends. The [por
 
 Neither option automatically adds Safari extensions, Chrome extensions, password-manager integration, working passkeys, or streaming-service DRM. Our current passkey limitation is documented in the [README](../README.md#passkeys); WPE must not be advertised as a workaround without an independently implemented and tested authenticator integration.
 
+## A separately built native WebKit on macOS
+
+The supported upstream starting point for a macOS WebKit build is the **Cocoa/macOS port**, exposed through `WebKit.framework` and `WKWebView`, not WPE. Apple's system framework is what Felinaut currently uses. WebKit developers can also build that native port with Xcode and exercise it using the upstream MiniBrowser reference app.
+
+From a suitable WebKit source checkout, the documented development commands include:
+
+```sh
+Tools/Scripts/build-webkit --release
+Tools/Scripts/run-minibrowser --release
+```
+
+These commands have **not** been run for this investigation. No WebKit checkout or alternate engine runtime has been added to Felinaut. Upstream also documents `run-webkit-app` for launching an app against development framework builds; that is a development mechanism, not a validated production bundling solution.
+
+A useful separate experiment would first prove a pinned Cocoa WebKit build in MiniBrowser, then investigate an isolated Felinaut launch against it, verifying the framework actually loaded through runtime diagnostics. Prefer separate launches/profiles for different framework builds, not loading two versions into one running process. Do not replace system frameworks or disable system protections. Helper processes, framework loading, sandboxing, signing, licenses and security updates still need review before redistribution.
+
+**System WebKit versus a separately built Cocoa WebKit tests revisions/configurations of the native port. It is not native WebKit versus WPE**, and should not be labeled as such in a picker or benchmark. Preserve WPE-on-macOS as its own unresolved feasibility investigation.
+
+Sources: [Apple's WKWebView API](https://developer.apple.com/documentation/webkit/wkwebview), [building WebKit](https://webkit.org/building-webkit/), and [running WebKit development builds](https://webkit.org/running-webkit/).
+
 ## What WPE would require on macOS
 
 The current WPE architecture documentation recommends **WPEPlatform starting with 2.54**. It exchanges rendered buffers through `WPEDisplay`, `WPEView`, and related types, with built-in Wayland, DRM/KMS, and headless implementations. Older `libwpe` and external-backend instructions describe the legacy integration and should not be assumed to be the starting point for a new project.
