@@ -17,12 +17,16 @@ pub type PumpCallback = extern "C" fn();
 
 unsafe extern "C" {
     fn felinaut_cef_pump_start(callback: PumpCallback) -> bool;
+    fn felinaut_cef_pump_start_cef(callback: PumpCallback) -> bool;
     fn felinaut_cef_pump_schedule(delay_ms: i64);
     fn felinaut_cef_pump_stop() -> bool;
     fn felinaut_cef_pump_self_test() -> bool;
 }
 
-/// Start an idle scheduler on the AppKit main thread.
+/// Start a notification-only scheduler on the AppKit main thread.
+///
+/// This generic/SDK-free mode never polls when idle. Use [`start_cef`] for the
+/// pinned CEF runtime's reference-compatible liveness behavior.
 ///
 /// Returns false off-main, if already started, while a pump callback is on the
 /// stack (even if it called [`stop`]), or if native setup fails. Starting does not
@@ -34,11 +38,32 @@ pub fn start(callback: PumpCallback) -> bool {
     unsafe { felinaut_cef_pump_start(callback) }
 }
 
+/// Start with the pinned CEF reference implementation's liveness policy.
+///
+/// Same thread, callback, startup and failure contracts as [`start`]. Positive
+/// waits cap at 33 ms. After each callback, if no newer deadline was scheduled,
+/// a 33 ms fallback is armed; it never replaces a newer notification. Starting
+/// itself stays idle until the first [`schedule`] call.
+///
+/// This matches the CEF 156.0.26 reference external pump, not a universal CEF API
+/// requirement. See its [delay cap and post-work fallback][reference]. While
+/// active, it continues waking at roughly 30 Hz even without new notifications;
+/// callback cost is additional. No CPU, power or latency improvement is claimed.
+/// [`stop`] cancels this behavior, and a subsequent [`start`] restores generic mode.
+///
+/// [reference]: https://github.com/chromiumembedded/cef/blob/8ea0c73b5dbed1389c8dafb911a98c41246bb8cb/tests/shared/browser/main_message_loop_external_pump.cc#L21-L83
+pub fn start_cef(callback: PumpCallback) -> bool {
+    // SAFETY: Same native ownership checks and function-pointer ABI as `start`;
+    // the liveness policy does not invoke the callback synchronously.
+    unsafe { felinaut_cef_pump_start_cef(callback) }
+}
+
 /// Replace the outstanding deadline from any thread; do not pump synchronously.
 ///
 /// Latest means mutex-serialized arrival order, not the minimum requested delay.
 /// Nonpositive delays request prompt asynchronous work. Positive delays saturate
-/// at 24 hours and are measured against a monotonic clock. Notifications while
+/// at 24 hours in generic mode or 33 ms in CEF mode, using a monotonic clock.
+/// Notifications while
 /// stopped are ignored, not replayed on a future start. The host must quiesce old
 /// CEF producers before restarting: the C ABI carries no producer/session token.
 pub fn schedule(delay_ms: i64) {
@@ -64,7 +89,8 @@ pub fn stop() -> bool {
 ///
 /// Must run on-main before creating NSApplication/GPUI or starting CEF. Refuses an
 /// existing application, active scheduler or nested check. Temporarily drives the
-/// native loop (including event-tracking mode), then stops and drains stale work.
+/// native loop (including event-tracking mode), checks both notification-only and
+/// CEF-liveness scheduling, then stops and drains stale work.
 /// The normal native-loop budget is 1.5 seconds; this is not an engine/SDK test.
 pub fn self_test() -> bool {
     // SAFETY: Native tests use only process-lifetime callbacks/state, guard their
