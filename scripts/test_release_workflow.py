@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -148,6 +149,61 @@ def workflow_python(job):
     if len(blocks) != 1:
         raise ValueError(f"Expected one Python heredoc in {job}, found {len(blocks)}")
     return compile(blocks[0], f"release.yml:{job}", "exec")
+
+
+def publish_concurrency(context):
+    """Read the job's JSON-compatible scalar settings and resolve context paths."""
+    lines = (ROOT / ".github/workflows/release.yml").read_text().splitlines()
+    job = lines.index("  publish:")
+    start = lines.index("    concurrency:", job) + 1
+    settings = {}
+    for line in lines[start:]:
+        if not line.startswith("      "):
+            break
+        key, value = line.strip().split(":", 1)
+        settings[key] = json.loads(value)
+
+    def resolve(match):
+        value = context
+        for part in match.group(1).strip().split("."):
+            value = value[part]
+        return str(value)
+
+    settings["group"] = re.sub(r"\$\{\{([^{}]+)\}\}", resolve, settings["group"])
+    return settings
+
+
+class ReleaseConcurrencyTests(unittest.TestCase):
+    def settings(self, tag, *, run=1, attempt=1, event="push"):
+        return publish_concurrency(
+            {
+                "needs": {"metadata": {"outputs": {"tag": tag}}},
+                "github": {
+                    "run_id": run,
+                    "run_attempt": attempt,
+                    "event_name": event,
+                    "ref": "refs/heads/main",
+                },
+            }
+        )
+
+    def test_same_tag_shares_a_group_across_runs_retries_and_manual_dispatches(self):
+        original = self.settings("v0.1.42")["group"]
+        self.assertTrue(original)
+        for overrides in ({"run": 2}, {"attempt": 2}, {"event": "workflow_dispatch"}):
+            with self.subTest(overrides=overrides):
+                self.assertEqual(
+                    self.settings("v0.1.42", **overrides)["group"], original
+                )
+
+    def test_different_release_versions_can_publish_independently(self):
+        original = self.settings("v0.1.42")["group"]
+        for tag in ("v0.1.43", "v0.2.0", "v1.0.0"):
+            with self.subTest(tag=tag):
+                self.assertNotEqual(self.settings(tag)["group"], original)
+
+    def test_duplicate_run_does_not_cancel_the_active_publisher(self):
+        self.assertIs(self.settings("v0.1.42")["cancel-in-progress"], False)
 
 
 class ReleasePythonTests(unittest.TestCase):
@@ -615,6 +671,15 @@ class ReleaseShellTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("does not target this exact source commit", result.stderr)
         self.assertEqual(calls, [self.view_call()])
+
+    def test_second_publisher_leaves_the_first_publishers_release_unchanged(self):
+        first, first_calls = self.run_publish(None)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        second, calls = self.run_publish(
+            {"isDraft": False, "targetCommitish": self.SHA}
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(calls[len(first_calls) :], [self.view_call()])
 
     def test_published_release_exits_without_overwriting_assets(self):
         result, calls = self.run_publish({"isDraft": False, "targetCommitish": "main"})

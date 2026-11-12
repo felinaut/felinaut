@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 
-# Deliberately no concurrency group: newer pushes must not cancel queued commits.
+# No workflow-wide concurrency group: newer commits must not replace queued builds.
 jobs:
   metadata:
     name: Determine semantic release version
@@ -181,6 +181,10 @@ jobs:
     name: Publish complete prerelease
     if: github.ref == 'refs/heads/main'
     needs: [metadata, universal]
+    # Serialize duplicate publications without blocking other release versions.
+    concurrency:
+      group: "publish-${{ needs.metadata.outputs.tag }}"
+      cancel-in-progress: false
     env:
       FELINAUT_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
       FELINAUT_RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
