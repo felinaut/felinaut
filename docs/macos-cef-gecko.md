@@ -12,6 +12,12 @@ Scope: build-time optional engines, eventually selectable at runtime **per tab i
 - **Gecko remains unavailable as a Felinaut backend.** No maintained macOS desktop embedding SDK/binding with CEF-like lifecycle, native-view and security contracts was established by this investigation. GeckoView is Android; desktop Firefox and Firefox automation are not an embeddable AppKit control. This is a bounded research conclusion, not proof that a custom Gecko fork is impossible.
 - **Do not source-build Chromium/CEF or Firefox on this machine for this task.** The local free-space constraint (approximately **16 GiB**) rules out a full source-build attempt in this investigation. Only metadata and individual source/document pages were fetched; no SDK/archive, clone, install, dependency resolution, or engine build was performed.
 
+## Native lifecycle checkpoint
+
+The [SDK-free GPUI lifecycle probe](../tools/cef-probe/README.md) now passes on this macOS 27 arm64 host. It creates a new subclass of the already registered `GPUIApplication` before singleton acquisition, preserves GPUI's inherited state/delegate, verifies nested/exception event scope, rejects an existing singleton, and holds quit until explicit asynchronous release. AppKit's KVO subclass requires ancestry checks rather than exact class equality. No GPUI patch, object-class replacement or blanket swizzling was needed for this probe.
+
+This narrows the application-class blocker; it does **not** prove CEF protocol conformance, framework initialization, pumping, sandboxing or a rendered web page. The original research sections below remain source evidence; the probe README records the separate native commands/results and actual window capture. The browser's CEF feature remains blocked.
+
 ## 1. Evidence boundary and exact pins
 
 Local source baseline: `ac9f00c23590d5497a2118ba2b5aaae5c213114e`, plus the existing uncommitted working implementation. In particular, existing comparison code and updated architecture documents are uncommitted; the commit alone does not describe that implementation.
