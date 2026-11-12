@@ -23,6 +23,10 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 use webview::{Event, NativePage};
@@ -31,6 +35,7 @@ struct TestWindow {
     page: Rc<NativePage>,
     _second_tab: NativePage,
     _failed_tab: Rc<NativePage>,
+    _hidden: NativePage,
 }
 impl Render for TestWindow {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -57,9 +62,18 @@ fn main() {
         println!("Native webview test skipped; set FELINAUT_NATIVE_TEST=1 to run.");
         return;
     }
+    // Downloads go to `$HOME/Downloads`: give the test a home of its own, before any thread
+    // starts, so nothing lands in the real one.
+    let home = std::env::temp_dir().join(format!("felinaut-native-{}", std::process::id()));
+    let folder = home.join("Downloads");
+    std::fs::create_dir_all(&folder).expect("temporary downloads folder");
+    // SAFETY: the process has only this thread so far.
+    unsafe { std::env::set_var("HOME", &home) };
     // All fixture traffic stays on loopback; exercise the production, URL-only link bridge.
     let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
     let base = format!("http://{}", listener.local_addr().unwrap());
+    let download_requests = Arc::new(AtomicUsize::new(0));
+    let served_downloads = download_requests.clone();
     std::thread::spawn(move || {
         for connection in listener.incoming() {
             let Ok(mut stream) = connection else {
@@ -73,6 +87,12 @@ fn main() {
                 continue;
             };
             let request = String::from_utf8_lossy(&request[..count]);
+            if request.starts_with("GET /download ") {
+                // The server asks for a name outside the downloads folder.
+                served_downloads.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"../../fixture.bin\"\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture");
+                continue;
+            }
             let second = request.starts_with("GET /second ");
             let script = if second {
                 "document.title = localStorage.getItem('felifox-smoke') === 'yes' ? 'JS SECOND' : 'STORAGE FAILED';"
@@ -95,6 +115,9 @@ fn main() {
     Application::new().run(move |cx| {
         let first_url = format!("{base}/first");
         let second_url = format!("{base}/second");
+        let download_url = format!("{base}/download");
+        let folder = folder.clone();
+        let download_requests = download_requests.clone();
         let handle = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(800.), px(600.)), cx))),
@@ -108,6 +131,8 @@ fn main() {
                 // without a URL; polling such a tab must not abort the app.
                 let failed_tab = Rc::new(NativePage::new(window, "http://felifox.invalid/").expect("create failing tab"));
                 let failed_page = failed_tab.clone();
+                // A page the user never sees asks for the same download; it must be refused.
+                let hidden = NativePage::hidden(window, &download_url).expect("create hidden page");
                 page.focus().unwrap();
                 page.focus_parent().unwrap();
                 let second_page = page.clone();
@@ -121,8 +146,10 @@ fn main() {
                         let mut background_opens = 0;
                         let mut foreground_open = false;
                         let mut failure = None;
+                        let mut downloads = Vec::new();
                         loop {
                             Timer::after(Duration::from_millis(50)).await;
+                            downloads.extend(downloads::native::drain());
                             for event in failed_page.drain_events() {
                                 if let Event::Failed(value) = event {
                                     failure = Some(value);
@@ -143,6 +170,8 @@ fn main() {
                             assert!(start.elapsed() < Duration::from_secs(20), "native test timed out at stage {stage}; title={title:?}");
                             if stage <= 4 && !finished { continue; }
                             if stage == 5 && (title != "LINK EVENTS OK" || failure.is_none()) { continue; }
+                            let downloaded = downloads.iter().any(|event| matches!(event, downloads::Event::Finished { .. }));
+                            if stage == 6 && !(downloaded && download_requests.load(Ordering::SeqCst) >= 2) { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
@@ -194,7 +223,26 @@ fn main() {
                                     let failure = failure.take().unwrap();
                                     assert_eq!(failure.kind, load_error::Kind::HostNotFound, "{failure:?}");
                                     assert_eq!(failure.url, "http://felifox.invalid/");
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge");
+                                    second_page.navigate(&download_url).unwrap();
+                                }
+                                6 => {
+                                    // Give a wrongly accepted hidden download time to show up.
+                                    Timer::after(Duration::from_millis(500)).await;
+                                    downloads.extend(downloads::native::drain());
+                                    let started: Vec<_> = downloads.iter().filter_map(|event| match event {
+                                        downloads::Event::Started { url, path, total, .. } => Some((url.as_str(), path.clone(), *total)),
+                                        _ => None,
+                                    }).collect();
+                                    // WebKit itself replaces the slashes; either way the file stays inside.
+                                    let [(url, saved, total)] = &started[..] else { panic!("expected one download: {downloads:?}") };
+                                    assert_eq!((*url, *total), (download_url.as_str(), Some(7)));
+                                    assert_eq!(saved.parent(), Some(folder.as_path()), "{saved:?}");
+                                    assert!(saved.to_string_lossy().ends_with("fixture.bin"), "{saved:?}");
+                                    assert!(downloads.iter().any(|event| matches!(event, downloads::Event::Finished { received: 7, .. })), "{downloads:?}");
+                                    assert_eq!(std::fs::read(saved).unwrap(), b"fixture");
+                                    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "the hidden page saved nothing");
+                                    std::fs::remove_dir_all(folder.parent().unwrap()).unwrap();
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, and a download that stays in the downloads folder while a hidden page's is refused");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;
@@ -204,7 +252,7 @@ fn main() {
                             stage += 1;
                         }
                     }).detach();
-                    TestWindow { page, _second_tab: second_tab, _failed_tab: failed_tab }
+                    TestWindow { page, _second_tab: second_tab, _failed_tab: failed_tab, _hidden: hidden }
                 })
             },
         ).expect("native test window");
