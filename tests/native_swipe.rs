@@ -1,5 +1,5 @@
-//! Opt-in native test of the tab swipe monitor: synthetic trackpad scroll gestures, posted to
-//! this process's own event queue, over GPUI chrome and over a native page.
+//! Opt-in native test of the back/forward swipe monitor: synthetic trackpad scroll gestures,
+//! posted to this process's own event queue, over GPUI chrome and over a native page.
 //! Run: FELINAUT_NATIVE_TEST=1 cargo test --test native_swipe
 //!
 //! Three-finger swipes (`NSEventTypeSwipe`) cannot be synthesized and are covered by the
@@ -26,9 +26,9 @@ mod webview;
 
 use gpui::{prelude::*, *};
 use objc2::{
-    Encoding, Message, RefEncode, msg_send,
+    ClassType, Encoding, Message, RefEncode, msg_send,
     rc::Retained,
-    runtime::{AnyClass, AnyObject},
+    runtime::{AnyClass, AnyObject, NSObjectProtocol},
 };
 use objc2_app_kit::{NSEvent, NSView, NSWindow};
 use objc2_foundation::{NSPoint, NSRect};
@@ -123,6 +123,20 @@ impl Target {
         // SAFETY: plain CoreGraphics queries.
         let main = unsafe { CGDisplayBounds(CGMainDisplayID()) };
         NSPoint::new(screen.x, main.size.height - screen.y)
+    }
+
+    /// Whether the window's native page has WebKit's own back/forward swipe turned on.
+    fn page_swipes(&self) -> bool {
+        fn find(view: &NSView) -> Option<Retained<NSView>> {
+            if view.isKindOfClass(objc2_web_kit::WKWebView::class()) {
+                return Some(view.retain());
+            }
+            view.subviews().iter().find_map(|child| find(&child))
+        }
+        let root = self.window.contentView().expect("content view");
+        let page = find(&root).expect("a WKWebView in the window");
+        // SAFETY: a plain property read of a live WKWebView on the main thread.
+        unsafe { msg_send![&*page, allowsBackForwardNavigationGestures] }
     }
 
     /// Posts one scroll event to this app's queue, where the event monitor sees it.
@@ -233,10 +247,12 @@ fn main() {
             let chrome = target.global(f64::from(CHROME) / 2., 250.);
             let page = target.global(f64::from(CHROME) + 250., 250.);
             let enabled = NSEvent::isSwipeTrackingFromScrollEventsEnabled();
-            // A real swipe, then its opposite: one step each, however long the fingers move.
+            // WebKit's own swipe goes the other way, and would take a second step.
+            assert!(!target.page_swipes(), "WebKit's back/forward swipe is off");
+            // Forward, then back: one step each, however long the fingers move.
             target.gesture(chrome, &[(-20, 0); 12]);
             target.gesture(chrome, &[(20, 0); 12]);
-            // None of these may switch.
+            // None of these may navigate.
             target.gesture(chrome, &[(0, -20); 12]);
             target.gesture(chrome, &[(-20, -20); 12]);
             target.gesture(chrome, &[(-10, 0); 3]);
@@ -245,6 +261,7 @@ fn main() {
                 target.post(chrome, -40, 0, 0, MOMENTUM_CONTINUE);
             }
             target.post(chrome, 0, 0, 0, MOMENTUM_END);
+            // Over a page too: the same direction as the first swipe.
             target.gesture(page, &[(-20, 0); 12]);
             target.post(chrome, 0, 0, BEGAN, 0);
             target.post(chrome, -20, 0, CHANGED, 0);
@@ -256,13 +273,14 @@ fn main() {
             let steps = steps.borrow().clone();
             if enabled {
                 assert!(
-                    matches!(steps.as_slice(), [first, second, last] if first != second && first == last),
+                    matches!(steps.as_slice(), [first, second, page, last]
+                        if first != second && page == first && last == first),
                     "expected one step per real swipe, got {steps:?}"
                 );
                 println!("Native swipe test passed.");
             } else {
                 assert!(steps.is_empty(), "swipes are off in System Settings, got {steps:?}");
-                println!("Native swipe test passed; two-finger swipes are off in System Settings, so none switched.");
+                println!("Native swipe test passed; two-finger swipes are off in System Settings, so none navigated.");
             }
             let _ = cx.update(|cx| cx.quit());
         })

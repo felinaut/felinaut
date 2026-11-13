@@ -709,7 +709,7 @@ thread_local! {
     static SWIPE_WAKER: RefCell<Option<std::task::Waker>> = const { RefCell::new(None) };
 }
 
-/// Tab steps from trackpad swipes, in the order they were made.
+/// Back and forward steps from trackpad swipes, in the order they were made.
 pub struct Swipes(Receiver<crate::swipe::Step>);
 
 impl Swipes {
@@ -729,8 +729,8 @@ impl Swipes {
     }
 }
 
-/// Watches the trackpad for swipes that switch tabs in `window`; see `swipe` for which ones.
-/// Events are only read, never consumed, except a three-finger swipe that switched a tab.
+/// Watches the trackpad for swipes that go back or forward in `window`; see `swipe` for which
+/// ones. Events are only read, never consumed, except a three-finger swipe that made a step.
 /// Call this on the main thread; a second call moves the watch to the new window.
 #[cfg(target_os = "macos")]
 pub fn watch_swipes(window: &gpui::Window) -> Option<Swipes> {
@@ -798,19 +798,17 @@ fn swipe_event(event: &objc2_app_kit::NSEvent) -> bool {
         };
         // Trackpad events belong to the window under the pointer. Events posted without one,
         // like synthetic ones, carry screen coordinates instead.
-        let location = match event.window(mtm) {
-            Some(window) if window == own => event.locationInWindow(),
-            Some(_) => return false,
+        let ours = match event.window(mtm) {
+            Some(window) => window == own,
             None => {
                 let screen = event.locationInWindow();
-                let front =
-                    NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(screen, 0, mtm);
-                if front != own.windowNumber() {
-                    return false;
-                }
-                own.convertPointFromScreen(screen)
+                NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(screen, 0, mtm)
+                    == own.windowNumber()
             }
         };
+        if !ours {
+            return false;
+        }
         let step = match event.r#type() {
             NSEventType::ScrollWheel => {
                 // Mouse wheels have no fingers to lift, so no gesture to end.
@@ -818,19 +816,19 @@ fn swipe_event(event: &objc2_app_kit::NSEvent) -> bool {
                     return false;
                 }
                 let phase = Phase::from_appkit(event.phase().0);
-                // Hit testing and the setting matter only when a gesture begins.
-                let allowed = phase == Phase::Began
-                    && NSEvent::isSwipeTrackingFromScrollEventsEnabled()
-                    && !over_page(&own, location);
+                // The setting matters only when a gesture begins.
+                let allowed =
+                    phase == Phase::Began && NSEvent::isSwipeTrackingFromScrollEventsEnabled();
                 watch.tracker.feed(Sample {
                     dx: event.scrollingDeltaX(),
                     dy: event.scrollingDeltaY(),
                     phase,
                     momentum: event.momentumPhase() != NSEventPhase::None,
+                    natural: event.isDirectionInvertedFromDevice(),
                     allowed,
                 })
             }
-            NSEventType::Swipe => swipe_step(event.deltaX(), event.deltaY()),
+            NSEventType::Swipe => swipe_step(event.deltaX(), event.deltaY(), natural_scrolling()),
             _ => None,
         };
         step.is_some_and(|step| watch.sender.send(step).is_ok())
@@ -842,30 +840,18 @@ fn swipe_event(event: &objc2_app_kit::NSEvent) -> bool {
     if let Some(waker) = SWIPE_WAKER.take() {
         waker.wake();
     }
-    // Scroll events still reach the chrome; it scrolls only vertically.
+    // Scroll events still reach the page or chrome under the pointer.
     event.r#type() == NSEventType::Swipe
 }
 
-/// Whether the point, in window coordinates, is over a web page rather than the GPUI chrome.
+/// Whether natural scrolling is on, for swipe events, which do not say. It is the default when
+/// the user never changed it.
 #[cfg(target_os = "macos")]
-fn over_page(window: &objc2_app_kit::NSWindow, location: objc2_foundation::NSPoint) -> bool {
-    use objc2::{ClassType, runtime::NSObjectProtocol};
-    let Some(content) = window.contentView() else {
-        return false;
-    };
-    // `hitTest:` takes a point in the receiver's superview; the content view's superview, the
-    // window's frame view, has none, so window coordinates are its own.
-    // SAFETY: main thread, and `superview` returns a retained view.
-    let root = unsafe { content.superview() }.unwrap_or(content);
-    let mut view = root.hitTest(location);
-    while let Some(current) = view {
-        if current.isKindOfClass(objc2_web_kit::WKWebView::class()) {
-            return true;
-        }
-        // SAFETY: as above; the hierarchy is not changed while we walk it.
-        view = unsafe { current.superview() };
-    }
-    false
+fn natural_scrolling() -> bool {
+    use objc2_foundation::{NSUserDefaults, ns_string};
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let key = ns_string!("com.apple.swipescrolldirection");
+    defaults.objectForKey(key).is_none() || defaults.boolForKey(key)
 }
 
 /// Agent control is opt-in. The new setting takes precedence, including an explicit disable.

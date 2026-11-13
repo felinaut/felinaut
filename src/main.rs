@@ -447,8 +447,6 @@ struct Browser {
     _theme_observer: Subscription,
     art_phase: f32,
     zoom_flash: Option<Instant>,
-    /// The last tab swipe and when it landed, sliding the newly shown row into place.
-    swipe_nudge: Option<(swipe::Step, Instant)>,
     history: History,
     last_save: Instant,
     /// History rows matching the address text, shown by `suggestions` while typing.
@@ -601,10 +599,12 @@ impl Browser {
         if let Some(swipes) = webview::watch_swipes(window) {
             cx.spawn_in(window, async move |this, cx| {
                 while let Some(step) = swipes.next().await {
-                    if this
-                        .update_in(cx, |this, window, cx| this.swipe_tab(step, window, cx))
-                        .is_err()
-                    {
+                    let navigate =
+                        |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| match step {
+                            swipe::Step::Back => this.back(&Back, window, cx),
+                            swipe::Step::Forward => this.forward(&Forward, window, cx),
+                        };
+                    if this.update_in(cx, navigate).is_err() {
                         break;
                     }
                 }
@@ -684,7 +684,6 @@ impl Browser {
             _theme_observer: theme_observer,
             art_phase: 0.,
             zoom_flash: None,
-            swipe_nudge: None,
             history: History::load(history::default_path()),
             last_save: Instant::now(),
             suggestions: Vec::new(),
@@ -1141,26 +1140,21 @@ impl Browser {
         let index = action.0.min(self.tabs.len() - 1);
         self.select_tab(index, window, cx);
     }
-    /// Cycles through tabs in sidebar order, wrapping at either end. With one tab it still
-    /// selects it, which focuses the browser as ⌃Tab always did.
-    fn step_tab(&mut self, step: swipe::Step, window: &mut Window, cx: &mut Context<Self>) {
-        let index = swipe::adjacent(self.active, self.tabs.len(), step).unwrap_or(self.active);
+    /// Cycles through tabs in sidebar order, wrapping at either end.
+    fn step_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.tabs.len();
+        let index = if forward {
+            (self.active + 1) % count
+        } else {
+            (self.active + count - 1) % count
+        };
         self.select_tab(index, window, cx);
     }
     fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.step_tab(swipe::Step::Next, window, cx);
+        self.step_tab(true, window, cx);
     }
     fn previous_tab(&mut self, _: &PreviousTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.step_tab(swipe::Step::Previous, window, cx);
-    }
-    /// A trackpad swipe steps like ⌃Tab, but does nothing with a single tab: taking focus
-    /// from the page would be a surprise for a gesture that shows no change.
-    fn swipe_tab(&mut self, step: swipe::Step, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(index) = swipe::adjacent(self.active, self.tabs.len(), step) {
-            self.select_tab(index, window, cx);
-            self.swipe_nudge = (window.is_window_active() && theme::motion_allowed(cx))
-                .then(|| (step, Instant::now()));
-        }
+        self.step_tab(false, window, cx);
     }
     /// Pinned tabs restored at launch have no page until they are first shown.
     fn load_if_needed(&mut self, index: usize, window: &mut Window) {
@@ -2654,11 +2648,6 @@ impl Browser {
                     .text_color(rgb(p.muted)),
             )
     }
-    /// How far the active tab's row or tile is from its place while a swipe slides it in.
-    fn nudge(&self, index: usize) -> Option<f32> {
-        let (step, at) = self.swipe_nudge.filter(|_| index == self.active)?;
-        swipe::nudge(step, at.elapsed())
-    }
     /// One tab inside a sidebar row: icon, title, sound and × (selected or hovered). A row
     /// holds one cell, or two in split view.
     fn tab_cell(&self, index: usize, p: Palette, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -2668,9 +2657,6 @@ impl Browser {
         let hovered = self.hovered_tab == Some(id);
         div()
             .id(("tab", id))
-            .when_some(self.nudge(index), |row, offset| {
-                row.relative().left(px(offset))
-            })
             .flex_1()
             .min_w_0()
             .h_full()
@@ -2994,7 +2980,6 @@ impl Browser {
             div()
                 .id(("pinned", id))
                 .relative()
-                .when_some(self.nudge(index), |tile, offset| tile.left(px(offset)))
                 .w(px(tile))
                 .h(px(46.))
                 .flex_shrink_0()
@@ -3945,14 +3930,6 @@ impl Render for Browser {
         // A drag released outside every drop target leaves no line behind.
         if !cx.has_active_drag() {
             self.drop_hint = None;
-        }
-        // The swipe slide runs only while the window is active, and settles otherwise.
-        if self.swipe_nudge.is_some_and(|(step, at)| {
-            window.is_window_active() && swipe::nudge(step, at.elapsed()).is_some()
-        }) {
-            window.request_animation_frame();
-        } else {
-            self.swipe_nudge = None;
         }
         if self
             .sidebar_anim
