@@ -29,6 +29,9 @@ pub enum Event {
     Failed(LoadFailure),
     /// A load ended without finishing: cancelled, or failed after the page was shown.
     Stopped,
+    /// A frame or resource of the page was trusted with a certificate the user accepted.
+    /// Connections WebKit reuses without a challenge are not reported.
+    UsedException,
 }
 
 /// One persistent native child view per tab; hiding it does not discard its history or document.
@@ -597,8 +600,16 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
             .filter(|_| visible)
             .and_then(accepted_credential)
         {
-            // NSURLSessionAuthChallengeUseCredential
-            Some(credential) => handler.call((0, Retained::as_ptr(&credential).cast_mut())),
+            Some(credential) => {
+                // The page's `serverTrust` is its main frame's; tell the tab about the rest.
+                FAILURES.with_borrow(|pages| {
+                    if let Some(sender) = pages.get(&(webview as usize)) {
+                        let _ = sender.send(Event::UsedException);
+                    }
+                });
+                // NSURLSessionAuthChallengeUseCredential
+                handler.call((0, Retained::as_ptr(&credential).cast_mut()));
+            }
             // NSURLSessionAuthChallengePerformDefaultHandling
             None => handler.call((1, std::ptr::null_mut())),
         }
