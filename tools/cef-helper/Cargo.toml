@@ -1,0 +1,18 @@
+[package]
+name = "felinaut-helper"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+description = "Sandbox-first CEF subprocess for the macOS arm64 Felinaut browser"
+
+[workspace]
+
+[dependencies]
+cef = { version = "=156.4.0", default-features = false, features = [
+    "sandbox",
+    "resources",
+] }
+cef-dll-sys = { version = "=156.4.0", default-features = false, features = [
+    "sandbox",
+] }
