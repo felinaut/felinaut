@@ -44,7 +44,10 @@ impl Drop for NativePage {
     fn drop(&mut self) {
         if let Some(key) = self.failure_key {
             FAILURES.with_borrow_mut(|pages| pages.remove(&key));
+            // Cancels the sign-in questions of this page while its WKWebView is still alive.
+            crate::http_auth::close_page(key);
             crate::downloads::native::detach(key);
+            crate::dialogs::native::detach(key);
         }
     }
 }
@@ -58,6 +61,10 @@ impl NativePage {
         let title_sender = sender.clone();
         let link_sender = sender.clone();
         let failure_sender = sender.clone();
+        // The address of the WKWebView, known only after the build.
+        let page_key = std::rc::Rc::new(std::cell::Cell::new(0));
+        let committed = page_key.clone();
+        let navigated = page_key.clone();
         let mut builder = WebViewBuilder::new();
         if agent_enabled() {
             builder =
@@ -83,7 +90,11 @@ impl NativePage {
             })
             .with_visible(false)
             .with_focused(false)
-            .with_navigation_handler(|url| allowed_url(&url))
+            .with_navigation_handler(move |url| {
+                // After a Cancel of the sign-in prompt, a new navigation may ask again.
+                crate::http_auth::navigation_started(navigated.get());
+                allowed_url(&url)
+            })
             .with_new_window_req_handler(move |url, _| {
                 if allowed_url(&url) {
                     let _ = sender.send(Event::Open(url));
@@ -98,7 +109,16 @@ impl NativePage {
                 // Wry has no load-failure callback. Finished means an actual native finish,
                 // not a timeout or a failed provisional navigation.
                 let event = match event {
-                    PageLoadEvent::Started => Event::Started(url),
+                    PageLoadEvent::Started => {
+                        // Wry reports this at the commit. The dialogs of the old document
+                        // end here, before a script of the new document can ask for one.
+                        // A reset in `drain_events` came later and cancelled such a dialog.
+                        crate::dialogs::native::commit(committed.get(), &url);
+                        // A sign-in question from before belongs to the old document or to
+                        // a load that was replaced.
+                        crate::http_auth::close_page(committed.get());
+                        Event::Started(url)
+                    }
                     PageLoadEvent::Finished => Event::Finished(url),
                 };
                 let _ = load_sender.send(event);
@@ -107,9 +127,11 @@ impl NativePage {
             .build_as_child(window)
             .map_err(|error| error.to_string())?;
         let failure_key = watch_failures(&webview, failure_sender);
+        page_key.set(failure_key.unwrap_or(0));
         {
             use wry::WebViewExtMacOS;
             crate::downloads::native::attach(&webview.webview(), failure_key.is_some());
+            crate::dialogs::native::attach(&webview.webview(), failure_key.is_some());
         }
 
         Ok(Self {
@@ -147,6 +169,8 @@ impl NativePage {
             // A page nobody sees must never save a file.
             use wry::WebViewExtMacOS;
             crate::downloads::native::attach(&webview.webview(), false);
+            // Nor may it show a dialog: each one gets the default answer at once.
+            crate::dialogs::native::attach(&webview.webview(), false);
         }
         Ok(Self {
             webview,
@@ -154,6 +178,11 @@ impl NativePage {
             last_url: RefCell::new(String::new()),
             failure_key: None,
         })
+    }
+
+    /// The name of this page for `http_auth`. A hidden page has none.
+    pub fn key(&self) -> Option<usize> {
+        self.failure_key
     }
 
     #[cfg(test)]
@@ -182,22 +211,54 @@ impl NativePage {
         self.webview.zoom(zoom).map_err(|error| error.to_string())
     }
 
+    /// The JavaScript dialog this page shows now. The owner polls this on the UI thread.
+    pub fn dialog(&self) -> Option<crate::dialogs::Shown> {
+        crate::dialogs::native::shown(self.failure_key?)
+    }
+
+    /// Gives the user's answer to dialog `id`. With `suppress`, the origin of that dialog
+    /// can show no more dialogs in this page.
+    pub fn answer_dialog(&self, id: u64, reply: crate::dialogs::Reply, suppress: bool) {
+        if let Some(key) = self.failure_key {
+            crate::dialogs::native::answer(key, id, reply, suppress);
+        }
+    }
+
+    /// Gives the default answer to this page's dialogs.
+    pub fn dismiss_dialogs(&self) {
+        if let Some(key) = self.failure_key {
+            crate::dialogs::native::dismiss(key);
+        }
+    }
+
+    /// A page that waits for an answer runs no navigation, so each navigation the user
+    /// starts calls this first. It also marks the navigation as the user's own.
+    fn user_navigates(&self) {
+        if let Some(key) = self.failure_key {
+            crate::dialogs::native::user_navigates(key);
+        }
+    }
+
     pub fn navigate(&self, url: &str) -> Result<(), String> {
         check_url(url)?;
+        self.user_navigates();
         self.webview
             .load_url(url)
             .map_err(|error| error.to_string())
     }
 
     pub fn back(&self) -> Result<(), String> {
+        self.user_navigates();
         self.webview.go_back().map_err(|error| error.to_string())
     }
 
     pub fn forward(&self) -> Result<(), String> {
+        self.user_navigates();
         self.webview.go_forward().map_err(|error| error.to_string())
     }
 
     pub fn reload(&self) -> Result<(), String> {
+        self.user_navigates();
         self.webview.reload().map_err(|error| error.to_string())
     }
 
@@ -540,13 +601,35 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     unsafe extern "C-unwind" fn challenge(
         _: *mut AnyObject,
         _: Sel,
-        _: *mut AnyObject,
+        webview: *mut AnyObject,
         challenge: *mut AnyObject,
         handler: *mut Handler,
     ) {
         // SAFETY: WebKit passes a live challenge and completion handler on the main thread,
         // and expects the handler to be called exactly once.
         let handler = unsafe { &*handler };
+        // A Basic or Digest challenge of a visible page for its own origin waits for the user.
+        // An image, a frame or a fetch from another origin gets the default below. `http_auth`
+        // copies the handler and calls it later, one time.
+        let key = webview as usize;
+        let visible = FAILURES.with_borrow(|pages| pages.contains_key(&key));
+        // The address that the page loads, or else shows. Only this origin may ask the user.
+        // SAFETY: a property read on the live WKWebView that WebKit passes, on the main thread.
+        let url: Option<Retained<objc2_foundation::NSURL>> = unsafe { msg_send![webview, URL] };
+        let url = url
+            .and_then(|url| url.absoluteString())
+            .map(|url| url.to_string());
+        if let Some(challenge) = unsafe { challenge.as_ref() }
+            && crate::http_auth::intercept(
+                visible,
+                key,
+                url.as_deref().unwrap_or_default(),
+                challenge,
+                handler,
+            )
+        {
+            return;
+        }
         match unsafe { challenge.as_ref() }.and_then(accepted_credential) {
             // NSURLSessionAuthChallengeUseCredential
             Some(credential) => handler.call((0, Retained::as_ptr(&credential).cast_mut())),
@@ -591,6 +674,10 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
 
 /// Runs inside a WebKit callback, so it only queues an event for the UI.
 fn report_failure(key: usize, error: Option<&objc2_foundation::NSError>, provisional: bool) {
+    if provisional {
+        // The load ended, so nothing waits for an answer to its sign-in question.
+        crate::http_auth::close_page(key);
+    }
     let failure = error.filter(|_| provisional).and_then(|error| {
         let info = error.userInfo();
         let url = info
