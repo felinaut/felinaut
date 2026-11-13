@@ -143,15 +143,13 @@ impl Render for Panel {
             .border_b_2()
             .border_color(rgb(p.primary))
             // The title is the browser's text: the origin of the frame, and nothing else
-            // from the page.
+            // from the page. It wraps, because the end of a long host names its owner and
+            // an ellipsis at the end of one line hid exactly that part.
             .child(
                 div()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(p.muted))
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
                     .child(request.title()),
             )
             .when(!request.message.is_empty(), |panel| {
