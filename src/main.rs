@@ -630,7 +630,9 @@ impl Browser {
         // key); only a real move or resize should close the list.
         let mut last_bounds = window.bounds();
         let bounds_observer = cx.observe_window_bounds(window, move |this, window, cx| {
-            // Native full screen and filling the screen both resize the window.
+            // A filled window the user moved, resized or made native full screen is no longer
+            // filled. Native full screen and filling the screen both resize the window.
+            full_screen::bounds_changed(window);
             if window.is_window_active()
                 && let Some(menus) = cx.get_menus().and_then(|menus| {
                     full_screen_menus(
