@@ -366,7 +366,7 @@ The native cookie test runs itself twice as a child process: the first sets cook
 - `src/brand.rs` and `assets/`: embedded original SVG mascot, symbol and monochrome UI icons.
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.
-- `src/cookies.rs`: the cookie tree model: grouping by site and host, visible rows, filtering, subtree deletion, totals.
+- `src/cookies.rs`: the cookie tree model: grouping by site and host, visible rows, filtering, subtree deletion, totals; and the Cookies window's state (selection, expansion, the delete question, WebKit's answers).
 - `src/cookie_store.rs`: reads and deletes cookies in WebKit's default data store (`WKHTTPCookieStore`).
 - `src/cookie_graph.rs`: the cookie tree as an `egui_graphs` graph: node and edge shapes, force-directed layout, sync with the model's visible rows.
 - `src/egui_host.rs`: runs egui inside a GPUI element. egui computes shapes from pointer input; GPUI paints them and draws all text. No second window toolkit or renderer is involved.

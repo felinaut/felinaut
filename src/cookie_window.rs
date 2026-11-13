@@ -1,12 +1,11 @@
 //! The Cookies window: WebKit's stored cookies as a site → host → cookie graph, with details
 //! and delete at every level. One window, independently closable. The host calls `init`.
 //!
-//! The tree and every decision about it live in `cookies.rs`; `cookie_graph.rs` draws its
+//! The tree and every decision about it live in `cookies.rs` (`WindowState`); `cookie_graph.rs` draws its
 //! visible rows as a graph, and this file asks `cookie_store.rs` for the real cookies. Cookie values stay hidden until revealed and
 //! are never logged or offered to agent control.
 
 use std::collections::HashSet;
-use std::rc::Rc;
 use std::sync::mpsc::{self, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -19,7 +18,7 @@ use gpui::{
 use crate::{
     cookie_graph::CookieGraph,
     cookie_store,
-    cookies::{self, Cookie, Key, Node, Row, Tree},
+    cookies::{self, BackOut, Cookie, Key, Node, WindowState},
     input::{AddressEvent, AddressInput},
     theme::{self, Palette, ThemeSettings},
 };
@@ -42,10 +41,6 @@ actions!(
 );
 
 const CONTEXT: &str = "FelinautCookies";
-/// The most nodes the graph opens by itself when the window first shows the cookies.
-const FIRST_VIEW: usize = 60;
-/// The most sites it shows at first; beyond that it starts as the root alone.
-const FIRST_VIEW_SITES: usize = 200;
 /// How long WebKit may take to answer before the window says so.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -140,20 +135,8 @@ pub struct CookieManager {
     focus: FocusHandle,
     search: Entity<AddressInput>,
     graph: CookieGraph,
-    /// Everything WebKit reported last.
-    tree: Tree,
-    /// `tree` through the domain filter: what the rows, the selection and delete work on.
-    shown: Tree,
-    rows: Rc<[Row]>,
-    expanded: HashSet<Node>,
-    selection: Node,
-    /// A branch whose deletion waits for the user's one confirmation.
-    confirming: Option<Node>,
-    revealed: bool,
-    loaded: bool,
-    /// A delete is on its way; its answer is the next refresh.
-    deleting: bool,
-    error: Option<SharedString>,
+    /// The cookies, the filter, the selection and the delete question: see `cookies.rs`.
+    state: WindowState,
     answer: Option<Task<()>>,
     _subscriptions: [Subscription; 3],
 }
@@ -168,8 +151,12 @@ impl CookieManager {
             cx.subscribe_in(
                 &search,
                 window,
-                |this, _, event: &AddressEvent, window, cx| match event {
-                    AddressEvent::Changed => this.rebuild(cx),
+                |this, search, event: &AddressEvent, window, cx| match event {
+                    AddressEvent::Changed => {
+                        let query = search.read(cx).text().to_string();
+                        this.state.set_query(&query);
+                        this.changed(cx);
+                    }
                     AddressEvent::Up => this.step(-1, cx),
                     AddressEvent::Down => this.step(1, cx),
                     AddressEvent::Escape => this.back_out(window, cx),
@@ -187,27 +174,24 @@ impl CookieManager {
             focus,
             search,
             graph: CookieGraph::default(),
-            tree: Tree::default(),
-            shown: Tree::default(),
-            rows: Rc::from([]),
-            expanded: HashSet::from([Node::All]),
-            selection: Node::All,
-            confirming: None,
-            revealed: false,
-            loaded: false,
-            deleting: false,
-            error: None,
+            state: WindowState::default(),
             answer: None,
             _subscriptions: subscriptions,
         };
-        manager.rebuild(cx);
+        manager.changed(cx);
         manager.refresh(window, cx);
         manager
     }
 
+    /// The graph follows the state's rows and selection; then draw again.
+    fn changed(&mut self, cx: &mut Context<Self>) {
+        self.graph.sync(self.state.rows(), self.state.selection());
+        cx.notify();
+    }
+
     /// Asks WebKit for the cookies again. The current list stays until the answer comes.
     pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.deleting {
+        if !self.state.may_fetch() {
             return;
         }
         let (reply, answer) = mpsc::channel();
@@ -225,9 +209,8 @@ impl CookieManager {
         cx: &mut Context<Self>,
     ) {
         if let Err(error) = sent {
-            self.deleting = false;
-            self.error = Some(error.into());
-            cx.notify();
+            self.state.send_failed(error);
+            self.changed(cx);
             return;
         }
         self.answer = Some(cx.spawn_in(window, async move |this, cx| {
@@ -244,94 +227,42 @@ impl CookieManager {
                 waited += step;
             };
             let _ = this.update(cx, |this, cx| {
-                this.deleting = false;
-                match cookies {
-                    Some(cookies) => this.load(&cookies, cx),
-                    None => {
-                        this.error = Some("WebKit did not answer. Try Refresh.".into());
-                        cx.notify();
-                    }
-                }
+                this.state.answered(cookies.as_deref());
+                this.changed(cx);
             });
         }));
     }
 
-    fn load(&mut self, cookies: &[Cookie], cx: &mut Context<Self>) {
-        self.tree = Tree::build(cookies);
-        if !self.loaded {
-            self.expanded = self.tree.opened_within(FIRST_VIEW, FIRST_VIEW_SITES);
-        }
-        self.loaded = true;
-        self.error = None;
-        self.rebuild(cx);
-    }
-
-    /// Recomputes what is shown after the cookies, the filter or the expansion changed.
-    fn rebuild(&mut self, cx: &mut Context<Self>) {
-        self.shown = self.tree.filtered(self.search.read(cx).text());
-        let selection = self.shown.nearest(&self.selection);
-        if selection != self.selection {
-            self.select(selection, cx);
-        }
-        if self
-            .confirming
-            .as_ref()
-            .is_some_and(|node| !self.shown.contains(node))
-        {
-            self.confirming = None;
-        }
-        self.rows = self.shown.rows(&self.expanded).into();
-        self.graph.sync(&self.rows, &self.selection);
-        cx.notify();
-    }
-
     #[cfg(test)]
     #[allow(dead_code, reason = "Used by the opt-in native integration harness")]
-    pub fn rows(&self) -> &[Row] {
-        &self.rows
+    pub fn rows(&self) -> &[cookies::Row] {
+        self.state.rows()
     }
 
     /// Whether the rows show what WebKit last reported, with no delete on its way.
     #[cfg(test)]
     #[allow(dead_code, reason = "Used by the opt-in native integration harness")]
     pub fn loaded(&self) -> bool {
-        self.loaded && !self.deleting
+        self.state.loaded() && self.state.may_fetch()
     }
 
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native integration harness")]
     pub fn select(&mut self, node: Node, cx: &mut Context<Self>) {
-        if self.selection != node {
-            self.selection = node;
-            self.revealed = false;
-            self.confirming = None;
-            self.graph.sync(&self.rows, &self.selection);
-        }
-        cx.notify();
+        self.state.select(node);
+        self.changed(cx);
     }
 
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native integration harness")]
     pub fn toggle(&mut self, node: &Node, cx: &mut Context<Self>) {
-        if matches!(node, Node::Cookie(_)) {
-            return;
-        }
-        if !self.expanded.remove(node) {
-            self.expanded.insert(node.clone());
-        }
-        self.rebuild(cx);
-    }
-
-    fn selected_row(&self) -> Option<usize> {
-        self.rows.iter().position(|row| row.node == self.selection)
-    }
-
-    fn select_row(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(row) = self.rows.get(index) {
-            self.select(row.node.clone(), cx);
-        }
+        self.state.toggle(node);
+        self.changed(cx);
     }
 
     fn step(&mut self, by: isize, cx: &mut Context<Self>) {
-        let current = self.selected_row().unwrap_or(0);
-        let last = self.rows.len().saturating_sub(1);
-        self.select_row(current.saturating_add_signed(by).min(last), cx);
+        self.state.step(by);
+        self.changed(cx);
     }
 
     fn previous(&mut self, _: &Previous, _: &mut Window, cx: &mut Context<Self>) {
@@ -342,41 +273,19 @@ impl CookieManager {
         self.step(1, cx);
     }
 
-    /// ← closes an open branch, or else moves to the parent.
     fn collapse(&mut self, _: &Collapse, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.selected_row() else {
-            return;
-        };
-        let row = self.rows[index].clone();
-        if row.expanded == Some(true) {
-            self.toggle(&row.node, cx);
-        } else if let Some(parent) = self.rows[..index]
-            .iter()
-            .rposition(|above| above.depth < row.depth)
-        {
-            self.select_row(parent, cx);
-        }
+        self.state.collapse();
+        self.changed(cx);
     }
 
-    /// → opens a closed branch, or else moves to its first child.
     fn expand(&mut self, _: &Expand, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.selected_row() else {
-            return;
-        };
-        match self.rows[index].expanded {
-            Some(false) => self.toggle(&self.selection.clone(), cx),
-            Some(true) => self.select_row(index + 1, cx),
-            None => {}
-        }
+        self.state.expand();
+        self.changed(cx);
     }
 
-    /// Return confirms a pending delete; otherwise it opens or closes the selected branch.
     fn activate(&mut self, _: &Activate, window: &mut Window, cx: &mut Context<Self>) {
-        if self.confirming.is_some() {
-            self.confirm_delete(window, cx);
-        } else {
-            self.toggle(&self.selection.clone(), cx);
-        }
+        let keys = self.state.activate();
+        self.send_delete(keys, window, cx);
     }
 
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
@@ -386,15 +295,15 @@ impl CookieManager {
 
     /// Escape backs out one step at a time: the delete question, the filter, the window.
     fn back_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.confirming.take().is_some() {
-            cx.notify();
-        } else if !self.search.read(cx).text().is_empty() {
-            self.search
-                .update(cx, |search, cx| search.set_text(String::new(), cx));
-            self.rebuild(cx);
-            window.focus(&self.focus);
-        } else {
-            window.remove_window();
+        match self.state.back_out() {
+            BackOut::Cancelled => self.changed(cx),
+            BackOut::ClearedFilter => {
+                self.search
+                    .update(cx, |search, cx| search.set_text(String::new(), cx));
+                self.changed(cx);
+                window.focus(&self.focus);
+            }
+            BackOut::Close => window.remove_window(),
         }
     }
 
@@ -405,73 +314,51 @@ impl CookieManager {
 
     /// Deletes the selected cookie at once; a branch first asks, naming how many cookies go.
     pub fn delete_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.deleting || self.shown.subtree(&self.selection).is_empty() {
-            return;
-        }
-        if matches!(self.selection, Node::Cookie(_)) {
-            self.delete(&self.selection.clone(), window, cx);
-        } else {
-            self.confirming = Some(self.selection.clone());
-            cx.notify();
-        }
+        let keys = self.state.request_delete();
+        self.send_delete(keys, window, cx);
     }
 
     pub fn confirm_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(node) = self.confirming.take() {
-            self.delete(&node, window, cx);
-        }
+        let keys = self.state.confirm();
+        self.send_delete(keys, window, cx);
     }
 
-    /// Deletes exactly the cookies shown under `node`: with a filter on, a site's hidden
-    /// hosts keep theirs.
-    fn delete(&mut self, node: &Node, window: &mut Window, cx: &mut Context<Self>) {
-        let keys: HashSet<Key> = self
-            .shown
-            .subtree(node)
-            .into_iter()
-            .map(Cookie::key)
-            .collect();
-        if keys.is_empty() || self.deleting {
+    /// Sends the cookies the state chose to WebKit; the answer is the next list.
+    fn send_delete(
+        &mut self,
+        keys: Option<HashSet<Key>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.changed(cx);
+        let Some(keys) = keys else {
             return;
-        }
-        // Show the result at once; WebKit's answer then replaces it with what is stored.
-        self.tree.remove_keys(&keys);
-        self.deleting = true;
-        self.rebuild(cx);
+        };
         let (reply, answer) = mpsc::channel();
         let sent = cookie_store::delete(keys, reply);
         self.wait(sent, answer, window, cx);
     }
 
-    /// A click on a graph node selects it and opens a closed branch. An open branch closes
-    /// on a second click, so that selecting it, to read its totals or delete it, leaves it
-    /// open.
     fn click(&mut self, node: &Node, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
-        if !self.shown.contains(node) {
-            return;
-        }
-        let reselected = self.selection == *node;
-        self.select(node.clone(), cx);
-        if reselected || !self.expanded.contains(node) {
-            self.toggle(node, cx);
-        }
+        self.state.click(node);
+        self.changed(cx);
     }
 
     fn details(&self, p: Palette, cx: &mut Context<Self>) -> Div {
-        let node = &self.selection;
-        let totals = self.shown.totals(node);
+        let node = self.state.selection();
+        let totals = self.state.shown().totals(node);
         let panel = div().flex().flex_col().gap_3();
         let panel = match node {
             Node::Cookie(key) => {
-                let Some(cookie) = self.shown.subtree(node).first().copied() else {
+                let Some(cookie) = self.state.shown().subtree(node).first().copied() else {
                     return panel;
                 };
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_or(0, |elapsed| elapsed.as_secs() as i64);
                 let length = cookie.value.chars().count();
-                let value = if self.revealed {
+                let value = if self.state.revealed() {
                     cookies::display(&cookie.value, 600)
                 } else {
                     format!("•••••••• ({length} characters)")
@@ -505,12 +392,16 @@ impl CookieManager {
                         field("Value", &value, p).child(
                             button(
                                 "reveal-value",
-                                if self.revealed { "Hide" } else { "Reveal" },
+                                if self.state.revealed() {
+                                    "Hide"
+                                } else {
+                                    "Reveal"
+                                },
                                 p,
                             )
                             .mt_1()
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.revealed = !this.revealed;
+                                this.state.toggle_revealed();
                                 cx.notify();
                             })),
                         ),
@@ -553,7 +444,7 @@ impl CookieManager {
         if totals.cookies == 0 {
             return panel;
         }
-        match &self.confirming {
+        match self.state.confirming() {
             Some(node) => panel.child(
                 div()
                     .mt_2()
@@ -584,7 +475,7 @@ impl CookieManager {
                             )
                             .child(button("cancel-delete", "Cancel", p).on_click(cx.listener(
                                 |this, _, _, cx| {
-                                    this.confirming = None;
+                                    this.state.cancel();
                                     cx.notify();
                                 },
                             ))),
@@ -696,15 +587,15 @@ impl Render for CookieManager {
         if graph.animating && active {
             window.request_animation_frame();
         }
-        let total = self.tree.count();
-        let query = self.search.read(cx).text().trim().to_string();
-        let summary = if !self.loaded {
+        let total = self.state.tree().count();
+        let query = self.state.query().trim().to_string();
+        let summary = if !self.state.loaded() {
             "Loading…".to_string()
         } else if query.is_empty() {
             format!(
                 "{} from {}",
                 cookies::cookie_count(total),
-                match self.tree.sites.len() {
+                match self.state.tree().sites.len() {
                     1 => "1 site".to_string(),
                     sites => format!("{sites} sites"),
                 }
@@ -712,15 +603,15 @@ impl Render for CookieManager {
         } else {
             format!(
                 "{} of {} match",
-                self.shown.count(),
+                self.state.shown().count(),
                 cookies::cookie_count(total)
             )
         };
-        let empty = if !self.loaded {
+        let empty = if !self.state.loaded() {
             None
         } else if total == 0 {
             Some("No cookies yet. Sites you visit and sign in to appear here.".to_string())
-        } else if self.shown.count() == 0 {
+        } else if self.state.shown().count() == 0 {
             Some(format!(
                 "No site or host matches “{}”.",
                 cookies::display(&query, 40)
@@ -851,8 +742,8 @@ impl Render for CookieManager {
                     .border_color(rgb(p.border))
                     .text_size(px(11.))
                     .text_color(rgb(p.muted))
-                    .child(match &self.error {
-                        Some(error) => error.clone(),
+                    .child(match self.state.error() {
+                        Some(error) => SharedString::from(error.to_string()),
                         None => "Click a node to open it · drag to move it or the view · scroll \
                                  to zoom. Session cookies end when Felinaut quits."
                             .into(),

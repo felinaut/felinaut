@@ -1,7 +1,8 @@
 //! The cookie tree behind the Cookies window: site (registrable domain) → host → cookie.
 //!
 //! Pure model over plain structs. `cookie_store.rs` reads and deletes the real cookies in
-//! WebKit, `cookie_window.rs` draws the rows this module produces. Cookie names, values and
+//! WebKit, `cookie_window.rs` draws the rows this module produces, and `WindowState` makes
+//! every decision of that window: selection, expansion, the filter and the delete question. Cookie names, values and
 //! domains are untrusted page data: nothing here logs them, and `Debug` hides the value.
 
 use std::collections::{BTreeMap, HashSet};
@@ -425,6 +426,303 @@ impl Tree {
             }
         }
         rows
+    }
+}
+
+/// The most nodes the Cookies window opens by itself when it first shows the cookies.
+pub const FIRST_VIEW: usize = 60;
+/// The most sites it shows at first; beyond that it starts as the root alone.
+pub const FIRST_VIEW_SITES: usize = 200;
+
+/// What Escape did in the Cookies window, which backs out one step at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackOut {
+    /// The pending delete question went away.
+    Cancelled,
+    /// The filter was cleared; the window empties its field.
+    ClearedFilter,
+    /// Nothing was left to back out of: close the window.
+    Close,
+}
+
+/// Everything the Cookies window decides, apart from GPUI and WebKit: the cookies, the
+/// filter, what is open and selected, the delete question and what WebKit last said. The
+/// window draws this state, and sends to WebKit the deletes that its methods return.
+#[derive(Debug)]
+pub struct WindowState {
+    /// Everything WebKit reported last.
+    tree: Tree,
+    /// The domain filter, as typed.
+    query: String,
+    /// `tree` through the filter: what the rows, the selection and delete work on.
+    shown: Tree,
+    rows: Vec<Row>,
+    expanded: HashSet<Node>,
+    selection: Node,
+    /// A branch whose deletion waits for the user's one confirmation.
+    confirming: Option<Node>,
+    revealed: bool,
+    loaded: bool,
+    /// A delete is on its way; its answer is the next list of cookies.
+    deleting: bool,
+    error: Option<String>,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        let mut state = Self {
+            tree: Tree::default(),
+            query: String::new(),
+            shown: Tree::default(),
+            rows: Vec::new(),
+            expanded: HashSet::from([Node::All]),
+            selection: Node::All,
+            confirming: None,
+            revealed: false,
+            loaded: false,
+            deleting: false,
+            error: None,
+        };
+        state.rebuild();
+        state
+    }
+}
+
+impl WindowState {
+    pub fn tree(&self) -> &Tree {
+        &self.tree
+    }
+
+    pub fn shown(&self) -> &Tree {
+        &self.shown
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+
+    pub fn selection(&self) -> &Node {
+        &self.selection
+    }
+
+    pub fn confirming(&self) -> Option<&Node> {
+        self.confirming.as_ref()
+    }
+
+    pub fn revealed(&self) -> bool {
+        self.revealed
+    }
+
+    /// Whether WebKit has answered at least once.
+    pub fn loaded(&self) -> bool {
+        self.loaded
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// Whether a new request for the cookies may go out: not while a delete is on its way,
+    /// whose answer is the list anyway.
+    pub fn may_fetch(&self) -> bool {
+        !self.deleting
+    }
+
+    /// WebKit's answer to a fetch or a delete: the cookies, or `None` when it did not answer.
+    pub fn answered(&mut self, cookies: Option<&[Cookie]>) {
+        self.deleting = false;
+        match cookies {
+            Some(cookies) => {
+                self.tree = Tree::build(cookies);
+                if !self.loaded {
+                    self.expanded = self.tree.opened_within(FIRST_VIEW, FIRST_VIEW_SITES);
+                }
+                self.loaded = true;
+                self.error = None;
+                self.rebuild();
+            }
+            None => self.error = Some("WebKit did not answer. Try Refresh.".into()),
+        }
+    }
+
+    /// A request could not be sent to WebKit at all.
+    pub fn send_failed(&mut self, error: String) {
+        self.deleting = false;
+        self.error = Some(error);
+    }
+
+    pub fn set_query(&mut self, query: &str) {
+        self.query = query.to_string();
+        self.rebuild();
+    }
+
+    /// Recomputes what is shown after the cookies, the filter or the expansion changed.
+    fn rebuild(&mut self) {
+        self.shown = self.tree.filtered(&self.query);
+        let selection = self.shown.nearest(&self.selection);
+        if selection != self.selection {
+            self.select(selection);
+        }
+        if self
+            .confirming
+            .as_ref()
+            .is_some_and(|node| !self.shown.contains(node))
+        {
+            self.confirming = None;
+        }
+        self.rows = self.shown.rows(&self.expanded);
+    }
+
+    pub fn select(&mut self, node: Node) {
+        if self.selection != node {
+            self.selection = node;
+            self.revealed = false;
+            self.confirming = None;
+        }
+    }
+
+    pub fn toggle_revealed(&mut self) {
+        self.revealed = !self.revealed;
+    }
+
+    /// Opens a closed branch or closes an open one. A cookie has nothing to open.
+    pub fn toggle(&mut self, node: &Node) {
+        if matches!(node, Node::Cookie(_)) {
+            return;
+        }
+        if !self.expanded.remove(node) {
+            self.expanded.insert(node.clone());
+        }
+        self.rebuild();
+    }
+
+    fn selected_row(&self) -> Option<usize> {
+        self.rows.iter().position(|row| row.node == self.selection)
+    }
+
+    fn select_row(&mut self, index: usize) {
+        if let Some(row) = self.rows.get(index) {
+            self.select(row.node.clone());
+        }
+    }
+
+    /// ↑ and ↓: the row above or below, stopping at either end.
+    pub fn step(&mut self, by: isize) {
+        let current = self.selected_row().unwrap_or(0);
+        let last = self.rows.len().saturating_sub(1);
+        self.select_row(current.saturating_add_signed(by).min(last));
+    }
+
+    /// ← closes an open branch, or else moves to the parent.
+    pub fn collapse(&mut self) {
+        let Some(index) = self.selected_row() else {
+            return;
+        };
+        let row = self.rows[index].clone();
+        if row.expanded == Some(true) {
+            self.toggle(&row.node);
+        } else if let Some(parent) = self.rows[..index]
+            .iter()
+            .rposition(|above| above.depth < row.depth)
+        {
+            self.select_row(parent);
+        }
+    }
+
+    /// → opens a closed branch, or else moves to its first child.
+    pub fn expand(&mut self) {
+        let Some(index) = self.selected_row() else {
+            return;
+        };
+        match self.rows[index].expanded {
+            Some(false) => self.toggle(&self.selection.clone()),
+            Some(true) => self.select_row(index + 1),
+            None => {}
+        }
+    }
+
+    /// A click on a graph node selects it and opens a closed branch. An open branch closes
+    /// on a second click, so that selecting it, to read its totals or delete it, leaves it
+    /// open.
+    pub fn click(&mut self, node: &Node) {
+        if !self.shown.contains(node) {
+            return;
+        }
+        let reselected = self.selection == *node;
+        self.select(node.clone());
+        if reselected || !self.expanded.contains(node) {
+            self.toggle(node);
+        }
+    }
+
+    /// Return confirms a pending delete, whose cookies it returns; otherwise it opens or
+    /// closes the selected branch.
+    pub fn activate(&mut self) -> Option<HashSet<Key>> {
+        if self.confirming.is_some() {
+            self.confirm()
+        } else {
+            self.toggle(&self.selection.clone());
+            None
+        }
+    }
+
+    /// Escape backs out one step at a time: the delete question, the filter, the window.
+    pub fn back_out(&mut self) -> BackOut {
+        if self.confirming.take().is_some() {
+            BackOut::Cancelled
+        } else if !self.query.is_empty() {
+            self.set_query("");
+            BackOut::ClearedFilter
+        } else {
+            BackOut::Close
+        }
+    }
+
+    /// Deletes the selected cookie at once, returning it to send to WebKit; a branch first
+    /// asks, naming how many cookies go.
+    pub fn request_delete(&mut self) -> Option<HashSet<Key>> {
+        if self.deleting || self.shown.subtree(&self.selection).is_empty() {
+            return None;
+        }
+        if matches!(self.selection, Node::Cookie(_)) {
+            self.begin_delete(&self.selection.clone())
+        } else {
+            self.confirming = Some(self.selection.clone());
+            None
+        }
+    }
+
+    /// The user confirmed the pending delete: the cookies to send to WebKit.
+    pub fn confirm(&mut self) -> Option<HashSet<Key>> {
+        let node = self.confirming.take()?;
+        self.begin_delete(&node)
+    }
+
+    pub fn cancel(&mut self) {
+        self.confirming = None;
+    }
+
+    /// Deletes exactly the cookies shown under `node`: with a filter on, a site's hidden
+    /// hosts keep theirs. The tree shows the result at once; WebKit's answer then replaces
+    /// it with what is stored.
+    fn begin_delete(&mut self, node: &Node) -> Option<HashSet<Key>> {
+        let keys: HashSet<Key> = self
+            .shown
+            .subtree(node)
+            .into_iter()
+            .map(Cookie::key)
+            .collect();
+        if keys.is_empty() || self.deleting {
+            return None;
+        }
+        self.tree.remove_keys(&keys);
+        self.deleting = true;
+        self.rebuild();
+        Some(keys)
     }
 }
 
@@ -1077,5 +1375,251 @@ mod tests {
         assert_eq!(display("a\u{0}b\r\nc", 10), "a b  c");
         assert_eq!(display("abcdef", 3), "abc…");
         assert_eq!(display("äöü", 3), "äöü");
+    }
+
+    fn store() -> Vec<Cookie> {
+        vec![
+            cookie("accounts.google.com", "a"),
+            cookie("mail.google.com", "b"),
+            cookie("mail.google.com", "c"),
+            cookie("example.org", "d"),
+        ]
+    }
+
+    fn loaded(cookies: &[Cookie]) -> WindowState {
+        let mut state = WindowState::default();
+        state.answered(Some(cookies));
+        state
+    }
+
+    fn keys(cookies: &[&Cookie]) -> HashSet<Key> {
+        cookies.iter().map(|cookie| cookie.key()).collect()
+    }
+
+    #[test]
+    fn the_window_starts_loading_with_only_the_root() {
+        let state = WindowState::default();
+        assert!(!state.loaded() && state.may_fetch());
+        assert_eq!(state.rows().len(), 1);
+        assert_eq!(*state.selection(), Node::All);
+        assert_eq!(state.error(), None);
+        // Before any answer there is nothing to delete.
+        let mut state = state;
+        assert_eq!(state.request_delete(), None);
+        assert_eq!(state.confirming(), None);
+    }
+
+    #[test]
+    fn the_first_answer_opens_what_fits_and_later_ones_keep_the_expansion() {
+        let mut state = loaded(&store());
+        assert!(state.loaded());
+        // 1 root + 2 sites + 3 hosts + 4 cookies fit in the first view.
+        assert_eq!(state.rows().len(), 10);
+        state.toggle(&Node::Site("google.com".into()));
+        assert_eq!(state.rows().len(), 5);
+        state.answered(Some(&store()));
+        assert_eq!(
+            state.rows().len(),
+            5,
+            "a refresh keeps what the user closed"
+        );
+        // An empty answer is still an answer.
+        state.answered(Some(&[]));
+        assert_eq!(state.tree().count(), 0);
+        assert_eq!(state.rows().len(), 1);
+    }
+
+    #[test]
+    fn no_answer_keeps_the_cookies_and_says_so() {
+        let mut state = loaded(&store());
+        state.answered(None);
+        assert_eq!(state.error(), Some("WebKit did not answer. Try Refresh."));
+        assert_eq!(state.tree().count(), 4);
+        state.send_failed("Cookies can only be read on the main thread".into());
+        assert_eq!(
+            state.error(),
+            Some("Cookies can only be read on the main thread")
+        );
+        // The next answer clears the error.
+        state.answered(Some(&store()));
+        assert_eq!(state.error(), None);
+    }
+
+    #[test]
+    fn selecting_moves_through_the_rows_and_hides_the_value_again() {
+        let cookies = store();
+        let mut state = loaded(&cookies);
+        state.select(Node::Cookie(cookies[3].key()));
+        state.toggle_revealed();
+        assert!(state.revealed());
+        state.step(-1);
+        assert_eq!(*state.selection(), Node::Host("example.org".into()));
+        assert!(!state.revealed(), "another selection hides the value");
+        // The ends stop the selection.
+        for _ in 0..20 {
+            state.step(-1);
+        }
+        assert_eq!(*state.selection(), Node::All);
+        for _ in 0..20 {
+            state.step(1);
+        }
+        assert_eq!(state.selection(), &state.rows().last().unwrap().node);
+        // The same node again keeps the value shown.
+        state.toggle_revealed();
+        state.select(state.selection().clone());
+        assert!(state.revealed());
+    }
+
+    #[test]
+    fn left_and_right_close_open_and_climb_the_tree() {
+        let cookies = store();
+        let mut state = loaded(&cookies);
+        let host = Node::Host("example.org".into());
+        state.select(Node::Cookie(cookies[3].key()));
+        state.collapse();
+        assert_eq!(*state.selection(), host, "← on a cookie goes to its host");
+        state.collapse();
+        assert_eq!(*state.selection(), host);
+        assert!(
+            !state
+                .rows()
+                .iter()
+                .any(|row| row.depth == 3 && row.label == "d")
+        );
+        state.collapse();
+        assert_eq!(*state.selection(), Node::Site("example.org".into()));
+        state.select(host.clone());
+        state.expand();
+        assert!(state.rows().iter().any(|row| row.label == "d"), "→ opens");
+        state.expand();
+        assert_eq!(*state.selection(), Node::Cookie(cookies[3].key()));
+        state.expand();
+        assert_eq!(
+            *state.selection(),
+            Node::Cookie(cookies[3].key()),
+            "a cookie has nothing to open"
+        );
+        let rows = state.rows().len();
+        state.toggle(&Node::Cookie(cookies[3].key()));
+        assert_eq!(state.rows().len(), rows);
+    }
+
+    #[test]
+    fn a_click_selects_and_opens_and_a_second_click_closes() {
+        let mut state = loaded(&store());
+        let site = Node::Site("google.com".into());
+        state.toggle(&site);
+        state.click(&site);
+        assert_eq!(*state.selection(), site);
+        assert!(state.rows().iter().any(|row| row.depth == 2), "opened");
+        let open = state.rows().len();
+        state.click(&site);
+        assert!(state.rows().len() < open, "the second click closes it");
+        // A selected open branch stays open when another node was selected before.
+        state.click(&site);
+        state.select(Node::All);
+        state.click(&site);
+        assert_eq!(state.rows().len(), open);
+        // A node that is not shown does nothing.
+        state.click(&Node::Site("gone.example".into()));
+        assert_eq!(*state.selection(), site);
+    }
+
+    #[test]
+    fn the_filter_moves_the_selection_to_what_is_still_shown() {
+        let cookies = store();
+        let mut state = loaded(&cookies);
+        state.select(Node::Cookie(cookies[0].key()));
+        state.set_query("mail");
+        assert_eq!(*state.selection(), Node::Site("google.com".into()));
+        assert_eq!(state.shown().count(), 2);
+        assert_eq!(state.tree().count(), 4);
+        state.set_query("nothing matches");
+        assert_eq!(*state.selection(), Node::All);
+        assert_eq!(state.rows().len(), 1);
+        assert_eq!(
+            state.request_delete(),
+            None,
+            "nothing shown, nothing to delete"
+        );
+    }
+
+    #[test]
+    fn a_cookie_goes_at_once_and_a_branch_asks_first() {
+        let cookies = store();
+        let mut state = loaded(&cookies);
+        state.select(Node::Cookie(cookies[3].key()));
+        assert_eq!(state.request_delete(), Some(keys(&[&cookies[3]])));
+        assert!(!state.may_fetch());
+        assert_eq!(state.tree().count(), 3, "shown deleted at once");
+        assert_eq!(state.request_delete(), None, "one delete at a time");
+        state.answered(Some(&cookies[..3]));
+        assert!(state.may_fetch());
+
+        let site = Node::Site("google.com".into());
+        state.select(site.clone());
+        assert_eq!(state.request_delete(), None);
+        assert_eq!(state.confirming(), Some(&site));
+        assert_eq!(
+            state.tree().count(),
+            3,
+            "nothing goes before the confirmation"
+        );
+        state.cancel();
+        assert_eq!(
+            state.confirm(),
+            None,
+            "a cancelled question deletes nothing"
+        );
+
+        state.request_delete();
+        assert_eq!(
+            state.activate(),
+            Some(keys(&[&cookies[0], &cookies[1], &cookies[2]])),
+            "Return confirms"
+        );
+        assert_eq!(state.confirming(), None);
+        assert_eq!(state.tree().count(), 0);
+        assert_eq!(*state.selection(), Node::All);
+    }
+
+    #[test]
+    fn another_selection_drops_the_question() {
+        let mut state = loaded(&store());
+        state.select(Node::Site("google.com".into()));
+        state.request_delete();
+        state.select(Node::Site("example.org".into()));
+        assert_eq!(state.confirming(), None);
+        assert_eq!(state.confirm(), None);
+        // Return without a question opens or closes the selection.
+        let rows = state.rows().len();
+        assert_eq!(state.activate(), None);
+        assert_ne!(state.rows().len(), rows);
+    }
+
+    #[test]
+    fn escape_backs_out_one_step_at_a_time() {
+        let mut state = loaded(&store());
+        state.set_query("google");
+        state.select(Node::Site("google.com".into()));
+        state.request_delete();
+        assert_eq!(state.back_out(), BackOut::Cancelled);
+        assert_eq!(state.confirming(), None);
+        assert_eq!(state.query(), "google");
+        assert_eq!(state.back_out(), BackOut::ClearedFilter);
+        assert_eq!(state.query(), "");
+        assert_eq!(state.shown().count(), 4);
+        assert_eq!(state.back_out(), BackOut::Close);
+    }
+
+    #[test]
+    fn a_failed_send_ends_the_delete() {
+        let cookies = store();
+        let mut state = loaded(&cookies);
+        state.select(Node::Cookie(cookies[3].key()));
+        state.request_delete();
+        state.send_failed("no store".into());
+        assert!(state.may_fetch());
+        assert_eq!(state.error(), Some("no store"));
     }
 }
