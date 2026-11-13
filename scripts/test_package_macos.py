@@ -84,14 +84,33 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(args[-1], "Developer ID Application: X (T)")
         self.assertNotIn("--entitlements", args)
 
+    def test_bundle_explains_camera_and_microphone_but_not_location(self):
+        info = package.info_plist("0.1.0", "0.1 beta")
+        for key in ("NSCameraUsageDescription", "NSMicrophoneUsageDescription"):
+            self.assertIn("allow in Felinaut", info[key])
+        # Sites cannot get the location: there is no handler, so there is no text.
+        self.assertFalse([key for key in info if key.startswith("NSLocation")])
+
     def test_passkey_entitlement_is_claimed_only_with_a_provisioning_profile(self):
+        capture = {
+            "com.apple.security.device.camera": True,
+            "com.apple.security.device.audio-input": True,
+        }
+        with open(package.CAPTURE_ENTITLEMENTS, "rb") as file:
+            self.assertEqual(plistlib.load(file), capture)
+        self.assertEqual(package.UNRESTRICTED_ENTITLEMENTS, set(capture))
         with open(package.ENTITLEMENTS, "rb") as file:
             entitlements = plistlib.load(file)
         self.assertEqual(
             entitlements,
-            {"com.apple.developer.web-browser.public-key-credential": True},
+            {"com.apple.developer.web-browser.public-key-credential": True, **capture},
         )
-        self.assertIsNone(package.app_entitlements(""))
+        # Only the passkey entitlement needs a profile that grants it.
+        self.assertEqual(
+            [key for key in entitlements if key not in package.UNRESTRICTED_ENTITLEMENTS],
+            ["com.apple.developer.web-browser.public-key-credential"],
+        )
+        self.assertEqual(package.app_entitlements(""), package.CAPTURE_ENTITLEMENTS)
         self.assertEqual(package.app_entitlements("/x.provisionprofile"), package.ENTITLEMENTS)
         args = package.codesign_args("Developer ID Application: X (T)", package.ENTITLEMENTS)
         self.assertEqual(args[args.index("--entitlements") + 1], str(package.ENTITLEMENTS))
@@ -157,6 +176,102 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(sign.args[-1], destination)
             self.assertIn("runtime", sign.args)
             self.assertIn("--timestamp", sign.args)
+
+    def test_unprovisioned_signing_claims_capture_only_with_a_developer_id(self):
+        for identity, expected in (
+            ("Developer ID Application: X (T)", str(package.CAPTURE_ENTITLEMENTS)),
+            ("", None),
+        ):
+            with (
+                self.subTest(identity=identity),
+                tempfile.TemporaryDirectory() as directory,
+                patch.object(package, "PROVISIONING_PROFILE", ""),
+                patch.object(package, "SIGN_IDENTITY", identity),
+                patch.object(package, "run") as commands,
+            ):
+                root = Path(directory)
+                (root / "felinaut").write_bytes(b"release executable")
+                (root / "Felinaut.icns").write_bytes(b"icon")
+                package.make_app(
+                    root / "felinaut",
+                    root / "Felinaut.icns",
+                    root / "Felinaut.app",
+                    "0.1.0",
+                    "0.1 beta",
+                )
+                sign = next(
+                    c.args
+                    for c in commands.call_args_list
+                    if c.args[:2] == ("codesign", "--force")
+                )
+                if expected:
+                    self.assertEqual(sign[sign.index("--entitlements") + 1], expected)
+                    self.assertIn("runtime", sign)
+                else:
+                    # An ad-hoc signature has no hardened runtime, so it needs no key.
+                    self.assertNotIn("--entitlements", sign)
+
+    def test_profile_must_grant_the_passkey_entitlement_but_not_capture(self):
+        key = "com.apple.developer.web-browser.public-key-credential"
+        for granted, message in (
+            ({}, f"does not grant {key}"),
+            # The check passes; the run then stops at the first missing tool.
+            ({key: True}, "Required tool is missing"),
+        ):
+            with (
+                self.subTest(granted=granted),
+                tempfile.NamedTemporaryFile(suffix=".provisionprofile") as profile,
+                patch.object(package, "PROVISIONING_PROFILE", profile.name),
+                patch.object(package, "SIGN_IDENTITY", "Developer ID Application: X (T)"),
+                patch.object(package, "profile_entitlements", return_value=granted),
+                patch.object(package.shutil, "which", return_value=None),
+                patch.object(package.platform, "system", return_value="Darwin"),
+                patch.object(package.sys, "argv", ["package_macos.py"]),
+                patch.object(package.sys, "stderr", new_callable=io.StringIO) as errors,
+                self.assertRaises(SystemExit) as error,
+            ):
+                package.main()
+            self.assertEqual(error.exception.code, 2)
+            self.assertIn(message, errors.getvalue())
+            self.assertNotIn("com.apple.security", errors.getvalue())
+
+    def test_profile_must_grant_each_other_security_entitlement(self):
+        passkey = "com.apple.developer.web-browser.public-key-credential"
+        for key in (
+            "com.apple.security.application-groups",
+            "com.apple.security.device.camera.extra",
+            "com.apple.security.device.usb",
+        ):
+            with (
+                self.subTest(key=key),
+                tempfile.TemporaryDirectory() as directory,
+                tempfile.NamedTemporaryFile(suffix=".provisionprofile") as profile,
+            ):
+                claimed = Path(directory) / "claimed.entitlements"
+                with open(claimed, "wb") as file:
+                    plistlib.dump(
+                        {
+                            passkey: True,
+                            "com.apple.security.device.camera": True,
+                            "com.apple.security.device.audio-input": True,
+                            key: True,
+                        },
+                        file,
+                    )
+                with (
+                    patch.object(package, "ENTITLEMENTS", claimed),
+                    patch.object(package, "PROVISIONING_PROFILE", profile.name),
+                    patch.object(package, "SIGN_IDENTITY", "Developer ID Application: X (T)"),
+                    patch.object(package, "profile_entitlements", return_value={passkey: True}),
+                    patch.object(package.shutil, "which", return_value=None),
+                    patch.object(package.platform, "system", return_value="Darwin"),
+                    patch.object(package.sys, "argv", ["package_macos.py"]),
+                    patch.object(package.sys, "stderr", new_callable=io.StringIO) as errors,
+                    self.assertRaises(SystemExit) as error,
+                ):
+                    package.main()
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn(f"does not grant {key};", errors.getvalue())
 
     def test_dist_command_rebuilds_and_replaces_previous_artifacts(self):
         makefile = (package.ROOT / "Makefile").read_text()

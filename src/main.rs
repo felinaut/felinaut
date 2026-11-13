@@ -13,6 +13,8 @@ mod input;
 mod language;
 mod live;
 mod load_error;
+mod permission_ui;
+mod permissions;
 mod session;
 mod settings;
 mod suggestions;
@@ -45,6 +47,8 @@ const SIDEBAR_SLIDE: Duration = Duration::from_millis(200);
 /// shortcut: 28 pt title bars (older macOS) still clip 4 pt; measure it at runtime if testers
 /// report it.
 const TRAFFIC_LIGHT_Y: f32 = 18.;
+/// The permission bar must show a whole origin at this width; see `permission_ui`.
+const WINDOW_MIN_WIDTH: f32 = 1000.;
 /// The sidebar header and toolbar height, centring them on the traffic lights.
 const CHROME_ROW: f32 = 2. * (TRAFFIC_LIGHT_Y + 7.);
 /// The pointer within this many px of the window's left edge peeks a hidden sidebar…
@@ -338,6 +342,8 @@ struct Tab {
     split: Option<u64>,
     /// The live folder item this tab shows; such tabs are drawn in their folder, not the rows.
     live: Option<String>,
+    /// Whether the page uses the camera and the microphone now.
+    capture: (bool, bool),
 }
 impl Tab {
     /// A saved tab (pinned unless the caller clears `pinned`); its page is created when it is
@@ -368,6 +374,7 @@ impl Tab {
             pinned: None,
             split: None,
             live: None,
+            capture: (false, false),
         }
     }
     /// An earlier failure stays until the new page commits or fails, so the page under the
@@ -505,6 +512,12 @@ struct Browser {
     /// The hovered live folder item's title and address, for the status bar.
     live_hover: Option<String>,
     downloads: downloads::Downloads,
+    /// The stored camera and microphone decisions, by origin.
+    permissions: permissions::Permissions,
+    /// The camera or microphone request the prompt bar shows.
+    permission_prompt: Option<permission_ui::Prompt>,
+    /// Focus for the prompt bar, so its keys work.
+    permission_focus: FocusHandle,
 }
 impl Browser {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -629,6 +642,11 @@ impl Browser {
                 {
                     eprintln!("Could not save downloads: {error}");
                 }
+                if let Some(snapshot) = this.permissions.take_snapshot()
+                    && let Err(error) = snapshot.write(history::write)
+                {
+                    eprintln!("Could not save site permissions: {error}");
+                }
             });
             true
         });
@@ -703,6 +721,9 @@ impl Browser {
             live_layout: RefCell::new((0, HashMap::new())),
             live_hover: None,
             downloads: downloads::Downloads::load(downloads::default_path()),
+            permissions: permissions::Permissions::load(permissions::default_path()),
+            permission_prompt: None,
+            permission_focus: cx.focus_handle(),
         };
         // Restored tabs load lazily; only the active one (and its split partner) needs a page.
         browser.load_if_needed(active, window);
@@ -1191,6 +1212,7 @@ impl Browser {
                 }
                 download_panel::agent(&mut self.downloads, command)
             }
+            "permissions" => self.agent_permissions(command, window, cx),
             "navigate" => {
                 self.navigate(command["url"].as_str().unwrap_or_default(), window, cx);
                 let tab = &self.tabs[self.active];
@@ -1645,6 +1667,9 @@ impl Browser {
             window.focus(&self.focus);
             self.sync_address(cx);
         }
+        if page_focused {
+            self.page_took_keys(window);
+        }
         for (url, activate) in open {
             self.open_link_tab(&url, activate, window, cx);
         }
@@ -1666,6 +1691,7 @@ impl Browser {
                 })
                 .detach();
         }
+        changed |= self.poll_permissions(window, cx);
         self.poll_live(window, cx);
         self.update_peek(window, cx);
         self.flush_history(cx);
@@ -2720,6 +2746,7 @@ impl Browser {
                         ),
                 )
             })
+            .children(self.capture_control(index, p, cx))
             .when(hovered || selected, |row| {
                 row.child(
                     Self::row_control(("close", id), p)
@@ -3006,7 +3033,11 @@ impl Browser {
                         Some(host) => self.site_icon(&host, 20., p),
                         None => brand::symbol().size(px(20.)).into_any_element(),
                     },
-                ));
+                ))
+                .children(
+                    self.capture_control(index, p, cx)
+                        .map(|control| div().absolute().top_0().right_0().child(control)),
+                );
         // Pin and unpin by dragging or ⌘D; ⌘W on a selected tile frees its page, keeping the pin.
         // A tab dropped on a tile takes its place: after it when dragged forward, before it
         // when dragged back.
@@ -3996,6 +4027,12 @@ impl Render for Browser {
             .on_action(cx.listener(Self::reopen_tab))
             .on_action(cx.listener(Self::new_live_folder))
             .on_action(cx.listener(Self::show_downloads))
+            .on_action(cx.listener(Self::reset_site_permissions))
+            // Only while a request shows: at other times the menu item is off and the page
+            // gets ⌘⇧P, which some web apps use.
+            .when(self.permission_prompt.is_some(), |root| {
+                root.on_action(cx.listener(Self::focus_permission_prompt))
+            })
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(
@@ -4067,6 +4104,7 @@ impl Render for Browser {
                             } else {
                                 self.address.clone().into_any_element()
                             }))
+                            .children(self.permission_button(p, cx))
                             .child(download_panel::button(&self.downloads, p).on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.show_downloads(&ShowDownloads, window, cx)
@@ -4088,6 +4126,7 @@ impl Render for Browser {
                     } else {
                         p.border
                     })))
+                    .children(self.permission_bar(p, cx))
                     .child(
                         div()
                             .flex_1()
@@ -4172,6 +4211,7 @@ fn main() {
         cx.set_global(ThemeSettings::load());
         cx.set_global(settings::LaunchLanguage(launch_language));
         input::init(cx);
+        permission_ui::init(cx);
         #[cfg(target_os = "macos")]
         webview::forward_command_arrows();
         cx.bind_keys([
@@ -4240,6 +4280,14 @@ fn main() {
                 items: [
                     MenuItem::action("Toggle Sidebar", ToggleSidebar),
                     MenuItem::action("Downloads", ShowDownloads),
+                    MenuItem::action(
+                        "Answer Permission Request",
+                        permission_ui::FocusPermissionPrompt,
+                    ),
+                    MenuItem::action(
+                        "Reset Site Permissions",
+                        permission_ui::ResetSitePermissions,
+                    ),
                     MenuItem::separator(),
                     MenuItem::action("Show Next Tab", NextTab),
                     MenuItem::action("Show Previous Tab", PreviousTab),
@@ -4288,7 +4336,7 @@ fn main() {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(1000.), px(700.))),
+                    window_min_size: Some(size(px(WINDOW_MIN_WIDTH), px(700.))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Felinaut".into()),
                         appears_transparent: true,

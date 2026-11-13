@@ -8,5 +8,11 @@
 	     com.apple.developer.web-browser is iOS/iPadOS only and is deliberately absent. -->
 	<key>com.apple.developer.web-browser.public-key-credential</key>
 	<true/>
+	<!-- The same two keys as Felinaut-capture.entitlements, which signs builds without a
+	     provisioning profile. -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>
