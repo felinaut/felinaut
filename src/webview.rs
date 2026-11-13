@@ -793,8 +793,27 @@ unsafe fn inspector_of(view: &AnyObject) -> Option<Retained<AnyObject>> {
     unsafe { msg_send![view, _inspector] }
 }
 
-/// Shows a hidden inspector and closes a visible one. Selectors missing from a future WebKit
-/// are skipped instead of raising an Objective-C exception.
+/// What ⌥⌘I does to a page's inspector.
+#[derive(Debug, PartialEq)]
+enum InspectorToggle {
+    /// Open it, or bring a detached one in front.
+    Show,
+    Close,
+}
+
+/// A docked inspector, or a detached one already in front, closes; a detached inspector behind
+/// other windows comes to the front instead; a hidden one opens.
+fn inspector_toggle(visible: bool, detached: bool, front: bool) -> InspectorToggle {
+    if visible && (!detached || front) {
+        InspectorToggle::Close
+    } else {
+        InspectorToggle::Show
+    }
+}
+
+/// Shows a hidden inspector (or brings a detached one behind other windows to the front) and
+/// closes a visible one. Selectors missing from a future WebKit are skipped instead of raising
+/// an Objective-C exception.
 ///
 /// SAFETY: `inspector` is a `_WKInspector` (or any object), used on the main thread.
 unsafe fn toggle_inspector(inspector: &AnyObject) {
@@ -804,13 +823,39 @@ unsafe fn toggle_inspector(inspector: &AnyObject) {
     // SAFETY: the caller's guarantee; each selector is checked before it is sent.
     unsafe {
         let visible: bool = msg_send![inspector, isVisible];
-        if visible {
-            if responds(inspector, sel!(close)) {
+        let detached = visible && inspector_is_detached(inspector);
+        // `isFront` is only meaningful for a detached inspector; without it, close as before.
+        let front =
+            detached && (!responds(inspector, sel!(isFront)) || msg_send![inspector, isFront]);
+        match inspector_toggle(visible, detached, front) {
+            InspectorToggle::Close if responds(inspector, sel!(close)) => {
                 let () = msg_send![inspector, close];
             }
-        } else if responds(inspector, sel!(show)) {
-            let () = msg_send![inspector, show];
+            // WebKit's `show` brings an inspector that is already open to the front.
+            InspectorToggle::Show if responds(inspector, sel!(show)) => {
+                let () = msg_send![inspector, show];
+            }
+            _ => {}
         }
+    }
+}
+
+/// Whether an inspector's own page sits in WebKit's detached inspector window rather than
+/// docked in the inspected page's window.
+///
+/// SAFETY: `inspector` is a `_WKInspector` (or any object), used on the main thread.
+unsafe fn inspector_is_detached(inspector: &AnyObject) -> bool {
+    if !responds(inspector, sel!(inspectorWebView)) {
+        return false;
+    }
+    // SAFETY: the caller's guarantee; both selectors are checked and may return nil.
+    unsafe {
+        let page: Option<Retained<AnyObject>> = msg_send![inspector, inspectorWebView];
+        let Some(page) = page.filter(|page| responds(page, sel!(window))) else {
+            return false;
+        };
+        let window: Option<Retained<AnyObject>> = msg_send![&*page, window];
+        window.is_some_and(|window| is_inspector_window(window.class().name().to_bytes()))
     }
 }
 
@@ -1008,6 +1053,32 @@ mod tests {
             super::toggle_inspector(&new_object::<objc2::runtime::NSObject>());
             super::toggle_inspector(&new_object::<PartialInspector>());
         }
+    }
+
+    #[test]
+    fn the_inspector_toggle_brings_a_detached_inspector_behind_others_to_the_front() {
+        use super::{InspectorToggle::*, inspector_toggle};
+        // (visible, detached, front)
+        assert_eq!(
+            inspector_toggle(false, false, false),
+            Show,
+            "a closed inspector opens"
+        );
+        assert_eq!(
+            inspector_toggle(true, false, false),
+            Close,
+            "a docked inspector closes"
+        );
+        assert_eq!(
+            inspector_toggle(true, true, true),
+            Close,
+            "a detached one in front closes"
+        );
+        assert_eq!(
+            inspector_toggle(true, true, false),
+            Show,
+            "a detached one behind other windows comes to the front"
+        );
     }
 
     #[test]
