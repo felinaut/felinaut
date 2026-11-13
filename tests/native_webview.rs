@@ -141,6 +141,8 @@ fn main() {
     let served_auth = auth_requests.clone();
     let cross_requests = Arc::new(AtomicUsize::new(0));
     let served_cross = cross_requests.clone();
+    let image_requests = Arc::new(AtomicUsize::new(0));
+    let served_images = image_requests.clone();
     let fixture_port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for connection in listener.incoming() {
@@ -178,6 +180,12 @@ fn main() {
                 let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Session expired\"\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
                 continue;
             }
+            if request.starts_with("GET /auth-image ") {
+                // A protected image of the same origin, on the 401 page of `/auth-both`.
+                served_images.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Image\"\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
+                continue;
+            }
             if request.starts_with("GET /auth") {
                 // Two protected areas. WebKit reads the header as Latin-1, so the three bytes of
                 // U+202E arrive as "â", the control character U+0080 and "®".
@@ -204,8 +212,16 @@ fn main() {
                     } else {
                         ""
                     };
+                    // After a Cancel, the 401 page of this area loads a frame, and then an
+                    // image that asks again. Neither may open a new question.
+                    let body = if both {
+                        "<title>AUTH NEEDED</title><iframe src='/second' onload=\"new Image().src='/auth-image'\"></iframe>"
+                    } else {
+                        "<title>AUTH NEEDED</title>"
+                    };
                     format!(
-                        "HTTP/1.1 401 Unauthorized\r\n{digest}WWW-Authenticate: Basic realm=\"{realm}\"\r\nContent-Type: text/html\r\nContent-Length: 26\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n<title>AUTH NEEDED</title>"
+                        "HTTP/1.1 401 Unauthorized\r\n{digest}WWW-Authenticate: Basic realm=\"{realm}\"\r\nContent-Type: text/html\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
                     )
                 };
                 let _ = stream.write_all(response.as_bytes());
@@ -243,6 +259,7 @@ fn main() {
         let port = url::Url::parse(&base).unwrap().port().unwrap();
         let auth_requests = auth_requests.clone();
         let cross_requests = cross_requests.clone();
+        let image_requests = image_requests.clone();
         let folder = folder.clone();
         let download_requests = download_requests.clone();
         let handle = cx.open_window(
@@ -312,7 +329,7 @@ fn main() {
                             if stage == 12 && title != "AUTH OK" { continue; }
                             let closing_key = closing.as_ref().and_then(NativePage::key);
                             if (stage == 13 || stage == 15) && question.is_none() { continue; }
-                            if stage == 14 && title != "AUTH NEEDED" { continue; }
+                            if stage == 14 && (title != "AUTH NEEDED" || image_requests.load(Ordering::SeqCst) == 0) { continue; }
                             if stage == 16 && title != "JS FIRST" { continue; }
                             if stage == 17 && closing_key.and_then(http_auth::waiting).is_none() { continue; }
                             match stage {
@@ -427,10 +444,11 @@ fn main() {
                                     assert!(!http_auth::is_waiting(id));
                                 }
                                 14 => {
-                                    // The server's 401 text shows. Give a question for the
-                                    // second method time to show up.
+                                    // The server's 401 text shows, and its frame and its image
+                                    // loaded. Give a question for the second method or for the
+                                    // image time to show up.
                                     Timer::after(Duration::from_millis(300)).await;
-                                    assert_eq!(http_auth::waiting(key), None, "Cancel must not ask again for the same request");
+                                    assert_eq!(http_auth::waiting(key), None, "Cancel must not ask again until the next navigation");
                                     prompt_closed(&second_page, cx);
                                     // A new navigation asks again.
                                     second_page.navigate(&other_auth_url).unwrap();
@@ -460,7 +478,7 @@ fn main() {
                                     assert!(!http_auth::is_waiting(id));
                                     Timer::after(Duration::from_millis(300)).await;
                                     assert_eq!(http_auth::waiting(key), None);
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and the HTTP sign-in prompt: Escape cancels, typed text, Tab and Enter sign in after a refused answer, Cancel does not ask again for a second method, a new document and a closed tab cancel, and a hidden page and an image of another origin ask nothing");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and the HTTP sign-in prompt: Escape cancels, typed text, Tab and Enter sign in after a refused answer, Cancel does not ask again for a second method, a frame or an image, a new document and a closed tab cancel, and a hidden page and an image of another origin ask nothing");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;
