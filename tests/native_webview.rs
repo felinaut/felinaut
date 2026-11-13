@@ -133,6 +133,16 @@ fn main() {
                 let failed_page = failed_tab.clone();
                 // A page the user never sees asks for the same download; it must be refused.
                 let hidden = NativePage::hidden(window, &download_url).expect("create hidden page");
+                // Tabs keep the in-app inspector, but Safari's Develop menu can't attach to them;
+                // the hidden live-folder page has no inspector at all.
+                for tab in [&*page, &second_tab, &*failed_tab] {
+                    assert_eq!(tab.inspectable_for_test(), Some(false), "a tab must not be inspectable from Safari");
+                    assert!(tab.developer_extras_for_test(), "tabs keep Inspect Element");
+                    assert!(tab.container_for_test().is_some_and(|c| c.holds_page), "each tab page sits in its own container");
+                }
+                assert!(!hidden.developer_extras_for_test(), "the hidden live-folder page has developer extras off");
+                assert_eq!(hidden.inspectable_for_test(), Some(false));
+                assert!(hidden.container_for_test().is_none(), "the hidden page needs no container");
                 page.focus().unwrap();
                 page.focus_parent().unwrap();
                 let second_page = page.clone();
@@ -193,9 +203,18 @@ fn main() {
                                 }
                                 4 => {
                                     assert_eq!(title, "JS SECOND");
+                                    // Visibility and bounds act on the tab's container, which carries the page.
                                     second_page.set_visible(false).unwrap();
+                                    let hidden_tab = second_page.container_for_test().unwrap();
+                                    assert!(hidden_tab.hidden && !hidden_tab.page_hidden, "{hidden_tab:?}");
                                     second_page.set_bounds(Bounds::new(point(px(10.), px(20.)), size(px(640.), px(400.)))).unwrap();
+                                    let moved = second_page.container_for_test().unwrap();
+                                    let top = if moved.parent_flipped { 20. } else { moved.parent_height - 20. - 400. };
+                                    assert_eq!(moved.frame, (10., top, 640., 400.), "{moved:?}");
+                                    assert!(moved.holds_page && moved.page_fills, "{moved:?}");
                                     second_page.set_visible(true).unwrap();
+                                    let shown = second_page.container_for_test().unwrap();
+                                    assert!(!shown.hidden && !shown.page_hidden, "{shown:?}");
                                     second_page.evaluate_for_test(r#"
                                         (() => {
                                           const child = document.getElementById('linkchild');
@@ -242,7 +261,39 @@ fn main() {
                                     assert_eq!(std::fs::read(saved).unwrap(), b"fixture");
                                     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "the hidden page saved nothing");
                                     std::fs::remove_dir_all(folder.parent().unwrap()).unwrap();
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, and a download that stays in the downloads folder while a hidden page's is refused");
+
+                                    // Web Inspector: docked inside the tab's container, then detached.
+                                    macro_rules! wait_for {
+                                        ($what:literal, $ready:expr) => {{
+                                            let deadline = Instant::now() + Duration::from_secs(10);
+                                            loop {
+                                                let state = second_page.inspector_for_test();
+                                                if state.as_ref().is_some_and($ready) { break; }
+                                                assert!(Instant::now() < deadline, concat!("Web Inspector never ", $what, ": {:?}"), state);
+                                                Timer::after(Duration::from_millis(50)).await;
+                                            }
+                                        }};
+                                    }
+                                    second_page.toggle_devtools();
+                                    wait_for!("opened", |s| s.visible);
+                                    second_page.dock_inspector_for_test(true);
+                                    wait_for!("docked in the tab", |s| s.visible && !s.detached && s.in_container);
+                                    second_page.toggle_devtools();
+                                    wait_for!("closed when docked", |s| !s.visible);
+                                    second_page.toggle_devtools();
+                                    wait_for!("reopened", |s| s.visible);
+                                    second_page.dock_inspector_for_test(false);
+                                    wait_for!("detached", |s| s.visible && s.detached && !s.in_container);
+                                    // With the browser window in front, ⌥⌘I brings the inspector back. Window
+                                    // order and main-window status need the app active, which other apps
+                                    // may have taken since launch.
+                                    cx.update(|window, cx| { cx.activate(true); window.activate_window(); }).unwrap();
+                                    wait_for!("went behind the browser window", |s| s.visible && !s.front);
+                                    second_page.toggle_devtools();
+                                    wait_for!("came to the front", |s| s.visible && s.front);
+                                    second_page.toggle_devtools();
+                                    wait_for!("closed when in front", |s| !s.visible);
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, tab containers, and a Web Inspector that Safari can't attach to");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;

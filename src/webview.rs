@@ -219,6 +219,101 @@ impl NativePage {
         }
     }
 
+    /// The page's `isInspectable` (macOS 13.3+): whether Safari's Develop menu may attach.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+    pub fn inspectable_for_test(&self) -> Option<bool> {
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // SAFETY: a live WKWebView on the main thread; the getter is checked first.
+        responds(&view, sel!(isInspectable)).then(|| unsafe { msg_send![&*view, isInspectable] })
+    }
+
+    /// Whether WebKit's developer extras (Inspect Element, the inspector) are on.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+    pub fn developer_extras_for_test(&self) -> bool {
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // SAFETY: a live WKWebView's configuration and preferences, on the main thread.
+        unsafe {
+            let configuration: Retained<AnyObject> = msg_send![&*view, configuration];
+            let preferences: Retained<AnyObject> = msg_send![&*configuration, preferences];
+            assert!(responds(&preferences, sel!(_developerExtrasEnabled)));
+            msg_send![&*preferences, _developerExtrasEnabled]
+        }
+    }
+
+    /// The tab page's container view and where the WKWebView sits in it.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+    pub fn container_for_test(&self) -> Option<ContainerForTest> {
+        use wry::WebViewExtMacOS;
+        let container = self.container.as_ref()?;
+        let view = self.webview.webview();
+        // SAFETY: views this page owns, on the main thread.
+        let parent = unsafe { container.superview() }?;
+        let frame = container.frame();
+        Some(ContainerForTest {
+            hidden: container.isHidden(),
+            frame: (
+                frame.origin.x,
+                frame.origin.y,
+                frame.size.width,
+                frame.size.height,
+            ),
+            parent_height: parent.frame().size.height,
+            parent_flipped: parent.isFlipped(),
+            holds_page: unsafe { view.superview() }.as_deref() == Some(&**container),
+            page_hidden: view.isHidden(),
+            page_fills: view.frame() == container.bounds(),
+        })
+    }
+
+    /// The page's Web Inspector, once WebKit has made one.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+    pub fn inspector_for_test(&self) -> Option<InspectorForTest> {
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // SAFETY: a live WKWebView and its `_WKInspector`, on the main thread.
+        unsafe {
+            let inspector = inspector_of(&view)?;
+            let page: Option<Retained<objc2_app_kit::NSView>> =
+                msg_send![&*inspector, inspectorWebView];
+            let in_container = match (&page, &self.container) {
+                (Some(page), Some(container)) => page.isDescendantOf(container),
+                _ => false,
+            };
+            Some(InspectorForTest {
+                visible: msg_send![&*inspector, isVisible],
+                detached: inspector_is_detached(&inspector),
+                front: msg_send![&*inspector, isFront],
+                in_container,
+                window_class: page
+                    .and_then(|page| page.window())
+                    .map(|window| window.class().name().to_string_lossy().into_owned()),
+            })
+        }
+    }
+
+    /// Docks (`attach`) or detaches the open Web Inspector.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+    pub fn dock_inspector_for_test(&self, docked: bool) {
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // SAFETY: a live WKWebView and its `_WKInspector`, on the main thread.
+        unsafe {
+            let inspector = inspector_of(&view).expect("an inspector");
+            if docked {
+                let () = msg_send![&*inspector, attach];
+            } else {
+                let () = msg_send![&*inspector, detach];
+            }
+        }
+    }
+
     pub fn navigate(&self, url: &str) -> Result<(), String> {
         check_url(url)?;
         self.webview
@@ -791,6 +886,38 @@ unsafe fn inspector_of(view: &AnyObject) -> Option<Retained<AnyObject>> {
     }
     // SAFETY: the caller's guarantee; the selector exists and returns an object or nil.
     unsafe { msg_send![view, _inspector] }
+}
+
+/// A tab page's container, for the opt-in native test.
+#[cfg(test)]
+#[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+#[derive(Debug)]
+pub struct ContainerForTest {
+    pub hidden: bool,
+    /// x, y, width, height in the parent view's own coordinates.
+    pub frame: (f64, f64, f64, f64),
+    pub parent_height: f64,
+    pub parent_flipped: bool,
+    /// The WKWebView is the container's subview...
+    pub holds_page: bool,
+    /// ...is not hidden itself (the container hides it)...
+    pub page_hidden: bool,
+    /// ...and fills the container.
+    pub page_fills: bool,
+}
+
+/// A page's Web Inspector, for the opt-in native test.
+#[cfg(test)]
+#[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+#[derive(Clone, Debug)]
+pub struct InspectorForTest {
+    pub visible: bool,
+    pub detached: bool,
+    pub front: bool,
+    /// The inspector's own page is docked inside the tab's container, not the whole window.
+    pub in_container: bool,
+    /// The class of the window the inspector's own page is in, if any.
+    pub window_class: Option<String>,
 }
 
 /// What ⌥⌘I does to a page's inspector.
