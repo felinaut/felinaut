@@ -598,11 +598,14 @@ fn button(id: &'static str, label: impl Into<SharedString>, p: Palette) -> State
 impl Render for CookieManager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::palette(cx);
-        // The graph first: a click in it changes what the rest of this frame shows.
         let active = window.is_window_active();
         let graph = self.graph.show(p, theme::motion_allowed(cx), active);
-        if let Some(node) = &graph.clicked {
-            self.click(node, window, cx);
+        // egui reports a click while this frame is drawn, when `notify` cannot ask for the
+        // next one. Handle it right after the frame, which then draws its result.
+        if let Some(node) = graph.clicked.clone() {
+            cx.defer_in(window, move |this, window, cx| {
+                this.click(&node, window, cx)
+            });
         }
         // The layout animates only while its window is active.
         if graph.animating && active {

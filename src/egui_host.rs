@@ -62,11 +62,13 @@ struct Pointer {
 }
 
 /// What the native test can see of a host: where it was painted, the size its last pass
-/// used, how many passes ran and how many presses it took.
+/// used and the labels it drew there, how many passes ran and how many presses it took.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Probe {
     pub painted: Option<Bounds<Pixels>>,
     pub passed: Option<Size<Pixels>>,
+    /// Each label's text and anchor, in the element's own coordinates.
+    pub labels: Vec<(String, Pos2)>,
     pub passes: usize,
     pub presses: usize,
 }
@@ -77,6 +79,8 @@ pub struct Host {
     started: Instant,
     /// The size the last pass used, and how many passes ran.
     passed: Cell<(Option<Size<Pixels>>, usize)>,
+    /// The labels of the last pass, for the native test.
+    drawn: RefCell<Vec<(String, Pos2)>>,
 }
 
 impl Default for Host {
@@ -90,6 +94,7 @@ impl Default for Host {
             pointer: Rc::default(),
             started: Instant::now(),
             passed: Cell::default(),
+            drawn: RefCell::default(),
         }
     }
 }
@@ -116,6 +121,7 @@ impl Host {
         Probe {
             painted: pointer.bounds,
             passed,
+            labels: self.drawn.borrow().clone(),
             passes,
             presses: pointer.presses,
         }
@@ -148,12 +154,19 @@ impl Host {
         let mut output = self.ctx.run_ui(input, ui);
         // Nothing here uploads textures, and the delta must not be dropped unapplied.
         output.textures_delta.clear();
+        let labels = LABELS.take();
+        self.drawn.replace(
+            labels
+                .iter()
+                .map(|label| (label.text.clone(), label.anchor))
+                .collect(),
+        );
         Frame {
             shapes: std::mem::take(&mut output.shapes)
                 .into_iter()
                 .map(|clipped| clipped.shape)
                 .collect(),
-            labels: LABELS.take(),
+            labels,
         }
     }
 

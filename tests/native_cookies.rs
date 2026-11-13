@@ -299,6 +299,64 @@ async fn graph(cx: &mut AsyncWindowContext, start: Instant) {
         "the graph takes its own clicks"
     );
     rest(cx, start, "after the click in the graph").await;
+
+    // A click on a node shows its result without any other input, even in an inactive
+    // window, which asks for no frames of its own.
+    cx.update(|_, cx| {
+        cookie_window::update_for_test(cx, |manager, _, cx| manager.select(Node::All, cx))
+    })
+    .unwrap();
+    cx.update(|window, _| window.activate_window()).unwrap();
+    while cookies_active(cx) {
+        tick(start, "the Cookies window becomes inactive").await;
+    }
+    let before = rest(cx, start, "the inactive graph comes to rest").await;
+    assert!(before.labels.len() > 1, "{:?}", before.labels);
+    let (_, root) = before
+        .labels
+        .iter()
+        .find(|(text, _)| text.starts_with("All cookies"))
+        .expect("the root's label")
+        .clone();
+    // The root's label hangs below it: its center is about 27 px above the label's anchor.
+    click_at(
+        cx,
+        point(bounds.left() + px(root.x), bounds.top() + px(root.y - 27.)),
+    );
+    let after = rest(cx, start, "after the click on the root").await;
+    assert_eq!(
+        window_rows(cx).len(),
+        1,
+        "the click selected the open root again, which closes it"
+    );
+    assert_eq!(
+        after.labels.len(),
+        1,
+        "the graph draws the closed root without waiting for more input: {:?}",
+        after.labels
+    );
+    cx.update(|_, cx| {
+        cookie_window::update_for_test(cx, |manager, _, cx| manager.toggle(&Node::All, cx))
+    })
+    .unwrap();
+    // Bring it forward again. Only a best effort: while another app is frontmost, as when
+    // other native tests run at the same time, the window stays inactive, which the rest of
+    // the test does not need.
+    cx.update(|_, cx| {
+        cookie_window::window_for_test(cx, |window, _| window.activate_window());
+        cx.activate(true);
+    })
+    .unwrap();
+}
+
+fn cookies_active(cx: &mut AsyncWindowContext) -> bool {
+    cx.update(|_, cx| cookie_window::window_for_test(cx, |window, _| window.is_window_active()))
+        .unwrap()
+}
+
+fn window_rows(cx: &mut AsyncWindowContext) -> Vec<cookies::Row> {
+    cx.update(|_, cx| cookie_window::update_for_test(cx, |manager, _, _| manager.rows().to_vec()))
+        .unwrap()
 }
 
 fn has(rows: &[(usize, String, usize)], depth: usize, label: &str, count: usize) -> bool {
