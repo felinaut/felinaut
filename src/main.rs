@@ -1652,6 +1652,9 @@ impl Browser {
         for (url, activate) in open {
             self.open_link_tab(&url, activate, window, cx);
         }
+        // A new prompt, or a prompt whose tab the user selected, or the end of an edit of the
+        // address: each one leaves the focus on the browser, and the prompt takes it here.
+        self.focus_sign_in(window, cx);
         for (url, png) in icons {
             self.store_icon(&url, png, cx);
         }
@@ -2002,8 +2005,24 @@ impl Browser {
         self.hide_others();
         self.reveal_active();
         window.focus(&self.focus);
+        self.focus_sign_in(window, cx);
         self.sync_address(cx);
         cx.notify();
+    }
+    /// Gives the keys to the sign-in prompt of the active tab. The prompt takes the focus only
+    /// from the browser itself, never from the address bar or an open menu: text that the user
+    /// types there must not go to the prompt.
+    fn focus_sign_in(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = &self.tabs[self.active];
+        // GPUI drops the focus when a focused field goes away, as after a refused answer.
+        if window
+            .focused(cx)
+            .is_none_or(|focused| focused == self.focus)
+            && !tab.home
+            && let Some(page) = &tab.page
+        {
+            auth_prompt::focus(page, window, cx);
+        }
     }
     /// New tabs open at the top of the unpinned list, right under the New tab row.
     fn insert_tab(&mut self, tab: Tab) -> usize {

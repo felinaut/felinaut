@@ -85,10 +85,12 @@ async fn sign_in_keys(page: &NativePage, keys: &[&str], cx: &mut AsyncWindowCont
             "a new question changes the tab"
         );
         assert!(auth_prompt::view(page, cx).is_some());
+        // As the browser does for the active tab.
+        auth_prompt::focus(page, window, cx);
         window.refresh();
     })
     .unwrap();
-    // The prompt takes the focus when it is drawn, and typed text goes to the field that had
+    // Typed text goes to the field that had
     // the focus at the last paint. So a frame must pass at the start and after each Tab.
     let mut wait = true;
     for key in keys {

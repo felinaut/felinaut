@@ -70,13 +70,22 @@ pub fn view(page: &NativePage, cx: &App) -> Option<Entity<AuthPrompt>> {
     Some(prompt.clone())
 }
 
+/// Gives the keys to the prompt of a page, if the page has one: the user name field takes the
+/// focus. The browser calls this for the active tab, and only while no other input of the
+/// chrome (the address bar, a menu) has the focus.
+pub fn focus(page: &NativePage, window: &mut Window, cx: &mut App) {
+    if let Some(prompt) = view(page, cx) {
+        // Keys go to GPUI only while the page is not AppKit's first responder.
+        let _ = page.focus_parent();
+        window.focus(&prompt.read(cx).user.focus_handle(cx));
+    }
+}
+
 pub struct AuthPrompt {
     id: u64,
     challenge: Challenge,
     user: Entity<AddressInput>,
     password: Entity<AddressInput>,
-    /// The user name field takes the focus when the prompt is first drawn.
-    focus_pending: bool,
     answered: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -101,7 +110,6 @@ impl AuthPrompt {
             challenge,
             user,
             password,
-            focus_pending: true,
             answered: false,
             _subscriptions: subscriptions,
         }
@@ -158,15 +166,11 @@ fn button(
 }
 
 impl Render for AuthPrompt {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::palette(cx);
         let page = div().size_full().bg(rgb(p.background));
         if self.answered {
             return page.into_any_element();
-        }
-        if self.focus_pending {
-            self.focus_pending = false;
-            window.focus(&self.user.focus_handle(cx));
         }
         let note = |text: SharedString| div().text_sm().text_color(rgb(p.muted)).child(text);
         let warning = |text: &'static str| {
