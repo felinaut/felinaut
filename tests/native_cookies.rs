@@ -196,7 +196,61 @@ async fn rest(cx: &mut AsyncWindowContext, start: Instant, stage: &str) -> egui_
     last
 }
 
-/// The graph follows a resize by itself.
+/// Sends the Cookies window a left click at `at` (window coordinates): AppKit mouse
+/// events, delivered to GPUI's content view as a real click would be.
+fn click_at(cx: &mut AsyncWindowContext, at: Point<Pixels>) {
+    use objc2::{Message, rc::Retained};
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSView};
+    use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let view: Retained<NSView> = cx
+        .update(|_, cx| {
+            cookie_window::window_for_test(cx, |window, _| {
+                let handle = HasWindowHandle::window_handle(window).expect("a window handle");
+                let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+                    panic!("an AppKit window");
+                };
+                // SAFETY: GPUI's live content view, on the main thread; retained here so
+                // that it can be used after this update.
+                unsafe { handle.ns_view.cast::<NSView>().as_ref() }.retain()
+            })
+        })
+        .unwrap();
+    let window = view.window().expect("the view's window");
+    let (x, y) = (f64::from(f32::from(at.x)), f64::from(f32::from(at.y)));
+    let y = if view.isFlipped() {
+        y
+    } else {
+        view.bounds().size.height - y
+    };
+    let location = view.convertPoint_toView(objc2_foundation::NSPoint::new(x, y), None);
+    let time = objc2_foundation::NSProcessInfo::processInfo().systemUptime();
+    // Outside any GPUI update: GPUI's view handles the events as the platform's own.
+    for (kind, clicks) in [
+        (NSEventType::MouseMoved, 0),
+        (NSEventType::LeftMouseDown, 1),
+        (NSEventType::LeftMouseUp, 1),
+    ] {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            location,
+            NSEventModifierFlags::empty(),
+            time,
+            window.windowNumber(),
+            None,
+            0,
+            clicks,
+            1.0,
+        )
+        .expect("a mouse event");
+        match kind {
+            NSEventType::MouseMoved => view.mouseMoved(&event),
+            NSEventType::LeftMouseDown => view.mouseDown(&event),
+            _ => view.mouseUp(&event),
+        }
+    }
+}
+
+/// The graph follows a resize by itself, and the Fit button keeps its clicks.
 async fn graph(cx: &mut AsyncWindowContext, start: Instant) {
     let before = rest(cx, start, "the graph comes to rest").await;
     let painted = before.painted.expect("the graph was painted");
@@ -223,6 +277,28 @@ async fn graph(cx: &mut AsyncWindowContext, start: Instant) {
         after.painted.map(|bounds| bounds.size),
         "the graph's pass follows the resize ({resized:?} then {after:?})"
     );
+
+    // Fit sits 12 px inside the graph's top right corner, 26 px high and about 32 px wide.
+    let bounds = after.painted.unwrap();
+    let presses = after.presses;
+    click_at(cx, point(bounds.right() - px(28.), bounds.top() + px(25.)));
+    rest(cx, start, "after the click on Fit").await;
+    assert_eq!(
+        probe(cx).presses,
+        presses,
+        "a click on Fit stays out of the graph"
+    );
+    // The graph itself still takes a click.
+    click_at(
+        cx,
+        point(bounds.left() + px(12.), bounds.bottom() - px(12.)),
+    );
+    assert_eq!(
+        probe(cx).presses,
+        presses + 1,
+        "the graph takes its own clicks"
+    );
+    rest(cx, start, "after the click in the graph").await;
 }
 
 fn has(rows: &[(usize, String, usize)], depth: usize, label: &str, count: usize) -> bool {

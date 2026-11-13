@@ -57,15 +57,18 @@ struct Pointer {
     /// A button went down inside the element and has not come up yet.
     pressed: bool,
     inside: bool,
+    /// Button presses the element took, for the native test.
+    presses: usize,
 }
 
 /// What the native test can see of a host: where it was painted, the size its last pass
-/// used and how many passes ran.
+/// used, how many passes ran and how many presses it took.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Probe {
     pub painted: Option<Bounds<Pixels>>,
     pub passed: Option<Size<Pixels>>,
     pub passes: usize,
+    pub presses: usize,
 }
 
 pub struct Host {
@@ -114,6 +117,7 @@ impl Host {
             painted: pointer.bounds,
             passed,
             passes,
+            presses: pointer.presses,
         }
     }
 
@@ -216,6 +220,7 @@ fn listen(
             let pos = local(event.position);
             let mut pointer = pointer.borrow_mut();
             pointer.pressed = true;
+            pointer.presses += 1;
             pointer.events.push(egui::Event::PointerMoved(pos));
             pointer.events.push(egui::Event::PointerButton {
                 pos,

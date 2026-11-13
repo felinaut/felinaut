@@ -716,7 +716,11 @@ impl Render for CookieManager {
                             .h_full()
                             .child(self.graph.element(graph.frame, cx.entity_id()).size_full())
                             .child(
+                                // Over the graph's canvas, which listens for the mouse
+                                // itself: without occluding it, a click on Fit also
+                                // reached the node beneath.
                                 button("fit-graph", "Fit", p)
+                                    .occlude()
                                     .absolute()
                                     .top_3()
                                     .right_3()
