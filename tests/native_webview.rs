@@ -159,7 +159,11 @@ fn main() {
                             for event in second_page.drain_events() {
                                 match event {
                                     Event::Title(value) => title = value,
-                                    Event::Finished(_) => finished = true,
+                                    // WebKit sometimes ends a back or forward navigation with a
+                                    // cancel error (-999) after the commit, and sends no finish. The
+                                    // document is on show then, and the browser stops its loading
+                                    // state on this event too. The title checks below still apply.
+                                    Event::Finished(_) | Event::Stopped => finished = true,
                                     Event::Hover(Some(url)) if url.ends_with("/link-destination") => hover_seen = true,
                                     Event::Hover(None) => hover_cleared = true,
                                     Event::OpenInBackground(url) if url.ends_with("/link-destination") => background_opens += 1,
