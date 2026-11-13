@@ -47,8 +47,14 @@ NOTARY_PROFILE = packaging_env("NOTARY_PROFILE")
 PROVISIONING_PROFILE = packaging_env("PROVISIONING_PROFILE")
 ENTITLEMENTS = ROOT / "assets" / "Felinaut.entitlements"
 CAPTURE_ENTITLEMENTS = ROOT / "assets" / "Felinaut-capture.entitlements"
-# Hardened runtime keys. No provisioning profile has to grant them.
-UNRESTRICTED_PREFIX = "com.apple.security."
+# The hardened runtime keys for the camera and the microphone. No provisioning profile has
+# to grant them. Each other key, also under com.apple.security., needs the profile's grant.
+UNRESTRICTED_ENTITLEMENTS = frozenset(
+    {
+        "com.apple.security.device.camera",
+        "com.apple.security.device.audio-input",
+    }
+)
 
 
 def codesign_args(identity: str, entitlements: Path | None = None) -> list[str]:
@@ -429,7 +435,7 @@ def main():
             claimed = plistlib.load(file)
         granted = profile_entitlements(Path(PROVISIONING_PROFILE))
         for key in claimed:
-            if not key.startswith(UNRESTRICTED_PREFIX) and key not in granted:
+            if key not in UNRESTRICTED_ENTITLEMENTS and key not in granted:
                 parser.error(
                     f"{PROVISIONING_PROFILE} does not grant {key}; macOS would refuse to launch the app"
                 )
