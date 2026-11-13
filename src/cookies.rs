@@ -450,6 +450,14 @@ pub enum BackOut {
 pub struct Pending {
     pub node: Node,
     pub keys: HashSet<Key>,
+    /// The filter hides some of the branch's cookies, which stay.
+    pub partial: bool,
+}
+
+impl Pending {
+    pub fn prompt(&self) -> String {
+        delete_prompt(&self.node, self.keys.len(), self.partial)
+    }
 }
 
 /// Everything the Cookies window decides, apart from GPUI and WebKit: the cookies, the
@@ -710,9 +718,11 @@ impl WindowState {
         if matches!(self.selection, Node::Cookie(_)) {
             self.begin_delete(keys)
         } else {
+            let partial = keys.len() < self.tree.subtree(&self.selection).len();
             self.confirming = Some(Pending {
                 node: self.selection.clone(),
                 keys,
+                partial,
             });
             None
         }
@@ -792,14 +802,20 @@ pub fn span(totals: Totals, node: &Node) -> Option<String> {
     }
 }
 
-/// The question asked once before a whole branch goes. It names how many cookies go.
-pub fn delete_prompt(node: &Node, count: usize) -> String {
+/// The question asked once before a whole branch goes. It names how many cookies go, and
+/// whether the filter hides some of the branch (`partial`), whose cookies then stay.
+pub fn delete_prompt(node: &Node, count: usize, partial: bool) -> String {
     let cookies = cookie_count(count);
-    match node {
-        Node::All => format!("Delete all {cookies}? This signs you out of every site."),
-        Node::Site(name) => format!("Delete {cookies} for {name} and its subdomains?"),
-        Node::Host(name) => format!("Delete {cookies} for {name}?"),
-        Node::Cookie(key) => format!("Delete the cookie {}?", display(&key.name, 40)),
+    match (node, partial) {
+        (Node::All, false) => format!("Delete all {cookies}? This signs you out of every site."),
+        (Node::All, true) => format!("Delete the {cookies} shown? Cookies the filter hides stay."),
+        (Node::Site(name), false) => format!("Delete {cookies} for {name} and its subdomains?"),
+        (Node::Site(name), true) => format!(
+            "Delete the {cookies} shown for {name}? Its hosts that the filter hides keep theirs."
+        ),
+        (Node::Host(name), false) => format!("Delete {cookies} for {name}?"),
+        (Node::Host(name), true) => format!("Delete the {cookies} shown for {name}?"),
+        (Node::Cookie(key), _) => format!("Delete the cookie {}?", display(&key.name, 40)),
     }
 }
 
@@ -1310,19 +1326,19 @@ mod tests {
     #[test]
     fn the_delete_question_names_the_branch_and_how_many_cookies_go() {
         assert_eq!(
-            delete_prompt(&Node::Site("google.com".into()), 12),
+            delete_prompt(&Node::Site("google.com".into()), 12, false),
             "Delete 12 cookies for google.com and its subdomains?"
         );
         assert_eq!(
-            delete_prompt(&Node::Host("mail.google.com".into()), 1),
+            delete_prompt(&Node::Host("mail.google.com".into()), 1, false),
             "Delete 1 cookie for mail.google.com?"
         );
         assert_eq!(
-            delete_prompt(&Node::All, 340),
+            delete_prompt(&Node::All, 340, false),
             "Delete all 340 cookies? This signs you out of every site."
         );
         assert_eq!(
-            delete_prompt(&Node::Cookie(cookie("example.com", "sid").key()), 1),
+            delete_prompt(&Node::Cookie(cookie("example.com", "sid").key()), 1, false),
             "Delete the cookie sid?"
         );
         assert_eq!(cookie_count(0), "0 cookies");
@@ -1687,5 +1703,65 @@ mod tests {
         assert!(state.confirming().is_some());
         assert_eq!(state.confirm(), Some(keys(&google)));
         assert_eq!(state.tree().count(), 2);
+    }
+
+    #[test]
+    fn the_delete_question_says_when_the_filter_hides_part_of_the_branch() {
+        assert_eq!(
+            delete_prompt(&Node::All, 7, true),
+            "Delete the 7 cookies shown? Cookies the filter hides stay."
+        );
+        assert_eq!(
+            delete_prompt(&Node::Site("example.com".into()), 1, true),
+            "Delete the 1 cookie shown for example.com? Its hosts that the filter hides keep \
+             theirs."
+        );
+        assert_eq!(
+            delete_prompt(&Node::Host("mail.example.com".into()), 2, true),
+            "Delete the 2 cookies shown for mail.example.com?"
+        );
+
+        let mut state = loaded(&store());
+        let prompt = |state: &WindowState| state.confirming().map(Pending::prompt);
+        // The filter matches a host: the site shows part of its cookies, All too.
+        state.set_query("mail");
+        state.select(Node::Site("google.com".into()));
+        state.request_delete();
+        assert_eq!(
+            prompt(&state).as_deref(),
+            Some(
+                "Delete the 2 cookies shown for google.com? Its hosts that the filter hides \
+                 keep theirs."
+            )
+        );
+        state.select(Node::All);
+        state.request_delete();
+        assert_eq!(
+            prompt(&state).as_deref(),
+            Some("Delete the 2 cookies shown? Cookies the filter hides stay.")
+        );
+        // A host always shows all of its cookies.
+        state.select(Node::Host("mail.google.com".into()));
+        state.request_delete();
+        assert_eq!(
+            prompt(&state).as_deref(),
+            Some("Delete 2 cookies for mail.google.com?")
+        );
+        // The filter matches the whole site: nothing of it is hidden.
+        state.set_query("google");
+        state.select(Node::Site("google.com".into()));
+        state.request_delete();
+        assert_eq!(
+            prompt(&state).as_deref(),
+            Some("Delete 3 cookies for google.com and its subdomains?")
+        );
+        // A filter that hides nothing is no filter for the question.
+        state.set_query("o");
+        state.select(Node::All);
+        state.request_delete();
+        assert_eq!(
+            prompt(&state).as_deref(),
+            Some("Delete all 4 cookies? This signs you out of every site.")
+        );
     }
 }

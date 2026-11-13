@@ -457,10 +457,7 @@ impl CookieManager {
                     .border_color(rgb(p.primary))
                     .bg(rgb(p.elevated))
                     .text_size(px(13.))
-                    .child(SharedString::from(cookies::delete_prompt(
-                        &pending.node,
-                        pending.keys.len(),
-                    )))
+                    .child(SharedString::from(pending.prompt()))
                     .child(
                         div()
                             .flex()
