@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en" data-fixture-document="__FELINAUT_DOCUMENT_ID__">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Felinaut local engine fixture</title>
+  <style>
+    :root { color-scheme: light dark; font: 18px system-ui; }
+    body { max-width: 44rem; margin: 3rem auto; padding: 1rem; }
+    input, button { font: inherit; padding: .6rem; margin: .4rem 0; }
+    output { display: block; padding: 1rem 0; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Local engine test</h1>
+  <p>This document has no remote resources or account access. Backend identity
+  comes from the browser, not this page or its user agent.</p>
+  <label for="text">Test input</label><br>
+  <input id="text" autocomplete="off" placeholder="Type a short test message">
+  <button id="verify" type="button">Verify input</button>
+  <output id="result" aria-live="polite">JavaScript pending</output>
+  <p>The button writes only this ephemeral loopback origin's cookie and
+  localStorage. WebKit and CEF should retain independent values; tabs of the
+  same engine should share those values. Automation here is DOM-only, not
+  trusted native input.</p>
+  <script>
+    const input = document.querySelector('#text');
+    const result = document.querySelector('#result');
+    let previous;
+    try { previous = localStorage.getItem('felinaut-engine-fixture'); }
+    catch { previous = 'storage unavailable'; }
+    result.textContent = 'JavaScript ready. Previous value: ' + (previous ?? '(empty)');
+    document.querySelector('#verify').addEventListener('click', event => {
+      const value = input.value.slice(0, 256);
+      try {
+        localStorage.setItem('felinaut-engine-fixture', value);
+        document.cookie = 'felinaut_engine_fixture=' + encodeURIComponent(value) + '; Path=/; SameSite=Strict';
+      } catch { result.textContent = 'Storage unavailable'; return; }
+      result.dataset.value = value;
+      result.dataset.trusted = String(event.isTrusted);
+      result.textContent = 'Input: ' + value + '\nTrusted click: ' + event.isTrusted;
+    });
+    document.documentElement.dataset.fixtureReady = 'yes';
+  </script>
+</body>
+</html>
+</head></title></style>
