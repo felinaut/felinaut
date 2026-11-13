@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SameSite {
@@ -433,6 +434,16 @@ impl Tree {
 pub const FIRST_VIEW: usize = 60;
 /// The most sites it shows at first; beyond that it starts as the root alone.
 pub const FIRST_VIEW_SITES: usize = 200;
+
+/// How long the window waits for WebKit's answer. A delete takes one request per cookie
+/// and then reads the store again, so its wait grows with the cookies it takes, up to a bound.
+pub fn answer_timeout(deleting: usize) -> Duration {
+    const BASE: Duration = Duration::from_secs(10);
+    const PER_COOKIE: Duration = Duration::from_millis(20);
+    const MOST: Duration = Duration::from_secs(300);
+    let per_cookie = u32::try_from(deleting).map_or(MOST, |count| PER_COOKIE * count);
+    (BASE + per_cookie).min(MOST)
+}
 
 /// What the window has to do after WebKit's answer, or its absence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1840,5 +1851,15 @@ mod tests {
         assert_eq!(state.answered(Some(&cookies[1..])), Follow::Nothing);
         assert_eq!(state.tree().count(), 3);
         assert_eq!(state.error(), None);
+    }
+
+    #[test]
+    fn the_wait_for_webkit_grows_with_the_cookies_a_delete_takes() {
+        use std::time::Duration;
+        assert_eq!(answer_timeout(0), Duration::from_secs(10));
+        assert!(answer_timeout(1) > answer_timeout(0));
+        assert_eq!(answer_timeout(5_000), Duration::from_secs(110));
+        // A huge store still has a bounded wait.
+        assert_eq!(answer_timeout(usize::MAX), Duration::from_secs(300));
     }
 }

@@ -41,8 +41,6 @@ actions!(
 );
 
 const CONTEXT: &str = "FelinautCookies";
-/// How long WebKit may take to answer before the window says so.
-const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 struct CookiesWindow {
@@ -196,7 +194,7 @@ impl CookieManager {
         }
         let (reply, answer) = mpsc::channel();
         let sent = cookie_store::fetch(reply);
-        self.wait(sent, answer, ANSWER_TIMEOUT, window, cx);
+        self.wait(sent, answer, cookies::answer_timeout(0), window, cx);
     }
 
     /// WebKit answers in a native callback, which only fills `answer`. Poll it from GPUI's
@@ -338,9 +336,10 @@ impl CookieManager {
         let Some(keys) = keys else {
             return;
         };
+        let timeout = cookies::answer_timeout(keys.len());
         let (reply, answer) = mpsc::channel();
         let sent = cookie_store::delete(keys, reply);
-        self.wait(sent, answer, ANSWER_TIMEOUT, window, cx);
+        self.wait(sent, answer, timeout, window, cx);
     }
 
     fn click(&mut self, node: &Node, window: &mut Window, cx: &mut Context<Self>) {
