@@ -28,8 +28,7 @@ struct Record {
     browser: Browser,
     frame_id: String,
     context: V8Context,
-    json: V8Value,
-    stringify: V8Value,
+    evaluator: V8Value,
     admission: ContextState,
 }
 
@@ -40,8 +39,7 @@ struct Identity {
 
 struct Handles {
     context: V8Context,
-    json: V8Value,
-    stringify: V8Value,
+    evaluator: V8Value,
 }
 
 /// Contains both callback panics and panics from destroying a panic payload.
@@ -124,8 +122,7 @@ impl Bridge {
                     browser: identity.browser,
                     frame_id: identity.frame_id,
                     context: handles.context,
-                    json: handles.json,
-                    stringify: handles.stringify,
+                    evaluator: handles.evaluator,
                     admission: ContextState::new(serial),
                 });
                 (old, serial)
@@ -279,8 +276,7 @@ impl Bridge {
         let record = &state.contexts[position(&state, identity)?];
         Some(Handles {
             context: record.context.clone(),
-            json: record.json.clone(),
-            stringify: record.stringify.clone(),
+            evaluator: record.evaluator.clone(),
         })
     }
 
@@ -403,91 +399,129 @@ impl Drop for Entered {
     }
 }
 
+// Raw results must stay in JavaScript: this CEF pin eagerly converts Date
+// results via a checked ToNumber, and cannot wrap every BigInt/Symbol result.
+// Only this trusted factory's function and its primitive tagged strings cross
+// the CefV8Value return boundary. The strict closure is never published; source
+// uses captured *indirect* eval and cannot access the closure's lexical state.
+const EVALUATOR_FACTORY: &str = r#"function(evaluateSource, stringify, PromiseConstructor, hasInstance, apply, resultLimit) {
+    "use strict";
+    return function(source) {
+        let value;
+        try {
+            value = evaluateSource(source);
+        } catch (_) {
+            return "3:";
+        }
+        try {
+            if (value === void 0) return "0:null";
+            const kind = typeof value;
+            if (kind === "function" || kind === "symbol" || kind === "bigint") return "4:";
+            if (value !== null && kind === "object" && apply(hasInstance, PromiseConstructor, [value])) return "4:";
+            const json = stringify(value);
+            if (typeof json !== "string") return "4:";
+            if (json.length > resultLimit) return "5:";
+            return "0:" + json;
+        } catch (_) {
+            return "4:";
+        }
+    };
+}"#;
+
+fn evaluator_source() -> String {
+    format!(
+        "({EVALUATOR_FACTORY})(eval, JSON.stringify, Promise, Function.prototype[Symbol.hasInstance], Reflect.apply, {})",
+        protocol::RESULT_LIMIT,
+    )
+}
+
 fn capture(context: &V8Context) -> Result<Handles, Status> {
     let _entered = Entered::new(context)?;
-    let global = context.global().ok_or(Status::InternalError)?;
-    if global.is_valid() == 0 {
+    let mut evaluator = None;
+    let mut exception = None;
+    let success = context.eval(
+        Some(&CefString::from(evaluator_source().as_str())),
+        None,
+        1,
+        Some(&mut evaluator),
+        Some(&mut exception),
+    ) != 0;
+    if context.is_valid() == 0 {
         return Err(Status::StaleContext);
     }
-    let json = global
-        .value_bykey(Some(&CefString::from("JSON")))
-        .ok_or(Status::SerializationError)?;
-    if json.is_valid() == 0 {
-        return Err(Status::StaleContext);
+    if !success {
+        return Err(Status::SerializationError);
     }
-    let stringify = json
-        .value_bykey(Some(&CefString::from("stringify")))
-        .ok_or(Status::SerializationError)?;
-    if stringify.is_valid() == 0
-        || stringify.is_function() == 0
-        || stringify.set_rethrow_exceptions(0) == 0
+    let evaluator = evaluator.ok_or(Status::SerializationError)?;
+    if evaluator.is_valid() == 0
+        || evaluator.is_function() == 0
+        || evaluator.set_rethrow_exceptions(0) == 0
     {
         return Err(Status::SerializationError);
     }
     Ok(Handles {
         context: context.clone(),
-        json,
-        stringify,
+        evaluator,
     })
 }
 
 fn evaluate(handles: &mut Handles, frame: &Frame, source: &str) -> Result<String, Status> {
-    let _entered = Entered::new(&handles.context)?;
-    let mut value = None;
-    let mut exception = None;
-    if handles.context.eval(
-        Some(&CefString::from(source)),
-        None,
-        1,
-        Some(&mut value),
-        Some(&mut exception),
-    ) == 0
-    {
-        return Err(Status::JavascriptException);
-    }
     if !context_matches(&handles.context, frame) {
         return Err(Status::StaleContext);
     }
-    let Some(value) = value else {
-        return Ok("null".into());
-    };
-    if value.is_valid() == 0 {
-        return Err(Status::StaleContext);
-    }
-    if value.is_undefined() != 0 {
-        return Ok("null".into());
-    }
-    if value.is_promise() != 0 {
+    let _entered = Entered::new(&handles.context)?;
+    if handles.evaluator.is_valid() == 0 {
         return Err(Status::SerializationError);
     }
-    let arguments = [Some(value)];
-    let serialized = handles.stringify.execute_function_with_context(
+    let source =
+        v8_value_create_string(Some(&CefString::from(source))).ok_or(Status::InternalError)?;
+    let arguments = [Some(source)];
+    let tagged = handles.evaluator.execute_function_with_context(
         Some(&mut handles.context),
-        Some(&mut handles.json),
+        None,
         Some(&arguments),
     );
     if !context_matches(&handles.context, frame) {
         return Err(Status::StaleContext);
     }
-    if handles.stringify.has_exception() != 0 {
-        handles.stringify.clear_exception();
+    if handles.evaluator.is_valid() == 0 {
         return Err(Status::SerializationError);
     }
-    let serialized = serialized.ok_or(Status::SerializationError)?;
-    if serialized.is_valid() == 0 || serialized.is_string() == 0 {
+    if handles.evaluator.has_exception() != 0 {
+        handles.evaluator.clear_exception();
         return Err(Status::SerializationError);
     }
-    let json = read_text(serialized.string_value(), protocol::RESULT_LIMIT).map_err(|error| {
+    let tagged = tagged.ok_or(Status::SerializationError)?;
+    if tagged.is_valid() == 0 || tagged.is_string() == 0 {
+        return Err(Status::SerializationError);
+    }
+    // Include the two ASCII tag bytes in the transport budget, then check the
+    // JSON payload itself. V8/stringify allocations are not interruptible/bounded.
+    let tagged = read_text(tagged.string_value(), protocol::RESULT_LIMIT + 2).map_err(|error| {
         if error == protocol::ProtocolError::TooLarge {
             Status::ResultTooLarge
         } else {
             Status::SerializationError
         }
     })?;
-    if json.is_empty() {
+    decode_evaluation(tagged)
+}
+
+fn decode_evaluation(mut tagged: String) -> Result<String, Status> {
+    if tagged.len() > protocol::RESULT_LIMIT + 2 {
+        return Err(Status::ResultTooLarge);
+    }
+    match tagged.as_str() {
+        "3:" => return Err(Status::JavascriptException),
+        "4:" => return Err(Status::SerializationError),
+        "5:" => return Err(Status::ResultTooLarge),
+        _ => {}
+    }
+    if !tagged.starts_with("0:") || tagged.len() == 2 {
         return Err(Status::SerializationError);
     }
-    Ok(json)
+    tagged.replace_range(..2, "");
+    Ok(tagged)
 }
 
 fn failure(frame: &Frame, binding: Id, context: Id, request: Id, status: Status) {
@@ -581,6 +615,50 @@ fn send(frame: &Frame, message: Message) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tagged_results_preserve_json_and_separate_exception_kinds() {
+        for json in ["null", "42", "\"🦊\"", "{\"value\":[1,true]}", "\"3:\""] {
+            assert_eq!(decode_evaluation(format!("0:{json}")), Ok(json.into()));
+        }
+        assert_eq!(
+            decode_evaluation("3:".into()),
+            Err(Status::JavascriptException)
+        );
+        assert_eq!(
+            decode_evaluation("4:".into()),
+            Err(Status::SerializationError)
+        );
+        assert_eq!(decode_evaluation("5:".into()), Err(Status::ResultTooLarge));
+    }
+
+    #[test]
+    fn malformed_evaluator_returns_are_not_misclassified_as_context_changes() {
+        for malformed in [
+            "",
+            "0:",
+            "2:",
+            "3:untrusted",
+            "4:untrusted",
+            "5:untrusted",
+            "null",
+            "🦊:",
+        ] {
+            assert_eq!(
+                decode_evaluation(malformed.into()),
+                Err(Status::SerializationError)
+            );
+        }
+    }
+
+    #[test]
+    fn tagged_result_budget_excludes_tag_and_counts_utf8_bytes() {
+        let payload = format!("\"{}\"", "é".repeat(protocol::RESULT_LIMIT / 2 - 1));
+        assert_eq!(payload.len(), protocol::RESULT_LIMIT);
+        assert_eq!(decode_evaluation(format!("0:{payload}")), Ok(payload));
+        let oversized = format!("0:\"{}x\"", "é".repeat(protocol::RESULT_LIMIT / 2 - 1));
+        assert_eq!(decode_evaluation(oversized), Err(Status::ResultTooLarge));
+    }
 
     #[test]
     fn panic_containment_returns_default_and_success_value() {
