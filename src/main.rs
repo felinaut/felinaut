@@ -16,6 +16,7 @@ mod load_error;
 mod session;
 mod settings;
 mod suggestions;
+mod swipe;
 mod theme;
 mod volume;
 mod webview;
@@ -594,6 +595,20 @@ impl Browser {
                 this.close_suggestions(false, window, cx);
             }
         });
+        // The swipe monitor enqueues steps and wakes this task, so it never updates GPUI itself.
+        if let Some(swipes) = webview::watch_swipes(window) {
+            cx.spawn_in(window, async move |this, cx| {
+                while let Some(step) = swipes.next().await {
+                    if this
+                        .update_in(cx, |this, window, cx| this.swipe_tab(step, window, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         // Native callbacks enqueue events, avoiding reentrant updates while GPUI renders.
         cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -1123,21 +1138,24 @@ impl Browser {
         let index = action.0.min(self.tabs.len() - 1);
         self.select_tab(index, window, cx);
     }
-    /// Cycles through tabs in sidebar order, wrapping at either end.
-    fn step_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.tabs.len();
-        let index = if forward {
-            (self.active + 1) % count
-        } else {
-            (self.active + count - 1) % count
-        };
+    /// Cycles through tabs in sidebar order, wrapping at either end. With one tab it still
+    /// selects it, which focuses the browser as ⌃Tab always did.
+    fn step_tab(&mut self, step: swipe::Step, window: &mut Window, cx: &mut Context<Self>) {
+        let index = swipe::adjacent(self.active, self.tabs.len(), step).unwrap_or(self.active);
         self.select_tab(index, window, cx);
     }
     fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.step_tab(true, window, cx);
+        self.step_tab(swipe::Step::Next, window, cx);
     }
     fn previous_tab(&mut self, _: &PreviousTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.step_tab(false, window, cx);
+        self.step_tab(swipe::Step::Previous, window, cx);
+    }
+    /// A trackpad swipe steps like ⌃Tab, but does nothing with a single tab: taking focus
+    /// from the page would be a surprise for a gesture that shows no change.
+    fn swipe_tab(&mut self, step: swipe::Step, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = swipe::adjacent(self.active, self.tabs.len(), step) {
+            self.select_tab(index, window, cx);
+        }
     }
     /// Pinned tabs restored at launch have no page until they are first shown.
     fn load_if_needed(&mut self, index: usize, window: &mut Window) {
