@@ -15,7 +15,7 @@ use gpui::{
 };
 
 use crate::{
-    Browser, brand,
+    Browser, auth_prompt, brand,
     dialogs::{Kind, Reply, Shown},
     input::{AddressEvent, AddressInput, Submit},
     theme::{self, Palette},
@@ -255,6 +255,14 @@ fn takes_focus(active: bool, panel_had_focus: bool, chrome_has_focus: bool) -> b
     panel_had_focus || (active && !chrome_has_focus)
 }
 
+/// One question for each tab at a time, and the sign-in prompt comes first: it is about a load
+/// in progress, and it covers the page. The dialog waits in its queue, with no panel, until the
+/// sign-in prompt goes away. So a panel that is not drawn never has the keys, and the wait
+/// before OK works starts when the panel really shows.
+fn after_sign_in<T>(dialog: Option<T>, sign_in_open: bool) -> Option<T> {
+    dialog.filter(|_| !sign_in_open)
+}
+
 /// Makes each tab's panel match the dialog its page shows now. The browser's poll calls this,
 /// outside rendering. Gives whether a panel came or went.
 pub fn sync(browser: &mut Browser, window: &mut Window, cx: &mut Context<Browser>) -> bool {
@@ -270,7 +278,9 @@ pub fn sync(browser: &mut Browser, window: &mut Window, cx: &mut Context<Browser
         {
             page.dismiss_dialogs();
         }
-        let shown = page.as_ref().and_then(|page| page.dialog());
+        let shown = page
+            .as_ref()
+            .and_then(|page| after_sign_in(page.dialog(), auth_prompt::view(page, cx).is_some()));
         let current = tab.dialog.as_ref().map(|panel| panel.read(cx));
         let same = match (&shown, current, &page) {
             (None, None, _) => true,
@@ -320,7 +330,7 @@ pub fn focus(browser: &Browser, window: &mut Window, cx: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ACCEPT_DELAY, accepts, takes_focus};
+    use super::{ACCEPT_DELAY, accepts, after_sign_in, takes_focus};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -334,6 +344,14 @@ mod tests {
         assert!(after(Duration::from_secs(60)));
         // A clock reading from before the panel showed never counts as a wait.
         assert!(!accepts(shown_at + ACCEPT_DELAY, shown_at));
+    }
+
+    #[test]
+    fn a_dialog_waits_for_the_sign_in_prompt_of_its_tab() {
+        assert_eq!(after_sign_in(Some("dialog"), true), None);
+        assert_eq!(after_sign_in(Some("dialog"), false), Some("dialog"));
+        assert_eq!(after_sign_in(None::<&str>, false), None);
+        assert_eq!(after_sign_in(None::<&str>, true), None);
     }
 
     #[test]
