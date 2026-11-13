@@ -447,6 +447,8 @@ struct Browser {
     _theme_observer: Subscription,
     art_phase: f32,
     zoom_flash: Option<Instant>,
+    /// The last tab swipe and when it landed, sliding the newly shown row into place.
+    swipe_nudge: Option<(swipe::Step, Instant)>,
     history: History,
     last_save: Instant,
     /// History rows matching the address text, shown by `suggestions` while typing.
@@ -682,6 +684,7 @@ impl Browser {
             _theme_observer: theme_observer,
             art_phase: 0.,
             zoom_flash: None,
+            swipe_nudge: None,
             history: History::load(history::default_path()),
             last_save: Instant::now(),
             suggestions: Vec::new(),
@@ -1155,6 +1158,8 @@ impl Browser {
     fn swipe_tab(&mut self, step: swipe::Step, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(index) = swipe::adjacent(self.active, self.tabs.len(), step) {
             self.select_tab(index, window, cx);
+            self.swipe_nudge = (window.is_window_active() && theme::motion_allowed(cx))
+                .then(|| (step, Instant::now()));
         }
     }
     /// Pinned tabs restored at launch have no page until they are first shown.
@@ -2649,6 +2654,11 @@ impl Browser {
                     .text_color(rgb(p.muted)),
             )
     }
+    /// How far the active tab's row or tile is from its place while a swipe slides it in.
+    fn nudge(&self, index: usize) -> Option<f32> {
+        let (step, at) = self.swipe_nudge.filter(|_| index == self.active)?;
+        swipe::nudge(step, at.elapsed())
+    }
     /// One tab inside a sidebar row: icon, title, sound and × (selected or hovered). A row
     /// holds one cell, or two in split view.
     fn tab_cell(&self, index: usize, p: Palette, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -2658,6 +2668,9 @@ impl Browser {
         let hovered = self.hovered_tab == Some(id);
         div()
             .id(("tab", id))
+            .when_some(self.nudge(index), |row, offset| {
+                row.relative().left(px(offset))
+            })
             .flex_1()
             .min_w_0()
             .h_full()
@@ -2981,6 +2994,7 @@ impl Browser {
             div()
                 .id(("pinned", id))
                 .relative()
+                .when_some(self.nudge(index), |tile, offset| tile.left(px(offset)))
                 .w(px(tile))
                 .h(px(46.))
                 .flex_shrink_0()
@@ -3931,6 +3945,14 @@ impl Render for Browser {
         // A drag released outside every drop target leaves no line behind.
         if !cx.has_active_drag() {
             self.drop_hint = None;
+        }
+        // The swipe slide runs only while the window is active, and settles otherwise.
+        if self.swipe_nudge.is_some_and(|(step, at)| {
+            window.is_window_active() && swipe::nudge(step, at.elapsed()).is_some()
+        }) {
+            window.request_animation_frame();
+        } else {
+            self.swipe_nudge = None;
         }
         if self
             .sidebar_anim

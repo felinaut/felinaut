@@ -18,6 +18,8 @@
 //! tab, as turning a page does, and fingers moving right the previous one; with natural
 //! scrolling off, both are reversed, matching how that setting scrolls everything else.
 
+use std::time::Duration;
+
 /// Horizontal travel, in points, before a two-finger swipe switches tabs.
 const DISTANCE: f64 = 56.;
 /// Vertical travel, in points, after which a gesture that is mostly vertical is a scroll.
@@ -144,6 +146,27 @@ pub fn adjacent(active: usize, count: usize, step: Step) -> Option<usize> {
         Step::Next => (active + 1) % count,
         Step::Previous => (active + count - 1) % count,
     })
+}
+
+/// How long the newly shown tab's row slides into place after a swipe.
+pub const NUDGE: Duration = Duration::from_millis(180);
+/// How far, in points, the row starts from its place.
+const NUDGE_DISTANCE: f32 = 6.;
+
+/// The row's horizontal offset `elapsed` after a swipe, or `None` once it has settled. The next
+/// tab's row comes in from the right and the previous one's from the left, following the
+/// fingers with natural scrolling like the page they would turn.
+pub fn nudge(step: Step, elapsed: Duration) -> Option<f32> {
+    let t = elapsed.as_secs_f32() / NUDGE.as_secs_f32();
+    if t >= 1. {
+        return None;
+    }
+    let remaining = (1. - t).powi(3);
+    let side = match step {
+        Step::Next => 1.,
+        Step::Previous => -1.,
+    };
+    Some(side * NUDGE_DISTANCE * remaining)
 }
 
 #[cfg(test)]
@@ -340,5 +363,16 @@ mod tests {
             assert_eq!(adjacent(0, 0, step), None);
             assert_eq!(adjacent(3, 3, step), None, "out of range");
         }
+    }
+
+    #[test]
+    fn the_row_slides_in_from_the_steps_side_and_settles() {
+        let start = nudge(Step::Next, Duration::ZERO).unwrap();
+        assert!(start > 5.9, "{start}");
+        assert!(nudge(Step::Previous, Duration::ZERO).unwrap() < -5.9);
+        let middle = nudge(Step::Next, NUDGE / 2).unwrap();
+        assert!(0. < middle && middle < start, "{middle}");
+        assert_eq!(nudge(Step::Next, NUDGE), None);
+        assert_eq!(nudge(Step::Previous, NUDGE * 3), None);
     }
 }
