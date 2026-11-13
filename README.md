@@ -258,6 +258,8 @@ cargo run --bin felinaut-ctl -- snapshot   # or: target/debug/felinaut-ctl snaps
 
 The socket is `~/Library/Application Support/Felifox/agent.sock`. Each request is one JSON line with the token from `agent.token` (a new random token for each start). Both files are readable only by your user. The commands operate the active tab, in the main frame only.
 
+Script evaluation uses a [page/document-scoped request ledger](src/page/requests.rs): at most 64 outstanding requests per page, a 10-second deadline and a 1 MiB result limit. Navigation, page teardown, discarded callbacks and timeouts return explicit errors rather than stale success. Multi-step native click/type operations also check their original document identity and 10-second budget before executing; those identities are native-only, never supplied by page or client JSON. Wry still cannot distinguish JavaScript exceptions from JSON null through its current callback API. Cancellation and timeouts stop result delivery; they do not forcibly abort JavaScript already handed to the engine.
+
 ## Tab volume
 
 Every tab has its own volume, built in rather than added by an extension. Click the speaker button left of **Theme ▾** (or **Sound → Volume Controls…**) to open the popover:
@@ -343,6 +345,8 @@ cargo test
 python3 -m unittest discover -s scripts -p 'test_*.py'
 # Opt-in native integration test (opens a temporary window, loopback traffic only):
 FELINAUT_NATIVE_TEST=1 cargo test --test native_webview
+# Script completion/cancellation, document scopes and result limits (loopback only):
+FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_page_requests
 # Native artwork, theme-handler and About-window checks:
 FELINAUT_NATIVE_TEST=1 cargo test --test brand_ui
 # Per-tab audio in real WebKit (plays a quiet tone from two loopback origins):

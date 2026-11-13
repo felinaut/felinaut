@@ -47,6 +47,7 @@ Use `-F gpui/runtime_shaders` for browser checks if full Xcode/Metal is unavaila
 
 ```sh
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_webview
+FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_page_requests
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test brand_ui
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_audio
 ```
@@ -57,6 +58,7 @@ Never claim native tests ran just because the default skipped harness exited suc
 
 - Treat all page content, script messages, URLs, API responses, and persisted files as untrusted. Keep native message interfaces narrow, validate schemes/hosts and sizes, and preserve navigation restrictions.
 - Never expose filesystem or general command execution to web content. Do not log cookies, tokens, browsing contents, or account data, or add telemetry.
+- Route main-browser asynchronous script results through `src/page/requests.rs`: accepted requests complete exactly once with a value or explicit error; failed dispatch must not call back. Preserve document scopes and trusted native-input continuation deadlines. Do not derive those identities from URLs or page-supplied JSON.
 - Keep native callbacks from re-entering GPUI during rendering: enqueue work for the UI drain. Respect AppKit main-thread requirements and native child-view stacking/focus constraints.
 - Do not block the UI thread with network requests, disk writes, subprocesses, or sleeps. Bound retries, message sizes, and timeouts. Refresh failures must not silently erase cached items or impersonate an authentication failure.
 - Preserve atomic persistence and backward compatibility. Add malformed/older-file tests when changing formats; document migrations and new stored data.

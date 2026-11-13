@@ -114,13 +114,30 @@ struct Fetch {
     loaded: bool,
 
     next_try: Instant,
-    result: Arc<Mutex<Option<String>>>,
+    result: Arc<Mutex<Option<page::ScriptResult>>>,
 }
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Poll through loading/navigation up to the deadline, not a smaller attempt budget.
 fn live_refresh_can_poll(started: Instant, next_try: Instant, now: Instant) -> bool {
     now.duration_since(started) < FETCH_TIMEOUT && now >= next_try
+}
+
+/// Native script failures are refresh errors, never empty lists or authentication evidence.
+fn live_script_answer(
+    answer: Option<page::ScriptResult>,
+    host: &str,
+) -> (bool, Option<Result<Vec<live::Item>, String>>) {
+    match answer {
+        Some(Ok(json)) => (json == live::SIGNED_OUT, live::parse_refresh(&json, host)),
+        Some(Err(error)) => (
+            false,
+            Some(Err(format!(
+                "Page script failed: {error}. Try refreshing again."
+            ))),
+        ),
+        None => (false, None),
+    }
 }
 
 /// The system font with tabular figures, so counts that change keep their width.
@@ -794,23 +811,25 @@ impl Browser {
                 .lock()
                 .ok()
                 .and_then(|mut answer| answer.take());
-            // An API answers a lapsed session with an error rather than a sign-in page.
-            signed_out |= answer.as_deref() == Some(live::SIGNED_OUT);
-            let mut done = answer.and_then(|json| live::parse_refresh(&json, integration.host));
+            // Only the extractor's explicit sign-out value is authentication evidence.
+            let (script_signed_out, mut done) = live_script_answer(answer, integration.host);
+            signed_out |= script_signed_out;
             if done.is_none()
                 && fetch.loaded
                 && live_refresh_can_poll(fetch.started, fetch.next_try, now)
             {
                 fetch.next_try = now + Duration::from_secs(1);
                 let result = fetch.result.clone();
-                let _ = fetch.page.evaluate(
+                if let Err(error) = fetch.page.evaluate(
                     extractor,
                     Box::new(move |json| {
                         if let Ok(mut answer) = result.lock() {
                             *answer = Some(json);
                         }
                     }),
-                );
+                ) {
+                    done = Some(Err(format!("Page script could not start: {error}")));
+                }
             }
             if done.is_none() && now.duration_since(fetch.started) >= FETCH_TIMEOUT {
                 done = Some(Err(format!(
@@ -4362,6 +4381,60 @@ mod tests {
 
     fn failed(url: &str) -> super::LoadFailure {
         super::load_error::failure("NSURLErrorDomain", -1003, url, "Not found").unwrap()
+    }
+
+    #[test]
+    fn script_failures_preserve_live_cache_without_impersonating_sign_out() {
+        use super::{live, page::ScriptError};
+        let cached = live::Item {
+            title: "Cached review".into(),
+            url: "https://github.com/a/b/pull/1".into(),
+            seen: true,
+            updated: "1".into(),
+            dismissed: Some("1".into()),
+            detail: "fixture".into(),
+        };
+        for error in [
+            ScriptError::DocumentChanged,
+            ScriptError::PageClosed,
+            ScriptError::TimedOut,
+            ScriptError::Discarded,
+            ScriptError::ResultTooLarge,
+            ScriptError::Backend(live::SIGNED_OUT.into()),
+        ] {
+            let mut folder = live::LiveFolder::new(live::ALL[0]);
+            folder.sections[0].items.push(cached.clone());
+            let (signed_out, answer) =
+                super::live_script_answer(Some(Err(error)), folder.integration.host);
+            assert!(!signed_out);
+            let answer = answer.unwrap();
+            assert!(answer.is_err());
+            assert!(
+                folder.sections[0]
+                    .finish_refresh(answer, Instant::now())
+                    .is_empty()
+            );
+            assert_eq!(folder.sections[0].items, vec![cached.clone()]);
+            assert!(folder.sections[0].error.is_some());
+            assert!(!folder.signed_out);
+        }
+    }
+
+    #[test]
+    fn live_script_results_keep_pending_empty_and_authentication_distinct() {
+        assert_eq!(super::live_script_answer(None, "github.com"), (false, None));
+        assert_eq!(
+            super::live_script_answer(Some(Ok("null".into())), "github.com"),
+            (false, None)
+        );
+        assert_eq!(
+            super::live_script_answer(Some(Ok("[]".into())), "github.com"),
+            (false, Some(Ok(vec![])))
+        );
+        assert_eq!(
+            super::live_script_answer(Some(Ok(super::live::SIGNED_OUT.into())), "github.com"),
+            (true, None)
+        );
     }
 
     #[test]

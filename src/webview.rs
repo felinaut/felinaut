@@ -10,7 +10,7 @@ use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
 use crate::audio::{TabAudio, parse_report};
 use crate::load_error::Exceptions;
-use crate::page::Event;
+use crate::page::{Event, RequestScope, ScriptCallback, ScriptError, ScriptRequests};
 
 /// One persistent native child view per tab; hiding it does not discard its history or document.
 /// The owner should poll `drain_events` on the UI thread, including for inactive tabs.
@@ -19,10 +19,12 @@ pub struct NativePage {
     events: Receiver<Event>,
     last_url: RefCell<String>,
     failure_key: Option<usize>,
+    script_requests: ScriptRequests,
 }
 
 impl Drop for NativePage {
     fn drop(&mut self) {
+        self.script_requests.close();
         if let Some(key) = self.failure_key {
             FAILURES.with_borrow_mut(|pages| pages.remove(&key));
             crate::downloads::native::detach(key);
@@ -39,6 +41,8 @@ impl NativePage {
         let title_sender = sender.clone();
         let link_sender = sender.clone();
         let failure_sender = sender.clone();
+        let script_requests = ScriptRequests::default();
+        let load_requests = script_requests.clone();
         let mut builder =
             WebViewBuilder::new().with_incognito(crate::comparison::policy().enabled());
         if agent_enabled() {
@@ -80,7 +84,10 @@ impl NativePage {
                 // Wry has no load-failure callback. Finished means an actual native finish,
                 // not a timeout or a failed provisional navigation.
                 let event = match event {
-                    PageLoadEvent::Started => Event::Started(url),
+                    PageLoadEvent::Started => {
+                        load_requests.advance_document();
+                        Event::Started(url)
+                    }
                     PageLoadEvent::Finished => Event::Finished(url),
                 };
                 let _ = load_sender.send(event);
@@ -100,6 +107,7 @@ impl NativePage {
             events,
             last_url: RefCell::new(String::new()),
             failure_key,
+            script_requests,
         })
     }
 
@@ -108,6 +116,8 @@ impl NativePage {
     pub fn hidden(window: &gpui::Window, url: &str) -> Result<Self, String> {
         check_url(url)?;
         let (sender, events) = mpsc::channel();
+        let script_requests = ScriptRequests::default();
+        let load_requests = script_requests.clone();
         let webview = WebViewBuilder::new()
             .with_incognito(crate::comparison::policy().enabled())
             .with_visible(false)
@@ -120,6 +130,9 @@ impl NativePage {
             .with_navigation_handler(|url| allowed_url(&url))
             .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
             .with_on_page_load_handler(move |event, url| {
+                if matches!(event, PageLoadEvent::Started) {
+                    load_requests.advance_document();
+                }
                 if matches!(event, PageLoadEvent::Finished) {
                     let _ = sender.send(Event::Finished(url));
                 }
@@ -138,6 +151,7 @@ impl NativePage {
             events,
             last_url: RefCell::new(String::new()),
             failure_key: None,
+            script_requests,
         })
     }
 
@@ -169,20 +183,28 @@ impl NativePage {
 
     pub fn navigate(&self, url: &str) -> Result<(), String> {
         check_url(url)?;
+        self.script_requests.advance_document();
         self.webview
             .load_url(url)
             .map_err(|error| error.to_string())
     }
 
     pub fn back(&self) -> Result<(), String> {
+        if self.can_go_back() {
+            self.script_requests.advance_document();
+        }
         self.webview.go_back().map_err(|error| error.to_string())
     }
 
     pub fn forward(&self) -> Result<(), String> {
+        if self.can_go_forward() {
+            self.script_requests.advance_document();
+        }
         self.webview.go_forward().map_err(|error| error.to_string())
     }
 
     pub fn reload(&self) -> Result<(), String> {
+        self.script_requests.advance_document();
         self.webview.reload().map_err(|error| error.to_string())
     }
 
@@ -247,6 +269,7 @@ impl NativePage {
     }
 
     pub fn drain_events(&self) -> Vec<Event> {
+        self.script_requests.expire(std::time::Instant::now());
         let mut events: Vec<_> = self.events.try_iter().collect();
         // Poll the committed native URL: the navigation-policy callback also sees
         // subframes and attempted navigations, and misses history.pushState changes.
@@ -260,16 +283,33 @@ impl NativePage {
         events
     }
 
-    /// Runs a script. The callback gets the JSON text of its result, or nothing if it threw.
-    /// Wry drops the script, and the callback, while the first page still loads.
-    pub fn evaluate(
-        &self,
-        script: &str,
-        callback: impl Fn(String) + Send + 'static,
-    ) -> Result<(), String> {
-        self.webview
-            .evaluate_script_with_callback(script, callback)
-            .map_err(|error| error.to_string())
+    /// Tracks a bounded document-scoped request. Wry's discarded callbacks become
+    /// explicit errors; Wry still does not distinguish JavaScript exceptions from null.
+    pub fn evaluate(&self, script: &str, callback: ScriptCallback) -> Result<(), String> {
+        let dispatch = self
+            .script_requests
+            .prepare(std::time::Instant::now(), callback)
+            .map_err(|error| error.to_string())?;
+        let completion = dispatch.completion();
+        let result = self
+            .webview
+            .evaluate_script_with_callback(script, move |value| {
+                completion.complete(Ok(value));
+            });
+        match result {
+            Ok(()) => {
+                dispatch.accept();
+                Ok(())
+            }
+            Err(error) => {
+                dispatch.reject();
+                Err(ScriptError::Backend(error.to_string()).to_string())
+            }
+        }
+    }
+
+    pub fn request_scope(&self) -> RequestScope {
+        self.script_requests.scope()
     }
 
     /// Sends a real left click to the page. `x` and `y` are viewport coordinates from

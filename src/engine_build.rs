@@ -34,7 +34,7 @@ pub const BACKENDS: &[Backend] = &[
         family: "chromium",
         adapter_implemented: false,
         requires_isolated_launcher: false,
-        limitation: "CEF adapter not implemented; GPUI/AppKit lifecycle, event loop, helpers and sandbox integration must be proven",
+        limitation: "CEF adapter not implemented; standalone same-window coexistence passed, but browser page factory, lifecycle, profiles and security integration are not ready",
     },
     Backend {
         id: "gecko",

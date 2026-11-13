@@ -11,7 +11,8 @@ use crate::audio::TabAudio;
 use crate::webview::{self, NativePage};
 
 use super::{
-    BackendInfo, Capabilities, Event, Page, PageBackend, ScriptCallback, SnapshotCallback,
+    BackendInfo, Capabilities, Event, Page, PageBackend, RequestScope, ScriptCallback,
+    SnapshotCallback,
 };
 
 pub fn backend_info() -> BackendInfo {
@@ -85,6 +86,9 @@ impl PageBackend for NativePage {
     }
     fn evaluate(&self, script: &str, callback: ScriptCallback) -> Result<(), String> {
         NativePage::evaluate(self, script, callback)
+    }
+    fn request_scope(&self) -> Option<RequestScope> {
+        Some(NativePage::request_scope(self))
     }
     fn zoom(&self) -> Result<f64, String> {
         Ok(NativePage::zoom(self))

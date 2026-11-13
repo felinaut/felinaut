@@ -17,8 +17,13 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{backend_info, create, create_hidden};
 
+#[path = "page/requests.rs"]
+mod requests;
+pub use requests::{RequestScope, ScriptError, ScriptRequests};
+
 pub type Page = Rc<dyn PageBackend>;
-pub type ScriptCallback = Box<dyn Fn(String) + Send + 'static>;
+pub type ScriptResult = Result<String, ScriptError>;
+pub type ScriptCallback = Box<dyn Fn(ScriptResult) + Send + 'static>;
 pub type SnapshotCallback = Box<dyn Fn(Result<Vec<u8>, String>) + 'static>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,8 +110,8 @@ impl BackendInfo {
 }
 
 /// Required operations have no success-shaped defaults. Optional ones fail explicitly.
-/// This first seam preserves the existing adapter's callback/lifetime behavior; it is not
-/// yet the complete generation, cancellation or profile-selection contract in the plan.
+/// Script requests use explicit completion errors and document scopes. Native notification
+/// attribution, snapshots and profile selection still need their own lifetime contracts.
 pub trait PageBackend {
     fn backend_info(&self) -> BackendInfo;
     fn navigate(&self, url: &str) -> Result<(), String>;
@@ -122,7 +127,17 @@ pub trait PageBackend {
     fn focus_parent(&self) -> Result<(), String>;
     fn set_bounds(&self, bounds: Bounds<Pixels>) -> Result<(), String>;
     fn drain_events(&self) -> Vec<Event>;
+    /// On Ok, exactly one callback resolves the accepted request, including cancellation.
+    /// On dispatch Err, the callback is not invoked. Results retain the adapter's JSON text;
+    /// reported backend failures and cancellation are not successful JSON values.
+    /// Canceling result delivery does not forcibly abort or undo engine JavaScript.
     fn evaluate(&self, script: &str, callback: ScriptCallback) -> Result<(), String>;
+
+    /// Opaque identity for trusted multi-step operations; unsupported adapters cannot
+    /// safely enqueue native input after asynchronous JavaScript preflight.
+    fn request_scope(&self) -> Option<RequestScope> {
+        None
+    }
 
     fn zoom(&self) -> Result<f64, String> {
         Err(self.unsupported("zoom"))
@@ -263,7 +278,7 @@ mod tests {
             if self.closed.get() {
                 return Err("page closed".into());
             }
-            callback("null".into());
+            callback(Ok("null".into()));
             Ok(())
         }
     }
@@ -323,7 +338,7 @@ mod tests {
             Box::new(move |value| *delivered.lock().unwrap() = Some(value)),
         )
         .unwrap();
-        assert_eq!(*result.lock().unwrap(), Some("null".into()));
+        assert_eq!(*result.lock().unwrap(), Some(Ok("null".into())));
         native.closed.set(true);
         assert!(page.navigate("https://example.test").is_err());
         assert!(page.document().is_none());
