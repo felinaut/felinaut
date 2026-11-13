@@ -5,14 +5,33 @@
 #[path = "../src/audio.rs"]
 mod audio;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/auth_prompt.rs"]
+mod auth_prompt;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/downloads.rs"]
 mod downloads;
+// `theme.rs` needs the search engine and the website language.
+#[allow(dead_code, unused_imports)]
+#[path = "../src/engine.rs"]
+mod engine;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/http_auth.rs"]
+mod http_auth;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/icons.rs"]
 mod icons;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/input.rs"]
+mod input;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/language.rs"]
+mod language;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/load_error.rs"]
 mod load_error;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/theme.rs"]
+mod theme;
 #[allow(dead_code)]
 #[path = "../src/webview.rs"]
 mod webview;
@@ -33,14 +52,26 @@ use webview::{Event, NativePage};
 
 struct TestWindow {
     page: Rc<NativePage>,
+    /// The focus of the browser itself, and a stand-in for the address bar.
+    browser: FocusHandle,
+    address: FocusHandle,
     _second_tab: NativePage,
     _failed_tab: Rc<NativePage>,
     _hidden: NativePage,
+    _hidden_auth: NativePage,
 }
 impl Render for TestWindow {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let root = div()
+            .size_full()
+            .track_focus(&self.browser)
+            .child(div().track_focus(&self.address));
+        // As in the browser: the sign-in prompt takes the place of the page.
+        if let Some(prompt) = auth_prompt::view(&self.page, cx) {
+            return root.child(prompt);
+        }
         let page = self.page.clone();
-        div().size_full().child(
+        root.child(
             canvas(
                 move |bounds, _, _| {
                     page.set_bounds(bounds).expect("native bounds");
@@ -51,6 +82,51 @@ impl Render for TestWindow {
             .size_full(),
         )
     }
+}
+
+/// Shows the prompt for the page's open question, then presses the keys as a user does.
+async fn sign_in_keys(
+    page: &NativePage,
+    browser: &FocusHandle,
+    keys: &[&str],
+    cx: &mut AsyncWindowContext,
+) {
+    cx.update(|window, cx| {
+        assert!(
+            auth_prompt::sync(page, true, browser, window, cx),
+            "a new question changes the tab"
+        );
+        assert!(auth_prompt::view(page, cx).is_some());
+        // As the browser does for the active tab.
+        auth_prompt::focus(page, window, cx);
+        window.refresh();
+    })
+    .unwrap();
+    // Typed text goes to the field that had
+    // the focus at the last paint. So a frame must pass at the start and after each Tab.
+    let mut wait = true;
+    for key in keys {
+        if wait {
+            Timer::after(Duration::from_millis(250)).await;
+        }
+        wait = *key == "tab";
+        cx.update(|window, cx| window.dispatch_keystroke(Keystroke::parse(key).unwrap(), cx))
+            .unwrap();
+    }
+}
+
+/// The question was answered: the prompt goes away and the page comes back with the keys.
+fn prompt_closed(page: &NativePage, browser: &FocusHandle, cx: &mut AsyncWindowContext) {
+    cx.update(|window, cx| {
+        assert!(
+            auth_prompt::sync(page, true, browser, window, cx),
+            "an answered question changes the tab"
+        );
+        assert!(auth_prompt::view(page, cx).is_none());
+        assert!(page.has_keys_for_test(), "the page takes the keys back");
+        window.refresh();
+    })
+    .unwrap();
 }
 
 fn main() {
@@ -74,6 +150,13 @@ fn main() {
     let base = format!("http://{}", listener.local_addr().unwrap());
     let download_requests = Arc::new(AtomicUsize::new(0));
     let served_downloads = download_requests.clone();
+    let auth_requests = Arc::new(AtomicUsize::new(0));
+    let served_auth = auth_requests.clone();
+    let cross_requests = Arc::new(AtomicUsize::new(0));
+    let served_cross = cross_requests.clone();
+    let image_requests = Arc::new(AtomicUsize::new(0));
+    let served_images = image_requests.clone();
+    let fixture_port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for connection in listener.incoming() {
             let Ok(mut stream) = connection else {
@@ -91,6 +174,70 @@ fn main() {
                 // The server asks for a name outside the downloads folder.
                 served_downloads.fetch_add(1, Ordering::SeqCst);
                 let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"../../fixture.bin\"\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture");
+                continue;
+            }
+            if request.starts_with("GET /embed ") {
+                // The page is on 127.0.0.1 and its image is on localhost: another origin.
+                let body = format!(
+                    "<title>EMBED</title><img src='http://localhost:{fixture_port}/cross'>"
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                continue;
+            }
+            if request.starts_with("GET /cross ") {
+                served_cross.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Session expired\"\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
+                continue;
+            }
+            if request.starts_with("GET /auth-image ") {
+                // A protected image of the same origin, on the 401 page of `/auth-both`.
+                served_images.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Image\"\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
+                continue;
+            }
+            if request.starts_with("GET /auth") {
+                // Two protected areas. WebKit reads the header as Latin-1, so the three bytes of
+                // U+202E arrive as "â", the control character U+0080 and "®".
+                served_auth.fetch_add(1, Ordering::SeqCst);
+                let other = request.starts_with("GET /auth-other ");
+                // This area offers two methods. After a refusal of the first one, WebKit asks
+                // for the second one.
+                let both = request.starts_with("GET /auth-both ");
+                let response = if !other
+                    && !both
+                    && request.contains("\r\nAuthorization: Basic dXNlcjpwYXNz\r\n")
+                {
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 22\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n<title>AUTH OK</title>".to_string()
+                } else {
+                    let realm = if other {
+                        "Other"
+                    } else if both {
+                        "Both"
+                    } else {
+                        "Fixture\u{202e} realm"
+                    };
+                    let digest = if both {
+                        "WWW-Authenticate: Digest realm=\"Both\", nonce=\"00\", qop=\"auth\"\r\n"
+                    } else {
+                        ""
+                    };
+                    // After a Cancel, the 401 page of this area loads a frame, and then an
+                    // image that asks again. Neither may open a new question.
+                    let body = if both {
+                        "<title>AUTH NEEDED</title><iframe src='/second' onload=\"new Image().src='/auth-image'\"></iframe>"
+                    } else {
+                        "<title>AUTH NEEDED</title>"
+                    };
+                    format!(
+                        "HTTP/1.1 401 Unauthorized\r\n{digest}WWW-Authenticate: Basic realm=\"{realm}\"\r\nContent-Type: text/html\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let _ = stream.write_all(response.as_bytes());
                 continue;
             }
             let second = request.starts_with("GET /second ");
@@ -113,9 +260,19 @@ fn main() {
     let passed = Rc::new(Cell::new(false));
     let result = passed.clone();
     Application::new().run(move |cx| {
+        cx.set_global(theme::ThemeSettings::default());
+        input::init(cx);
         let first_url = format!("{base}/first");
         let second_url = format!("{base}/second");
         let download_url = format!("{base}/download");
+        let auth_url = format!("{base}/auth");
+        let embed_url = format!("{base}/embed");
+        let other_auth_url = format!("{base}/auth-other");
+        let both_auth_url = format!("{base}/auth-both");
+        let port = url::Url::parse(&base).unwrap().port().unwrap();
+        let auth_requests = auth_requests.clone();
+        let cross_requests = cross_requests.clone();
+        let image_requests = image_requests.clone();
         let folder = folder.clone();
         let download_requests = download_requests.clone();
         let handle = cx.open_window(
@@ -133,9 +290,14 @@ fn main() {
                 let failed_page = failed_tab.clone();
                 // A page the user never sees asks for the same download; it must be refused.
                 let hidden = NativePage::hidden(window, &download_url).expect("create hidden page");
+                // A page the user never sees meets a sign-in challenge; it must not ask.
+                let hidden_auth = NativePage::hidden(window, &auth_url).expect("create hidden sign-in page");
                 page.focus().unwrap();
                 page.focus_parent().unwrap();
                 let second_page = page.clone();
+                let browser = cx.focus_handle();
+                let address = cx.focus_handle();
+                let (window_browser, window_address) = (browser.clone(), address.clone());
                 cx.new(|cx: &mut Context<TestWindow>| {
                     cx.spawn_in(window, async move |_, cx| {
                         let start = Instant::now();
@@ -146,7 +308,10 @@ fn main() {
                         let mut background_opens = 0;
                         let mut foreground_open = false;
                         let mut failure = None;
+                        let mut page_failed = false;
                         let mut downloads = Vec::new();
+                        let key = second_page.key().expect("a visible page has a key");
+                        let mut closing = None;
                         loop {
                             Timer::after(Duration::from_millis(50)).await;
                             downloads.extend(downloads::native::drain());
@@ -160,6 +325,7 @@ fn main() {
                                 match event {
                                     Event::Title(value) => title = value,
                                     Event::Finished(_) => finished = true,
+                                    Event::Failed(_) => page_failed = true,
                                     Event::Hover(Some(url)) if url.ends_with("/link-destination") => hover_seen = true,
                                     Event::Hover(None) => hover_cleared = true,
                                     Event::OpenInBackground(url) if url.ends_with("/link-destination") => background_opens += 1,
@@ -172,6 +338,21 @@ fn main() {
                             if stage == 5 && (title != "LINK EVENTS OK" || failure.is_none()) { continue; }
                             let downloaded = downloads.iter().any(|event| matches!(event, downloads::Event::Finished { .. }));
                             if stage == 6 && !(downloaded && download_requests.load(Ordering::SeqCst) >= 2) { continue; }
+                            if stage == 7 && (title != "EMBED" || cross_requests.load(Ordering::SeqCst) == 0) { continue; }
+                            // The id of the question each sign-in stage waits for.
+                            let question = http_auth::waiting(key).map(|(id, _)| id);
+                            if stage == 8 && (question != Some(1) || auth_requests.load(Ordering::SeqCst) < 2) { continue; }
+                            if stage == 9 && title != "AUTH NEEDED" { continue; }
+                            if (stage == 10 && question != Some(2)) || (stage == 11 && question != Some(3)) { continue; }
+                            if stage == 12 && title != "AUTH OK" { continue; }
+                            let closing_key = closing.as_ref().and_then(NativePage::key);
+                            if (stage == 13 || stage == 15) && question.is_none() { continue; }
+                            if stage == 14 && (title != "AUTH NEEDED" || image_requests.load(Ordering::SeqCst) == 0) { continue; }
+                            if stage == 16 && title != "JS FIRST" { continue; }
+                            if (stage == 17 || stage == 19) && question.is_none() { continue; }
+                            if stage == 18 && title != "AUTH NEEDED" { continue; }
+                            if stage == 20 && !page_failed { continue; }
+                            if stage == 21 && closing_key.and_then(http_auth::waiting).is_none() { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
@@ -242,7 +423,134 @@ fn main() {
                                     assert_eq!(std::fs::read(saved).unwrap(), b"fixture");
                                     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "the hidden page saved nothing");
                                     std::fs::remove_dir_all(folder.parent().unwrap()).unwrap();
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, and a download that stays in the downloads folder while a hidden page's is refused");
+                                    second_page.navigate(&embed_url).unwrap();
+                                }
+                                7 => {
+                                    // The image of another origin got a sign-in challenge. Give
+                                    // a wrongly taken question time to show up.
+                                    Timer::after(Duration::from_millis(500)).await;
+                                    assert_eq!(http_auth::waiting(key), None, "another origin must not ask the user");
+                                    second_page.navigate(&auth_url).unwrap();
+                                }
+                                8 => {
+                                    // The hidden page's challenge came first. It took no id, so
+                                    // this one is the first question.
+                                    let (id, challenge) = http_auth::waiting(key).unwrap();
+                                    assert_eq!(challenge, http_auth::Challenge::new("127.0.0.1", port, "Fixtureâ® realm", false, false));
+                                    // Escape cancels: the page shows the server's 401 text.
+                                    sign_in_keys(&second_page, &browser, &["x", "escape"], cx).await;
+                                    assert!(!http_auth::is_waiting(id));
+                                    http_auth::answer(id, None);
+                                }
+                                9 => {
+                                    prompt_closed(&second_page, &browser, cx);
+                                    second_page.navigate(&auth_url).unwrap();
+                                }
+                                // Typed text goes to the user name, Tab moves to the password, Enter signs in.
+                                10 => sign_in_keys(&second_page, &browser, &["u", "s", "e", "r", "tab", "n", "o", "enter"], cx).await,
+                                11 => {
+                                    let (_, challenge) = http_auth::waiting(key).unwrap();
+                                    assert!(challenge.retry, "the server refused the first answer");
+                                    // Tab from the password goes back to the user name.
+                                    sign_in_keys(&second_page, &browser, &["tab", "p", "a", "s", "s", "tab", "u", "s", "e", "r", "enter"], cx).await;
+                                }
+                                12 => {
+                                    prompt_closed(&second_page, &browser, cx);
+                                    second_page.navigate(&both_auth_url).unwrap();
+                                }
+                                13 => {
+                                    let (id, challenge) = http_auth::waiting(key).unwrap();
+                                    assert_eq!(challenge.realm, "Both");
+                                    sign_in_keys(&second_page, &browser, &["escape"], cx).await;
+                                    assert!(!http_auth::is_waiting(id));
+                                }
+                                14 => {
+                                    // The server's 401 text shows, and its frame and its image
+                                    // loaded. Give a question for the second method or for the
+                                    // image time to show up.
+                                    Timer::after(Duration::from_millis(300)).await;
+                                    assert_eq!(http_auth::waiting(key), None, "Cancel must not ask again until the next navigation");
+                                    prompt_closed(&second_page, &browser, cx);
+                                    // A new navigation asks again.
+                                    second_page.navigate(&other_auth_url).unwrap();
+                                }
+                                15 => {
+                                    // The page leaves for another address with the prompt open,
+                                    // while the user types in the address bar.
+                                    cx.update(|window, cx| {
+                                        assert!(auth_prompt::sync(&second_page, true, &browser, window, cx));
+                                        assert!(auth_prompt::view(&second_page, cx).is_some());
+                                        window.focus(&address);
+                                        window.refresh();
+                                    }).unwrap();
+                                    second_page.navigate(&first_url).unwrap();
+                                }
+                                16 => {
+                                    // The new document cancelled the question and its prompt.
+                                    // The keys stay in the address bar.
+                                    assert_eq!(http_auth::waiting(key), None);
+                                    cx.update(|window, cx| {
+                                        assert!(auth_prompt::sync(&second_page, true, &browser, window, cx));
+                                        assert!(auth_prompt::view(&second_page, cx).is_none());
+                                        assert!(address.is_focused(window));
+                                        assert!(!second_page.has_keys_for_test(), "a closed prompt must not take the keys from the address bar");
+                                        window.focus(&browser);
+                                        window.refresh();
+                                    }).unwrap();
+                                    second_page.navigate(&other_auth_url).unwrap();
+                                }
+                                17 => {
+                                    // The question comes while the tab is in the background and
+                                    // the user types in the address bar: the prompt takes nothing.
+                                    let (id, _) = http_auth::waiting(key).unwrap();
+                                    cx.update(|window, cx| {
+                                        window.focus(&address);
+                                        assert!(auth_prompt::sync(&second_page, false, &browser, window, cx));
+                                        assert!(auth_prompt::view(&second_page, cx).is_some());
+                                        assert!(address.is_focused(window), "a prompt in the background takes no keys");
+                                        // The user selects the tab: the browser gives the keys to
+                                        // the prompt, as in select_tab.
+                                        window.focus(&browser);
+                                        auth_prompt::focus(&second_page, window, cx);
+                                        assert!(!browser.is_focused(window) && !address.is_focused(window));
+                                        window.refresh();
+                                    }).unwrap();
+                                    // Escape works without a click in a field.
+                                    Timer::after(Duration::from_millis(250)).await;
+                                    cx.update(|window, cx| window.dispatch_keystroke(Keystroke::parse("escape").unwrap(), cx)).unwrap();
+                                    assert!(!http_auth::is_waiting(id), "the selected tab's prompt has the keys");
+                                }
+                                18 => {
+                                    prompt_closed(&second_page, &browser, cx);
+                                    second_page.navigate(&other_auth_url).unwrap();
+                                }
+                                19 => {
+                                    // The load fails before a document commits, with the prompt
+                                    // open: WebKit blocks port 1.
+                                    cx.update(|window, cx| {
+                                        assert!(auth_prompt::sync(&second_page, true, &browser, window, cx));
+                                        window.refresh();
+                                    }).unwrap();
+                                    page_failed = false;
+                                    second_page.navigate("http://127.0.0.1:1/").unwrap();
+                                }
+                                20 => {
+                                    // The failed load cancelled the question and its prompt.
+                                    assert_eq!(http_auth::waiting(key), None);
+                                    prompt_closed(&second_page, &browser, cx);
+                                    let page = cx.update(|window, _| NativePage::new(window, &other_auth_url)).unwrap();
+                                    closing = Some(page.expect("create the tab to close"));
+                                }
+                                21 => {
+                                    // The tab closes with its question open. WebKit raises an
+                                    // exception unless the handler is called exactly one time.
+                                    let (id, challenge) = closing_key.and_then(http_auth::waiting).unwrap();
+                                    assert_eq!(challenge.realm, "Other");
+                                    drop(closing.take());
+                                    assert!(!http_auth::is_waiting(id));
+                                    Timer::after(Duration::from_millis(300)).await;
+                                    assert_eq!(http_auth::waiting(key), None);
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and the HTTP sign-in prompt: Escape cancels, typed text, Tab and Enter sign in after a refused answer, Cancel does not ask again for a second method, a frame or an image, a prompt of a background tab takes no keys and has them once its tab is selected, a new document, a failed load and a closed tab cancel, and a hidden page and an image of another origin ask nothing");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;
@@ -252,7 +560,7 @@ fn main() {
                             stage += 1;
                         }
                     }).detach();
-                    TestWindow { page, _second_tab: second_tab, _failed_tab: failed_tab, _hidden: hidden }
+                    TestWindow { page, browser: window_browser, address: window_address, _second_tab: second_tab, _failed_tab: failed_tab, _hidden: hidden, _hidden_auth: hidden_auth }
                 })
             },
         ).expect("native test window");

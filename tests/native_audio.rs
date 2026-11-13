@@ -11,6 +11,9 @@ mod audio;
 #[path = "../src/downloads.rs"]
 mod downloads;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/http_auth.rs"]
+mod http_auth;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/icons.rs"]
 mod icons;
 #[allow(dead_code, unused_imports)]

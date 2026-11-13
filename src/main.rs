@@ -3,11 +3,13 @@ mod agent;
 mod appearance;
 mod art;
 mod audio;
+mod auth_prompt;
 mod brand;
 mod download_panel;
 mod downloads;
 mod engine;
 mod history;
+mod http_auth;
 mod icons;
 mod input;
 mod language;
@@ -1568,6 +1570,8 @@ impl Browser {
             let Some(page) = tab.page.clone() else {
                 continue;
             };
+            let shown = index == self.active || Some(index) == visible_partner;
+            changed |= auth_prompt::sync(&page, shown && !tab.home, &self.focus, window, cx);
             for event in page.drain_events() {
                 changed = true;
                 match event {
@@ -1648,6 +1652,9 @@ impl Browser {
         for (url, activate) in open {
             self.open_link_tab(&url, activate, window, cx);
         }
+        // A new prompt, or a prompt whose tab the user selected, or the end of an edit of the
+        // address: each one leaves the focus on the browser, and the prompt takes it here.
+        self.focus_sign_in(window, cx);
         for (url, png) in icons {
             self.store_icon(&url, png, cx);
         }
@@ -1998,8 +2005,24 @@ impl Browser {
         self.hide_others();
         self.reveal_active();
         window.focus(&self.focus);
+        self.focus_sign_in(window, cx);
         self.sync_address(cx);
         cx.notify();
+    }
+    /// Gives the keys to the sign-in prompt of the active tab. The prompt takes the focus only
+    /// from the browser itself, never from the address bar or an open menu: text that the user
+    /// types there must not go to the prompt.
+    fn focus_sign_in(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = &self.tabs[self.active];
+        // GPUI drops the focus when a focused field goes away, as after a refused answer.
+        if window
+            .focused(cx)
+            .is_none_or(|focused| focused == self.focus)
+            && !tab.home
+            && let Some(page) = &tab.page
+        {
+            auth_prompt::focus(page, window, cx);
+        }
     }
     /// New tabs open at the top of the unpinned list, right under the New tab row.
     fn insert_tab(&mut self, tab: Tab) -> usize {
@@ -3874,6 +3897,14 @@ impl Browser {
         let tab = &self.tabs[index];
         if tab.home {
             return self.home_page(cx);
+        }
+        // A server asks for a user name and a password: the prompt covers everything else.
+        if let Some(prompt) = tab
+            .page
+            .as_ref()
+            .and_then(|page| auth_prompt::view(page, cx))
+        {
+            return prompt.into_any_element();
         }
         // While loading after a failure: a blank page, not the old error or the old document.
         match &tab.load_failure {

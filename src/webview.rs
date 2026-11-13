@@ -44,6 +44,8 @@ impl Drop for NativePage {
     fn drop(&mut self) {
         if let Some(key) = self.failure_key {
             FAILURES.with_borrow_mut(|pages| pages.remove(&key));
+            // Cancels the sign-in questions of this page while its WKWebView is still alive.
+            crate::http_auth::close_page(key);
             crate::downloads::native::detach(key);
         }
     }
@@ -58,6 +60,9 @@ impl NativePage {
         let title_sender = sender.clone();
         let link_sender = sender.clone();
         let failure_sender = sender.clone();
+        // The address of the WKWebView, known only after the build.
+        let page_key = std::rc::Rc::new(std::cell::Cell::new(0));
+        let committed = page_key.clone();
         let mut builder = WebViewBuilder::new();
         if agent_enabled() {
             builder =
@@ -98,7 +103,12 @@ impl NativePage {
                 // Wry has no load-failure callback. Finished means an actual native finish,
                 // not a timeout or a failed provisional navigation.
                 let event = match event {
-                    PageLoadEvent::Started => Event::Started(url),
+                    PageLoadEvent::Started => {
+                        // Wry reports this at the commit. A sign-in question from before
+                        // belongs to the old document or to a load that was replaced.
+                        crate::http_auth::cancel_questions(committed.get());
+                        Event::Started(url)
+                    }
                     PageLoadEvent::Finished => Event::Finished(url),
                 };
                 let _ = load_sender.send(event);
@@ -107,6 +117,7 @@ impl NativePage {
             .build_as_child(window)
             .map_err(|error| error.to_string())?;
         let failure_key = watch_failures(&webview, failure_sender);
+        page_key.set(failure_key.unwrap_or(0));
         {
             use wry::WebViewExtMacOS;
             crate::downloads::native::attach(&webview.webview(), failure_key.is_some());
@@ -154,6 +165,25 @@ impl NativePage {
             last_url: RefCell::new(String::new()),
             failure_key: None,
         })
+    }
+
+    /// The name of this page for `http_auth`. A hidden page has none.
+    pub fn key(&self) -> Option<usize> {
+        self.failure_key
+    }
+
+    /// Whether AppKit gives the keys to this page.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native sign-in test")]
+    pub fn has_keys_for_test(&self) -> bool {
+        use objc2::rc::Retained;
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        view.window()
+            .and_then(|window| window.firstResponder())
+            .is_some_and(|responder| {
+                std::ptr::addr_eq(Retained::as_ptr(&responder), Retained::as_ptr(&view))
+            })
     }
 
     #[cfg(test)]
@@ -529,6 +559,19 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
         // SAFETY: WebKit passes a live error, or null, on the main thread.
         report_failure(webview as usize, unsafe { error.as_ref() }, provisional);
     }
+    type StartCallback =
+        unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject);
+    unsafe extern "C-unwind" fn started(
+        _: *mut AnyObject,
+        _: Sel,
+        webview: *mut AnyObject,
+        _: *mut AnyObject,
+    ) {
+        // WebKit reports only the main frame here, unlike Wry's navigation handler, which
+        // also sees each frame of the page. After a Cancel, only a navigation of the page
+        // itself may ask again.
+        crate::http_auth::navigation_started(webview as usize);
+    }
     type Handler = block2::Block<dyn Fn(isize, *mut AnyObject)>;
     type ChallengeCallback = unsafe extern "C-unwind" fn(
         *mut AnyObject,
@@ -540,13 +583,35 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     unsafe extern "C-unwind" fn challenge(
         _: *mut AnyObject,
         _: Sel,
-        _: *mut AnyObject,
+        webview: *mut AnyObject,
         challenge: *mut AnyObject,
         handler: *mut Handler,
     ) {
         // SAFETY: WebKit passes a live challenge and completion handler on the main thread,
         // and expects the handler to be called exactly once.
         let handler = unsafe { &*handler };
+        // A Basic or Digest challenge of a visible page for its own origin waits for the user.
+        // An image, a frame or a fetch from another origin gets the default below. `http_auth`
+        // copies the handler and calls it later, one time.
+        let key = webview as usize;
+        let visible = FAILURES.with_borrow(|pages| pages.contains_key(&key));
+        // The address that the page loads, or else shows. Only this origin may ask the user.
+        // SAFETY: a property read on the live WKWebView that WebKit passes, on the main thread.
+        let url: Option<Retained<objc2_foundation::NSURL>> = unsafe { msg_send![webview, URL] };
+        let url = url
+            .and_then(|url| url.absoluteString())
+            .map(|url| url.to_string());
+        if let Some(challenge) = unsafe { challenge.as_ref() }
+            && crate::http_auth::intercept(
+                visible,
+                key,
+                url.as_deref().unwrap_or_default(),
+                challenge,
+                handler,
+            )
+        {
+            return;
+        }
         match unsafe { challenge.as_ref() }.and_then(accepted_credential) {
             // NSURLSessionAuthChallengeUseCredential
             Some(credential) => handler.call((0, Retained::as_ptr(&credential).cast_mut())),
@@ -562,9 +627,10 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     let delegate = delegate?;
     let class = delegate.class();
     // SAFETY: `class` is Wry's registered delegate class. Adding a method only succeeds if the
-    // class lacks it, so Wry's own methods are never replaced and later pages add nothing. Each
-    // function matches its type encoding: void, self, _cmd, then three objects (`@`), the last
-    // one a block (`@?`) for the challenge.
+    // class lacks it, so Wry's own methods are never replaced and later pages add nothing. Wry
+    // 0.57.1 implements none of these selectors. Each function matches its type encoding: void,
+    // self, _cmd, then objects (`@`): two for the start of a navigation, three for the others,
+    // the last one a block (`@?`) for the challenge.
     unsafe {
         let class = class as *const _ as *mut _;
         let failed = std::mem::transmute::<Callback, Imp>(failed);
@@ -574,6 +640,12 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
         ] {
             objc2::ffi::class_addMethod(class, selector, failed, c"v@:@@@".as_ptr());
         }
+        objc2::ffi::class_addMethod(
+            class,
+            sel!(webView:didStartProvisionalNavigation:),
+            std::mem::transmute::<StartCallback, Imp>(started),
+            c"v@:@@".as_ptr(),
+        );
         objc2::ffi::class_addMethod(
             class,
             sel!(webView:didReceiveAuthenticationChallenge:completionHandler:),
@@ -591,6 +663,10 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
 
 /// Runs inside a WebKit callback, so it only queues an event for the UI.
 fn report_failure(key: usize, error: Option<&objc2_foundation::NSError>, provisional: bool) {
+    if provisional {
+        // The load ended, so nothing waits for an answer to its sign-in question.
+        crate::http_auth::cancel_questions(key);
+    }
     let failure = error.filter(|_| provisional).and_then(|error| {
         let info = error.userInfo();
         let url = info
