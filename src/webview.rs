@@ -1112,8 +1112,7 @@ fn page_gets_key_first(key_code: u16, command: bool, control: bool, option: bool
 }
 
 /// Gives the keys of `page_gets_key_first` to the focused page. AppKit offers each Command key
-/// to GPUI as a key equivalent first. It also gives Escape to full screen. Call this once, on
-/// the main thread.
+/// to GPUI as a key equivalent first. Call this once, on the main thread.
 #[cfg(target_os = "macos")]
 pub fn forward_page_keys() {
     use objc2::{ClassType, runtime::NSObjectProtocol};
@@ -1124,15 +1123,6 @@ pub fn forward_page_keys() {
         let Some(mtm) = objc2::MainThreadMarker::new() else {
             return event.as_ptr();
         };
-        // Escape (53) leaves Felinaut's full screen; a page's, in WebKit's own window, is left
-        // to WebKit.
-        if key.keyCode() == 53
-            && let Some(window) = key.window(mtm)
-            && window.class().name().to_bytes() == b"GPUIWindow"
-            && exit_full_screen(&window)
-        {
-            return std::ptr::null_mut();
-        }
         let flags = key.modifierFlags();
         if page_gets_key_first(
             key.keyCode(),
@@ -1653,21 +1643,6 @@ fn ns_window(window: &gpui::Window) -> Option<objc2::rc::Retained<objc2_app_kit:
     view.window()
 }
 
-/// Leaves either kind of full screen, for Escape; false if the window isn't full screen.
-fn exit_full_screen(window: &objc2_app_kit::NSWindow) -> bool {
-    if let Some((frame, animate)) = take_filled(window) {
-        resize(window, frame, animate);
-    } else if window
-        .styleMask()
-        .contains(objc2_app_kit::NSWindowStyleMask::FullScreen)
-    {
-        window.toggleFullScreen(None);
-    } else {
-        return false;
-    }
-    true
-}
-
 /// Sets the window's frame, hiding the menu bar and Dock only while it fills the screen.
 fn resize(window: &objc2_app_kit::NSWindow, frame: objc2_foundation::NSRect, animate: bool) {
     use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions as Options};
@@ -2022,6 +1997,8 @@ mod tests {
             assert!(!first(code, true, true, false), "{code} with Control");
             assert!(!first(code, true, false, true), "{code} with Option");
         }
+        // Escape belongs to the suggestions, the find bar and the page, also in full screen.
+        assert!(!first(53, true, false, false), "Escape");
         // Other shortcuts of the browser, such as ⌘T (17), ⌘W (13) and ⌘L (37).
         for code in [17, 13, 37, 0] {
             assert!(!first(code, true, false, false), "{code}");
