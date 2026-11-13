@@ -667,11 +667,7 @@ fn report_failure(key: usize, error: Option<&objc2_foundation::NSError>, provisi
             &url,
             &error.localizedDescription().to_string(),
         )?;
-        // A bad date, issuer or name can be overridden; a failed handshake cannot.
-        if domain == "NSURLErrorDomain"
-            && (-1204..=-1201).contains(&code)
-            && crate::load_error::can_override(&url)
-        {
+        if crate::load_error::offers_override(&domain, code, &url) {
             failure.certificate = info
                 .objectForKey(objc2_foundation::ns_string!(
                     "NSURLErrorFailingURLPeerTrustErrorKey"

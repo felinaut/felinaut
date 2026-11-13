@@ -167,6 +167,12 @@ const HSTS: &[&str] = &[
     "new",
 ];
 
+/// Whether a failed load of `url` offers "Visit this site anyway": a bad date, issuer or name
+/// can be overridden, a failed handshake cannot, and neither can an HSTS site.
+pub fn offers_override(domain: &str, code: i64, url: &str) -> bool {
+    domain == "NSURLErrorDomain" && (-1204..=-1201).contains(&code) && can_override(url)
+}
+
 /// Whether the user may visit `url` despite a bad certificate: `https`, and not an HSTS site.
 pub fn can_override(url: &str) -> bool {
     site(url).is_some_and(|(host, _)| {
@@ -268,6 +274,26 @@ mod tests {
         ] {
             assert!(!exceptions.covers(url), "{url}");
         }
+    }
+
+    #[test]
+    fn only_overridable_certificate_errors_offer_the_override() {
+        let offers = |code, url| offers_override("NSURLErrorDomain", code, url);
+        let site = "https://self-signed.badssl.com/";
+        // Expired, unknown root, untrusted and wrong-name certificates.
+        for code in -1204..=-1201 {
+            assert!(offers(code, site), "{code}");
+            // An HSTS site gets the error page without the link.
+            assert!(!offers(code, "https://mail.google.com/"), "{code}");
+            assert!(!offers(code, "https://pkg.go.dev/"), "{code}");
+        }
+        // A failed handshake, a rejected client certificate and other errors.
+        for code in [-1200, -1205, -1206, -1003, -1009] {
+            assert!(!offers(code, site), "{code}");
+        }
+        assert!(!offers_override("WebKitErrorDomain", -1202, site));
+        assert!(!offers(-1202, "http://plain.example/"));
+        assert!(!offers(-1202, ""));
     }
 
     #[test]
