@@ -311,9 +311,10 @@ fn main() {
                             if (stage == 10 && question != Some(2)) || (stage == 11 && question != Some(3)) { continue; }
                             if stage == 12 && title != "AUTH OK" { continue; }
                             let closing_key = closing.as_ref().and_then(NativePage::key);
-                            if stage == 13 && question.is_none() { continue; }
+                            if (stage == 13 || stage == 15) && question.is_none() { continue; }
                             if stage == 14 && title != "AUTH NEEDED" { continue; }
-                            if stage == 15 && closing_key.and_then(http_auth::waiting).is_none() { continue; }
+                            if stage == 16 && title != "JS FIRST" { continue; }
+                            if stage == 17 && closing_key.and_then(http_auth::waiting).is_none() { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
@@ -431,10 +432,26 @@ fn main() {
                                     Timer::after(Duration::from_millis(300)).await;
                                     assert_eq!(http_auth::waiting(key), None, "Cancel must not ask again for the same request");
                                     prompt_closed(&second_page, cx);
+                                    // A new navigation asks again.
+                                    second_page.navigate(&other_auth_url).unwrap();
+                                }
+                                15 => {
+                                    // The user leaves for another address with the prompt open.
+                                    cx.update(|window, cx| {
+                                        assert!(auth_prompt::sync(&second_page, true, cx));
+                                        assert!(auth_prompt::view(&second_page, cx).is_some());
+                                        window.refresh();
+                                    }).unwrap();
+                                    second_page.navigate(&first_url).unwrap();
+                                }
+                                16 => {
+                                    // The new document cancelled the question and its prompt.
+                                    assert_eq!(http_auth::waiting(key), None);
+                                    prompt_closed(&second_page, cx);
                                     let page = cx.update(|window, _| NativePage::new(window, &other_auth_url)).unwrap();
                                     closing = Some(page.expect("create the tab to close"));
                                 }
-                                15 => {
+                                17 => {
                                     // The tab closes with its question open. WebKit raises an
                                     // exception unless the handler is called exactly one time.
                                     let (id, challenge) = closing_key.and_then(http_auth::waiting).unwrap();
@@ -443,7 +460,7 @@ fn main() {
                                     assert!(!http_auth::is_waiting(id));
                                     Timer::after(Duration::from_millis(300)).await;
                                     assert_eq!(http_auth::waiting(key), None);
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and the HTTP sign-in prompt: Escape cancels, typed text, Tab and Enter sign in after a refused answer, Cancel does not ask again for a second method, a closed tab cancels, and a hidden page and an image of another origin ask nothing");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and the HTTP sign-in prompt: Escape cancels, typed text, Tab and Enter sign in after a refused answer, Cancel does not ask again for a second method, a new document and a closed tab cancel, and a hidden page and an image of another origin ask nothing");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;
