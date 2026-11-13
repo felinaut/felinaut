@@ -204,10 +204,10 @@ impl Browser {
                 selection: Selection::new(Instant::now()),
             });
         }
-        if let Some((path, contents)) = self.permissions.snapshot_due(Instant::now()) {
+        if let Some(snapshot) = self.permissions.snapshot_due(Instant::now()) {
             cx.background_executor()
                 .spawn(async move {
-                    if let Err(error) = history::write(&path, &contents) {
+                    if let Err(error) = snapshot.write(history::write) {
                         eprintln!("Could not save site permissions: {error}");
                     }
                 })

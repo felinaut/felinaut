@@ -10,6 +10,7 @@ use std::{
     fs, io,
     net::IpAddr,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError},
     time::{Duration, Instant},
 };
 
@@ -23,6 +24,10 @@ const MAX_ENTRIES: usize = 2000;
 /// The longest host name DNS permits.
 const MAX_HOST: usize = 253;
 const SAVE_INTERVAL: Duration = Duration::from_secs(1);
+/// After this many failed writes in a row, only the write at quit tries again.
+// ponytail: no later background retry in this session. Count per version if a disk that
+// comes back must get the file before quit.
+const MAX_FAILURES: u32 = 5;
 /// After this many "Not Now" answers a site gets no more prompts until the user resets it or
 /// Felinaut starts again. A page that asks again after each refusal cannot nag.
 const MAX_DISMISSALS: u8 = 3;
@@ -164,8 +169,56 @@ pub struct Permissions {
     dismissals: BTreeMap<String, u8>,
     /// `None` without a home, or when the file was unreadable so it is never overwritten.
     path: Option<PathBuf>,
-    dirty: bool,
+    /// Counts the changes of `entries`. The file is behind while `written` has a lower version.
+    version: u64,
+    /// What reached the file. Each `Snapshot` shares it, also on a background thread.
+    written: Arc<Mutex<Written>>,
     saved: Option<Instant>,
+}
+
+#[derive(Default)]
+struct Written {
+    version: u64,
+    failures: u32,
+}
+
+/// The contents for the file at one version of the decisions.
+pub struct Snapshot {
+    path: PathBuf,
+    contents: String,
+    version: u64,
+    written: Arc<Mutex<Written>>,
+}
+
+impl Snapshot {
+    /// Gives the contents to `write` (`history::write`), unless the file already has this
+    /// version or a newer one. One snapshot is written at a time, so the background write and
+    /// the write at quit cannot mix, and an older snapshot never replaces a newer one. A
+    /// failed write leaves the decisions due for the next snapshot.
+    pub fn write(&self, write: impl FnOnce(&Path, &str) -> io::Result<()>) -> io::Result<()> {
+        let mut written = lock(&self.written);
+        if written.version >= self.version {
+            return Ok(());
+        }
+        match write(&self.path, &self.contents) {
+            Ok(()) => {
+                *written = Written {
+                    version: self.version,
+                    failures: 0,
+                };
+                Ok(())
+            }
+            Err(error) => {
+                written.failures += 1;
+                Err(error)
+            }
+        }
+    }
+}
+
+/// Nothing panics while it holds this lock, so a poisoned lock still has valid data.
+fn lock(written: &Mutex<Written>) -> MutexGuard<'_, Written> {
+    written.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// `~/Library/Application Support/Felifox/permissions.tsv`, beside `tabs.tsv`.
@@ -232,7 +285,7 @@ impl Permissions {
         for kind in kinds {
             self.entries.insert((origin.to_owned(), *kind), decision);
         }
-        self.dirty |= !kinds.is_empty();
+        self.version += u64::from(!kinds.is_empty());
     }
 
     /// Forgets each decision and each "Not Now" for the origin, so it gets a prompt again.
@@ -240,7 +293,7 @@ impl Permissions {
         let before = self.entries.len();
         self.entries.retain(|(known, _), _| known != origin);
         let removed = self.entries.len() != before;
-        self.dirty |= removed;
+        self.version += u64::from(removed);
         self.dismissals.remove(origin).is_some() || removed
     }
 
@@ -270,28 +323,42 @@ impl Permissions {
         Some(first.to_uppercase().chain(letters).collect())
     }
 
-    /// The path and contents to write if a decision changed, at most once per `SAVE_INTERVAL`
-    /// so two background writes never race.
-    pub fn snapshot_due(&mut self, now: Instant) -> Option<(PathBuf, String)> {
+    /// The snapshot to write in the background if the file is behind: at most one per
+    /// `SAVE_INTERVAL`, none while another write runs, and none after `MAX_FAILURES` failed
+    /// writes in a row. Never waits for a write, so it is safe on the UI thread.
+    pub fn snapshot_due(&mut self, now: Instant) -> Option<Snapshot> {
         if self
             .saved
             .is_some_and(|saved| now.duration_since(saved) < SAVE_INTERVAL)
         {
             return None;
         }
-        let snapshot = self.take_snapshot()?;
+        let written = match self.written.try_lock() {
+            Ok(written) => written,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        let due = written.version < self.version && written.failures < MAX_FAILURES;
+        drop(written);
+        let snapshot = due.then(|| self.snapshot()).flatten()?;
         self.saved = Some(now);
         Some(snapshot)
     }
 
-    /// As `snapshot_due`, without the wait: for the last write before quitting.
-    pub fn take_snapshot(&mut self) -> Option<(PathBuf, String)> {
-        if !self.dirty {
-            return None;
-        }
-        let path = self.path.clone()?;
-        self.dirty = false;
-        Some((path, serialize(&self.entries)))
+    /// The snapshot for the last write before quitting, if the file is behind. It waits for
+    /// a background write that still runs, and it tries also after failed writes.
+    pub fn take_snapshot(&mut self) -> Option<Snapshot> {
+        let behind = lock(&self.written).version < self.version;
+        behind.then(|| self.snapshot()).flatten()
+    }
+
+    fn snapshot(&self) -> Option<Snapshot> {
+        Some(Snapshot {
+            path: self.path.clone()?,
+            contents: serialize(&self.entries),
+            version: self.version,
+            written: self.written.clone(),
+        })
     }
 }
 
@@ -387,6 +454,10 @@ mod tests {
     const SITE: &str = "https://meet.example";
     const BOTH: &[Kind] = &[Kind::Camera, Kind::Microphone];
 
+    fn save(path: &Path, contents: &str) -> io::Result<()> {
+        fs::write(path, contents)
+    }
+
     #[test]
     fn the_default_answer_is_a_prompt_and_never_a_grant() {
         let permissions = Permissions::default();
@@ -454,7 +525,7 @@ mod tests {
         assert_eq!(permissions.answer(other, BOTH), Answer::Grant);
         // The change reaches the file.
         permissions.path = Some("/nonexistent/permissions.tsv".into());
-        let (_, contents) = permissions.take_snapshot().unwrap();
+        let contents = permissions.take_snapshot().unwrap().contents;
         assert!(!contents.contains(SITE) && contents.contains(other));
     }
 
@@ -466,7 +537,8 @@ mod tests {
             ..Permissions::default()
         };
         permissions.remember(SITE, &[Kind::Microphone], Decision::Allow);
-        assert!(permissions.take_snapshot().is_some());
+        let snapshot = permissions.take_snapshot().unwrap();
+        snapshot.write(|_, _| Ok(())).unwrap();
         for _ in 0..MAX_DISMISSALS - 1 {
             permissions.dismiss(SITE);
             assert_eq!(permissions.answer(SITE, &[Kind::Camera]), Answer::Ask);
@@ -491,7 +563,7 @@ mod tests {
         }
         assert_eq!(permissions.answer(SITE, &[Kind::Camera]), Answer::Deny);
         // The count is never saved.
-        assert_eq!(permissions.take_snapshot(), None);
+        assert!(permissions.take_snapshot().is_none());
 
         // `route` gives the denial also to a page on display.
         let tabs = [tab(1, "https://meet.example/", true)];
@@ -797,18 +869,20 @@ mod tests {
         // No file yet: no decisions, and nothing to write until one is made.
         let mut permissions = Permissions::load(Some(path.clone()));
         assert_eq!(permissions.answer(SITE, BOTH), Answer::Ask);
-        assert_eq!(permissions.take_snapshot(), None);
+        assert!(permissions.take_snapshot().is_none());
 
         permissions.remember(SITE, BOTH, Decision::Allow);
         let now = Instant::now();
-        let (target, contents) = permissions.snapshot_due(now).unwrap();
-        assert_eq!(target, path);
-        fs::write(&path, contents).unwrap();
+        let first = permissions.snapshot_due(now).unwrap();
+        assert_eq!(first.path, path);
+        first.write(save).unwrap();
         // A change soon after the last write waits; the write before quitting does not.
         permissions.remember(SITE, &[Kind::Camera], Decision::Deny);
-        assert_eq!(permissions.snapshot_due(now), None);
+        assert!(permissions.snapshot_due(now).is_none());
         assert!(permissions.take_snapshot().is_some());
-        assert_eq!(permissions.take_snapshot(), None, "nothing changed since");
+        // A snapshot that nobody wrote leaves the change due.
+        assert!(permissions.take_snapshot().is_some());
+        assert!(permissions.snapshot_due(now + SAVE_INTERVAL).is_some());
 
         // The file has what was written: the first snapshot, with both allowed.
         let loaded = Permissions::load(Some(path.clone()));
@@ -819,12 +893,92 @@ mod tests {
         let mut broken = Permissions::load(Some(path.clone()));
         assert_eq!(broken.answer(SITE, BOTH), Answer::Ask);
         broken.remember(SITE, BOTH, Decision::Allow);
-        assert_eq!(broken.take_snapshot(), None);
+        assert!(broken.take_snapshot().is_none());
+        assert!(broken.snapshot_due(now).is_none());
 
         let mut homeless = Permissions::load(None);
         homeless.remember(SITE, BOTH, Decision::Deny);
-        assert_eq!(homeless.take_snapshot(), None);
+        assert!(homeless.take_snapshot().is_none());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_older_snapshot_never_replaces_a_newer_one() {
+        let dir = std::env::temp_dir().join(format!("felinaut-perm-order-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("permissions.tsv");
+        let mut permissions = Permissions::load(Some(path.clone()));
+        let now = Instant::now();
+
+        // The background write has its snapshot, but it runs late: the user makes one more
+        // decision and quits first.
+        permissions.remember(SITE, BOTH, Decision::Allow);
+        let background = permissions.snapshot_due(now).unwrap();
+        permissions.remember(SITE, &[Kind::Camera], Decision::Deny);
+        let quit = permissions.take_snapshot().unwrap();
+        quit.write(save).unwrap();
+        // The late background write does nothing: its writer must not run.
+        background
+            .write(|_, _| panic!("the older snapshot reached the file"))
+            .unwrap();
+        let loaded = Permissions::load(Some(path.clone()));
+        assert_eq!(loaded.answer(SITE, BOTH), Answer::Deny);
+        assert!(permissions.take_snapshot().is_none(), "nothing is left");
+
+        // While one write runs, the UI thread gets no second snapshot and does not wait.
+        permissions.revoke(SITE);
+        let running = permissions.snapshot_due(now + SAVE_INTERVAL).unwrap();
+        permissions.remember(SITE, BOTH, Decision::Allow);
+        running
+            .write(|path, contents| {
+                assert!(permissions.snapshot_due(now + 2 * SAVE_INTERVAL).is_none());
+                save(path, contents)
+            })
+            .unwrap();
+        // The newer change is still due after that write.
+        let last = permissions.snapshot_due(now + 2 * SAVE_INTERVAL).unwrap();
+        last.write(save).unwrap();
+        assert_eq!(
+            Permissions::load(Some(path)).answer(SITE, BOTH),
+            Answer::Grant
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_write_is_tried_again_a_bounded_number_of_times() {
+        let fail = |_: &Path, _: &str| Err(io::Error::other("disk full"));
+        let mut permissions = Permissions {
+            path: Some("/nonexistent/permissions.tsv".into()),
+            ..Permissions::default()
+        };
+        permissions.remember(SITE, BOTH, Decision::Allow);
+        let start = Instant::now();
+        let mut now = start;
+        // A failure keeps the decisions due. One success ends the retries.
+        assert!(permissions.snapshot_due(now).unwrap().write(fail).is_err());
+        now += SAVE_INTERVAL;
+        let retry = permissions.snapshot_due(now).unwrap();
+        assert!(retry.contents.contains(SITE));
+        retry.write(|_, _| Ok(())).unwrap();
+        now += SAVE_INTERVAL;
+        assert!(permissions.snapshot_due(now).is_none());
+        assert!(permissions.take_snapshot().is_none());
+
+        // After `MAX_FAILURES` failures in a row the background writes stop.
+        permissions.remember(SITE, &[Kind::Camera], Decision::Deny);
+        for _ in 0..MAX_FAILURES {
+            now += SAVE_INTERVAL;
+            assert!(permissions.snapshot_due(now).unwrap().write(fail).is_err());
+        }
+        now += SAVE_INTERVAL;
+        assert!(permissions.snapshot_due(now).is_none());
+        // The write at quit still tries, and its failure loses no state in memory.
+        assert!(permissions.take_snapshot().unwrap().write(fail).is_err());
+        let last = permissions.take_snapshot().unwrap();
+        assert!(last.contents.contains("deny\tcamera"));
+        last.write(|_, _| Ok(())).unwrap();
+        assert!(permissions.take_snapshot().is_none());
     }
 
     #[test]

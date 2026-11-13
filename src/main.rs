@@ -642,8 +642,8 @@ impl Browser {
                 {
                     eprintln!("Could not save downloads: {error}");
                 }
-                if let Some((path, contents)) = this.permissions.take_snapshot()
-                    && let Err(error) = history::write(&path, &contents)
+                if let Some(snapshot) = this.permissions.take_snapshot()
+                    && let Err(error) = snapshot.write(history::write)
                 {
                     eprintln!("Could not save site permissions: {error}");
                 }
