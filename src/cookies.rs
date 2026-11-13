@@ -55,6 +55,10 @@ impl fmt::Debug for Cookie {
 }
 
 /// What makes two cookies the same cookie (RFC 6265): name, domain and path.
+///
+/// ponytail: no partition. WebKit's `NSHTTPCookie` and `WKHTTPCookieStore` expose none, so
+/// copies of one cookie from several partitions (CHIPS) are one entry here, and deleting it
+/// deletes each copy. If WebKit ever reports the partition, add it to the key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Key {
     pub domain: String,
