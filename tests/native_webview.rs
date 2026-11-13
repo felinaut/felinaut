@@ -142,7 +142,9 @@ fn main() {
         let hidden_answers = hidden_answers.clone();
         let origin = base.clone();
         let hidden_dialogs_url = format!("{base}/hidden-dialogs");
-        let load_dialog_url = format!("{base}/load-dialog");
+        // The same fixture server under another name: another origin for WebKit.
+        let other_origin = base.replace("127.0.0.1", "localhost");
+        let load_dialog_url = format!("{other_origin}/load-dialog");
         let handle = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(800.), px(600.)), cx))),
@@ -209,7 +211,8 @@ fn main() {
                                     _ => None,
                                 };
                                 if let Some((reply, suppress)) = answer {
-                                    assert_eq!(request.title(), format!("{origin} says"));
+                                    let site = if request.message == "load?" { &other_origin } else { &origin };
+                                    assert_eq!(request.title(), format!("{site} says"));
                                     dialogs_seen.push((request.kind, request.message.clone(), request.default_text.clone(), shown.can_suppress));
                                     second_page.answer_dialog(shown.id, reply, suppress);
                                 }
@@ -222,9 +225,11 @@ fn main() {
                             if stage == 6 && !(downloaded && download_requests.load(Ordering::SeqCst) >= 2) { continue; }
                             let background_dialog = background_tab.as_ref().and_then(|tab| tab.dialog());
                             if stage == 7 && !(title.starts_with("DIALOGS ") && background_dialog.is_some()) { continue; }
-                            if (stage == 8 || stage == 10) && !finished { continue; }
-                            if stage == 9 && !leave_shown { continue; }
-                            if stage == 11 && !title.starts_with("LOAD ") { continue; }
+                            if (stage == 8 || stage == 13) && !finished { continue; }
+                            if stage == 9 && !title.starts_with("STOPPED ") { continue; }
+                            if stage == 10 && !title.starts_with("LOAD ") { continue; }
+                            if stage == 11 && dialogs_seen.len() < 2 { continue; }
+                            if stage == 12 && !leave_shown { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
@@ -321,27 +326,41 @@ fn main() {
                                     // the tab must answer it: WebKit raises an exception for a lost handler.
                                     assert_eq!(background_dialog.unwrap().request.message, "background");
                                     background_tab = None;
+                                    dialogs_seen.clear();
                                     second_page.reload().unwrap();
                                 }
                                 8 => {
-                                    second_page.evaluate_for_test("setTimeout(() => confirm('leave?'), 0)").unwrap();
+                                    second_page.evaluate_for_test("setTimeout(() => { document.title = 'STOPPED ' + confirm('refused'); }, 0)").unwrap();
                                 }
                                 9 => {
-                                    // The new document may show dialogs again, and counts them from one.
-                                    assert!(!second_page.dialog().unwrap().can_suppress);
+                                    // A reload by the user stays on the origin: its dialogs stay stopped.
+                                    assert_eq!(title, "STOPPED false");
+                                    assert_eq!(second_page.dialog(), None);
+                                    // The user goes to another origin, and that page asks while it loads.
+                                    second_page.navigate(&load_dialog_url).unwrap();
+                                }
+                                10 => {
+                                    // A dialog of a script that runs while the page loads waits for
+                                    // its answer: the commit of its own document must not end it.
+                                    assert_eq!(title, "LOAD true");
+                                    // The page loads a new document itself, with one dialog again.
+                                    second_page.evaluate_for_test("location.reload()").unwrap();
+                                }
+                                11 => {
+                                    // The count of the origin goes on in the new document.
+                                    let offers: Vec<_> = dialogs_seen.iter().map(|seen| (seen.1.as_str(), seen.3)).collect();
+                                    assert_eq!(offers, [("load?", false), ("load?", true)]);
+                                    second_page.evaluate_for_test("setTimeout(() => confirm('leave?'), 0)").unwrap();
+                                }
+                                12 => {
+                                    assert!(second_page.dialog().unwrap().can_suppress);
                                     // A navigation answers the waiting dialog, so the page can run it.
                                     second_page.reload().unwrap();
                                     assert_eq!(second_page.dialog(), None);
                                 }
-                                10 => {
-                                    second_page.navigate(&load_dialog_url).unwrap();
-                                }
-                                11 => {
-                                    // A dialog of a script that runs while the page loads waits for
-                                    // its answer: the commit of its own document must not end it.
-                                    assert_eq!(title, "LOAD true");
+                                13 => {
                                     assert_eq!(*hidden_answers.lock().unwrap(), "false-null", "a hidden page gets the default answers");
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and alert, confirm and prompt answers, with dialogs stopped by the user, closed with their tab, ended by a navigation, asked while the page loads and refused for a hidden page");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and alert, confirm and prompt answers, with dialogs stopped by the user for their origin across documents, closed with their tab, ended by a navigation, asked while the page loads and refused for a hidden page");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;

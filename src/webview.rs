@@ -106,7 +106,7 @@ impl NativePage {
                         // Wry reports this at the commit. The dialogs of the old document
                         // end here, before a script of the new document can ask for one.
                         // A reset in `drain_events` came later and cancelled such a dialog.
-                        crate::dialogs::native::reset(committed.get());
+                        crate::dialogs::native::commit(committed.get(), &url);
                         Event::Started(url)
                     }
                     PageLoadEvent::Finished => Event::Finished(url),
@@ -201,42 +201,49 @@ impl NativePage {
         crate::dialogs::native::shown(self.failure_key?)
     }
 
-    /// Gives the user's answer to dialog `id`. With `suppress`, this document can show no
-    /// more dialogs.
+    /// Gives the user's answer to dialog `id`. With `suppress`, the origin of that dialog
+    /// can show no more dialogs in this page.
     pub fn answer_dialog(&self, id: u64, reply: crate::dialogs::Reply, suppress: bool) {
         if let Some(key) = self.failure_key {
             crate::dialogs::native::answer(key, id, reply, suppress);
         }
     }
 
-    /// Gives the default answer to this page's dialogs. A page that waits for an answer runs
-    /// no navigation, so each navigation the user starts calls this first.
+    /// Gives the default answer to this page's dialogs.
     pub fn dismiss_dialogs(&self) {
         if let Some(key) = self.failure_key {
             crate::dialogs::native::dismiss(key);
         }
     }
 
+    /// A page that waits for an answer runs no navigation, so each navigation the user
+    /// starts calls this first. It also marks the navigation as the user's own.
+    fn user_navigates(&self) {
+        if let Some(key) = self.failure_key {
+            crate::dialogs::native::user_navigates(key);
+        }
+    }
+
     pub fn navigate(&self, url: &str) -> Result<(), String> {
         check_url(url)?;
-        self.dismiss_dialogs();
+        self.user_navigates();
         self.webview
             .load_url(url)
             .map_err(|error| error.to_string())
     }
 
     pub fn back(&self) -> Result<(), String> {
-        self.dismiss_dialogs();
+        self.user_navigates();
         self.webview.go_back().map_err(|error| error.to_string())
     }
 
     pub fn forward(&self) -> Result<(), String> {
-        self.dismiss_dialogs();
+        self.user_navigates();
         self.webview.go_forward().map_err(|error| error.to_string())
     }
 
     pub fn reload(&self) -> Result<(), String> {
-        self.dismiss_dialogs();
+        self.user_navigates();
         self.webview.reload().map_err(|error| error.to_string())
     }
 

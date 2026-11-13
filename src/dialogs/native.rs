@@ -17,7 +17,9 @@ use objc2::{
 use objc2_foundation::NSString;
 use objc2_web_kit::WKWebView;
 
-use super::{Kind, MESSAGE_LIMIT, Queue, Reply, Request, Responder, Shown, TEXT_LIMIT, origin};
+use super::{
+    Kind, MESSAGE_LIMIT, Queue, Reply, Request, Responder, Shown, TEXT_LIMIT, origin, url_origin,
+};
 
 thread_local! {
     /// The queue of each page that may show dialogs, by its WKWebView's address.
@@ -184,7 +186,7 @@ fn request(kind: Kind, message: Text, default_text: Text, frame: Object) -> Requ
 }
 
 /// Runs inside a WebKit callback. A page without a queue (a live folder's reader), a full
-/// queue and a page whose dialogs the user stopped get the default answer at once.
+/// queue and an origin whose dialogs the user stopped get the default answer at once.
 fn add(webview: Object, request: Request, responder: Responder) {
     let refused = PAGES.with_borrow_mut(|pages| match pages.get_mut(&(webview as usize)) {
         Some(queue) => queue.push(request, responder).err(),
@@ -206,8 +208,8 @@ pub fn shown(page: usize) -> Option<Shown> {
     PAGES.with_borrow(|pages| pages.get(&page)?.shown())
 }
 
-/// Gives the user's answer to dialog `id` of `page`. With `suppress`, the document can show
-/// no more dialogs. Does nothing if that dialog is no longer on show.
+/// Gives the user's answer to dialog `id` of `page`. With `suppress`, the origin of that
+/// dialog can show no more dialogs in this page. Does nothing if that dialog is no longer on show.
 pub fn answer(page: usize, id: u64, reply: Reply, suppress: bool) {
     let answered = PAGES.with_borrow_mut(|pages| pages.get_mut(&page)?.answer(id, suppress));
     if let Some((responder, rest)) = answered {
@@ -216,15 +218,22 @@ pub fn answer(page: usize, id: u64, reply: Reply, suppress: bool) {
     }
 }
 
-/// Gives the default answer to all dialogs of `page`: the user navigates away.
+/// Gives the default answer to all dialogs of `page`: nobody can see the page.
 pub fn dismiss(page: usize) {
     let dismissed = PAGES.with_borrow_mut(|pages| pages.get_mut(&page).map(Queue::dismiss));
     drop(dismissed);
 }
 
-/// `page` shows a new document: dialogs of the old one get the default answer, and the new
-/// one may show dialogs again.
-pub fn reset(page: usize) {
-    let dismissed = PAGES.with_borrow_mut(|pages| pages.get_mut(&page).map(Queue::reset));
+/// The user starts a navigation in `page`. Its dialogs get the default answer.
+pub fn user_navigates(page: usize) {
+    let dismissed = PAGES.with_borrow_mut(|pages| pages.get_mut(&page).map(Queue::user_navigates));
+    drop(dismissed);
+}
+
+/// `page` committed the document at `url`: the dialogs of the old one get the default answer.
+/// Runs inside a WebKit callback.
+pub fn commit(page: usize, url: &str) {
+    let origin = url_origin(url);
+    let dismissed = PAGES.with_borrow_mut(|pages| Some(pages.get_mut(&page)?.commit(&origin)));
     drop(dismissed);
 }

@@ -3,7 +3,7 @@
 //! This file holds the pure model: the text limits, the queue of one page and the guard that
 //! answers each dialog exactly one time. `native` connects the model to WebKit.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 // Spelled out so the native tests, which include this file by path, find it too.
 #[path = "dialogs/native.rs"]
@@ -17,8 +17,9 @@ pub const TEXT_LIMIT: usize = 2_000;
 const ORIGIN_LIMIT: usize = 80;
 /// The most dialogs one page can have waiting. A dialog over the limit gets the default answer.
 const QUEUE_LIMIT: usize = 8;
-/// From this dialog of one document on, the user can stop the dialogs of the document.
-const SUPPRESSION_FROM: u64 = 2;
+/// The most origins one tab remembers. Over the limit, it forgets the origins whose dialogs
+/// the user did not stop.
+const ORIGIN_MEMORY: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -121,11 +122,13 @@ pub struct Shown {
 /// The queue never answers a dialog itself. It gives the `T` values back, and the caller
 /// answers them after it has released its borrow of the queue.
 pub struct Queue<T> {
-    waiting: VecDeque<(u64, Request, T)>,
+    waiting: VecDeque<(Shown, T)>,
     next_id: u64,
-    /// The id of the first dialog of the current document.
-    document_start: u64,
-    suppressed: bool,
+    /// The origins that asked for a dialog in this tab, in all its documents. `true`: the
+    /// user stopped the dialogs of that origin. A page cannot clear this with a new document.
+    origins: HashMap<String, bool>,
+    /// The user started a navigation, and no document has committed since.
+    user_navigation: bool,
 }
 
 impl<T> Default for Queue<T> {
@@ -133,61 +136,106 @@ impl<T> Default for Queue<T> {
         Self {
             waiting: VecDeque::new(),
             next_id: 0,
-            document_start: 0,
-            suppressed: false,
+            origins: HashMap::new(),
+            user_navigation: false,
         }
     }
 }
 
 impl<T> Queue<T> {
     /// Adds a dialog. Gives `responder` back if the dialog must get the default answer at once:
-    /// the user stopped the dialogs of this document, or too many wait.
+    /// the user stopped the dialogs of this origin, or too many wait.
     pub fn push(&mut self, request: Request, responder: T) -> Result<(), T> {
-        if self.suppressed || self.waiting.len() >= QUEUE_LIMIT {
+        let known = self.origins.get(&request.origin).copied();
+        if known == Some(true) || self.waiting.len() >= QUEUE_LIMIT {
             return Err(responder);
         }
-        self.waiting.push_back((self.next_id, request, responder));
+        if known.is_none() {
+            if self.origins.len() >= ORIGIN_MEMORY {
+                self.origins.retain(|_, stopped| *stopped);
+            }
+            self.origins.insert(request.origin.clone(), false);
+        }
+        let shown = Shown {
+            id: self.next_id,
+            request,
+            // The offer starts with the second dialog of an origin.
+            can_suppress: known.is_some(),
+        };
+        self.waiting.push_back((shown, responder));
         self.next_id += 1;
         Ok(())
     }
 
     pub fn shown(&self) -> Option<Shown> {
-        let (id, request, _) = self.waiting.front()?;
-        Some(Shown {
-            id: *id,
-            request: request.clone(),
-            can_suppress: id - self.document_start + 1 >= SUPPRESSION_FROM,
-        })
+        self.waiting.front().map(|(shown, _)| shown.clone())
     }
 
     /// Takes the shown dialog off the queue when the user answers it. The first value answers
-    /// that dialog. With `suppress`, the document can show no more dialogs, and the other
-    /// values are the dialogs that waited: they get the default answer.
+    /// that dialog. With `suppress`, its origin can show no more dialogs in this tab, and the
+    /// other values are the dialogs of that origin that waited: they get the default answer.
     /// Gives nothing if `id` is not the shown dialog.
     pub fn answer(&mut self, id: u64, suppress: bool) -> Option<(T, Vec<T>)> {
-        if self.waiting.front()?.0 != id {
+        if self.waiting.front()?.0.id != id {
             return None;
         }
-        let (_, _, first) = self.waiting.pop_front()?;
-        self.suppressed |= suppress;
-        let rest = if suppress { self.dismiss() } else { Vec::new() };
-        Some((first, rest))
+        let (shown, first) = self.waiting.pop_front()?;
+        if !suppress {
+            return Some((first, Vec::new()));
+        }
+        let origin = shown.request.origin;
+        let (stopped, kept): (Vec<_>, Vec<_>) = self
+            .waiting
+            .drain(..)
+            .partition(|(other, _)| other.request.origin == origin);
+        self.waiting = kept.into();
+        self.origins.insert(origin, true);
+        let stopped = stopped.into_iter().map(|(_, responder)| responder);
+        Some((first, stopped.collect()))
     }
 
     /// Removes all dialogs, for the default answer. The user's choice to stop dialogs stays.
     pub fn dismiss(&mut self) -> Vec<T> {
         self.waiting
             .drain(..)
-            .map(|(_, _, responder)| responder)
+            .map(|(_, responder)| responder)
             .collect()
     }
 
-    /// A new document: its dialogs count from one again and are not stopped.
-    pub fn reset(&mut self) -> Vec<T> {
-        self.suppressed = false;
-        self.document_start = self.next_id;
+    /// The user starts a navigation: address, back, forward or reload. The dialogs get the
+    /// default answer, because a page that waits for an answer runs no navigation.
+    ///
+    /// If that navigation never commits (a download, a failed load), the mark stays until
+    /// the next commit, and a navigation of the page can then use it.
+    pub fn user_navigates(&mut self) -> Vec<T> {
+        self.user_navigation = true;
         self.dismiss()
     }
+
+    /// A document of `origin` committed. The dialogs of the old document get the default
+    /// answer. The counts and the stopped origins stay, so a page cannot clear them with a
+    /// reload or a redirect. Only a navigation of the user to another origin clears them.
+    pub fn commit(&mut self, origin: &str) -> Vec<T> {
+        if std::mem::take(&mut self.user_navigation) {
+            self.origins.retain(|known, _| known == origin);
+        }
+        self.dismiss()
+    }
+}
+
+/// The origin of the document at `url`, in the form `origin` gives for a frame. Empty when
+/// the URL has no host or is not valid.
+pub fn url_origin(url: &str) -> String {
+    url::Url::parse(url).map_or_else(
+        |_| String::new(),
+        |url| {
+            origin(
+                url.scheme(),
+                url.host_str().unwrap_or_default(),
+                url.port().unwrap_or(0),
+            )
+        },
+    )
 }
 
 /// Scheme, host and port as one origin, or nothing for a frame without a host (`about:blank`,
@@ -266,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn suppression_is_offered_from_the_second_dialog_and_ends_with_the_document() {
+    fn suppression_is_offered_from_the_second_dialog_and_stops_later_ones() {
         let mut queue = Queue::default();
         queue.push(request("1"), 1).unwrap();
         let first = queue.shown().unwrap();
@@ -280,15 +328,112 @@ mod tests {
         assert_eq!(queue.answer(second.id, true), Some((2, vec![3])));
         assert_eq!(queue.shown(), None);
         assert_eq!(queue.push(request("4"), 4), Err(4));
-        // A dismissal (the user reloads) does not give the page its dialogs back.
+        // A dismissal does not give the page its dialogs back.
         assert!(queue.dismiss().is_empty());
         assert_eq!(queue.push(request("5"), 5), Err(5));
-        // A new document starts again, without the offer on its first dialog.
-        assert!(queue.reset().is_empty());
-        queue.push(request("6"), 6).unwrap();
-        let next = queue.shown().unwrap();
-        assert!(!next.can_suppress);
-        assert!(next.id > second.id, "ids are never used again");
+    }
+
+    const SITE: &str = "https://example.com";
+
+    #[test]
+    fn a_page_cannot_avoid_the_offer_with_one_dialog_per_document() {
+        // `alert('x'); location.reload()`: each document shows exactly one dialog.
+        let mut queue = Queue::default();
+        queue.push(request("first document"), 1).unwrap();
+        let first = queue.shown().unwrap();
+        assert!(!first.can_suppress);
+        queue.answer(first.id, false).unwrap();
+        assert!(queue.commit(SITE).is_empty());
+        queue.push(request("second document"), 2).unwrap();
+        let second = queue.shown().unwrap();
+        assert!(second.can_suppress);
+        assert!(second.id > first.id, "ids are never used again");
+    }
+
+    fn stopped_queue() -> Queue<u8> {
+        let mut queue = Queue::default();
+        queue.push(request("1"), 1).unwrap();
+        let shown = queue.shown().unwrap();
+        queue.answer(shown.id, true).unwrap();
+        assert_eq!(queue.push(request("stopped"), 2), Err(2));
+        queue
+    }
+
+    #[test]
+    fn stopped_dialogs_stay_stopped_until_the_user_goes_to_another_origin() {
+        // A reload by the page.
+        let mut queue = stopped_queue();
+        queue.commit(SITE);
+        assert_eq!(queue.push(request("page reload"), 3), Err(3));
+        // The page goes to another origin and comes back.
+        queue.commit("https://other.example");
+        queue.commit(SITE);
+        assert_eq!(queue.push(request("round trip"), 4), Err(4));
+        // A reload by the user stays on the origin.
+        queue.user_navigates();
+        queue.commit(SITE);
+        assert_eq!(queue.push(request("user reload"), 5), Err(5));
+        // The mark of the user's navigation ended with that commit.
+        queue.commit("https://other.example");
+        queue.commit(SITE);
+        assert_eq!(queue.push(request("later round trip"), 6), Err(6));
+        // The user goes to another origin: the page starts again, without the offer.
+        queue.user_navigates();
+        queue.commit("https://other.example");
+        queue.commit(SITE);
+        queue.push(request("again"), 7).unwrap();
+        assert!(!queue.shown().unwrap().can_suppress);
+    }
+
+    #[test]
+    fn the_user_stops_one_origin_and_not_the_others() {
+        let frame = |message: &str| {
+            let origin = origin("https", "ads.example", 0);
+            Request::new(Kind::Alert, origin, false, message, "")
+        };
+        let mut queue = Queue::default();
+        queue.push(frame("a"), 1).unwrap();
+        queue.push(frame("b"), 2).unwrap();
+        queue.push(request("main"), 3).unwrap();
+        queue.push(frame("c"), 4).unwrap();
+        let first = queue.shown().unwrap();
+        queue.answer(first.id, false).unwrap();
+        let second = queue.shown().unwrap();
+        assert!(second.can_suppress);
+        // Only the frame's own waiting dialog gets the default answer.
+        assert_eq!(queue.answer(second.id, true), Some((2, vec![4])));
+        assert_eq!(queue.push(frame("d"), 5), Err(5));
+        let main = queue.shown().unwrap();
+        assert_eq!(main.request.message, "main");
+        assert!(!main.can_suppress, "the first dialog of its own origin");
+    }
+
+    #[test]
+    fn the_origin_memory_is_bounded_and_keeps_stopped_origins() {
+        let from =
+            |host: String| Request::new(Kind::Alert, origin("https", &host, 0), true, "", "");
+        let mut queue = stopped_queue();
+        for index in 0..3 * ORIGIN_MEMORY {
+            queue.push(from(format!("{index}.example")), 0).unwrap();
+            queue.dismiss();
+            assert!(queue.origins.len() <= ORIGIN_MEMORY);
+        }
+        assert_eq!(queue.push(request("still stopped"), 9), Err(9));
+    }
+
+    #[test]
+    fn a_document_url_gives_the_origin_of_its_frames() {
+        assert_eq!(url_origin("https://example.com/a?b#c"), SITE);
+        assert_eq!(url_origin("https://example.com:443/"), SITE);
+        assert_eq!(
+            url_origin("http://127.0.0.1:8080/x"),
+            origin("http", "127.0.0.1", 8080)
+        );
+        assert_eq!(url_origin("https://EXAMPLE.com/"), SITE);
+        assert_eq!(url_origin("about:blank"), "");
+        assert_eq!(url_origin("file:///tmp/page.html"), "");
+        assert_eq!(url_origin("not a url"), "");
+        assert_eq!(url_origin(""), "");
     }
 
     #[test]
@@ -298,10 +443,12 @@ mod tests {
             queue.push(request("wait"), index).unwrap();
         }
         assert_eq!(queue.push(request("too many"), 99), Err(99));
-        assert_eq!(queue.reset(), (0..QUEUE_LIMIT).collect::<Vec<_>>());
+        assert_eq!(queue.commit(SITE), (0..QUEUE_LIMIT).collect::<Vec<_>>());
         assert_eq!(queue.shown(), None);
         queue.push(request("next"), 100).unwrap();
-        assert_eq!(queue.dismiss(), vec![100]);
+        assert_eq!(queue.user_navigates(), vec![100]);
+        queue.push(request("last"), 101).unwrap();
+        assert_eq!(queue.dismiss(), vec![101]);
     }
 
     #[test]
