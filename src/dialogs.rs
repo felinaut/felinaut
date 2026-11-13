@@ -5,6 +5,8 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use crate::downloads::is_bidi_control;
+
 // Spelled out so the native tests, which include this file by path, find it too.
 #[path = "dialogs/native.rs"]
 pub mod native;
@@ -48,12 +50,18 @@ impl Request {
         message: &str,
         default_text: &str,
     ) -> Self {
+        // A bidi control of the page can change the order of the text on screen.
+        let plain = |text: &str| -> String {
+            text.chars()
+                .filter(|character| !is_bidi_control(*character))
+                .collect()
+        };
         Self {
             kind,
             origin,
             main_frame,
-            message: clip(message, MESSAGE_LIMIT, true),
-            default_text: clip(default_text, TEXT_LIMIT, false),
+            message: clip(&plain(message), MESSAGE_LIMIT, true),
+            default_text: clip(&plain(default_text), TEXT_LIMIT, false),
         }
     }
 
@@ -243,7 +251,7 @@ pub fn url_origin(url: &str) -> String {
 pub fn origin(scheme: &str, host: &str, port: u16) -> String {
     let clean = |text: &str| -> String {
         text.chars()
-            .filter(|c| !c.is_control() && !c.is_whitespace())
+            .filter(|c| !c.is_control() && !c.is_whitespace() && !is_bidi_control(*c))
             .collect()
     };
     let (scheme, host) = (clean(scheme), clean(host));
@@ -494,7 +502,14 @@ mod tests {
         assert!(cut.ends_with('…'));
         assert_eq!(request("a\r\n\tb\u{7}\u{1b}[1m").message, "a\n b[1m");
         assert_eq!(request("").message, "");
-        let prompt = Request::new(Kind::Prompt, String::new(), true, "", "one\ntwo");
+        // Bidi controls do not reach the screen and do not count for the limit.
+        assert_eq!(
+            request("safe\u{202e}txt.exe\u{2066}\u{200f}").message,
+            "safetxt.exe"
+        );
+        let marks = format!("{}{exact}", "\u{202e}".repeat(50));
+        assert_eq!(request(&marks).message, exact);
+        let prompt = Request::new(Kind::Prompt, String::new(), true, "", "one\ntwo\u{202e}");
         assert_eq!(prompt.default_text, "one two");
     }
 
@@ -505,6 +520,7 @@ mod tests {
         assert_eq!(origin("", "example.com", 0), "");
         assert_eq!(origin("about", "", 0), "");
         assert_eq!(origin("https", "a b\n.com", 0), "https://ab.com");
+        assert_eq!(origin("https", "a\u{202e}b.com", 0), "https://ab.com");
         // A long host keeps the end, which names its owner.
         let long = origin("https", &format!("{}.evil.example", "a".repeat(300)), 8443);
         assert!(long.starts_with("https://…aaa"), "{long}");
