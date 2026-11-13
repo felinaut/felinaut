@@ -92,7 +92,39 @@ Every native run now integrates `helper_observer.py`. It accepts bounded native 
 
 ## Coexistence transition model
 
-`src/coexistence_policy.rs` and `fixtures/coexistence.html` define the next native experiment's fixed sequence: both engines ready, same-origin cookie/localStorage separation, native input WebKit → CEF → WebKit, retained CEF input and both viewports resized to 600 CSS pixels. The pure model rejects invalid, untrusted, wrong-engine and out-of-order reports, tolerates accepted duplicates without advancing, and issues each action once. **21 behavioral unit tests pass.** This model/fixture checkpoint alone does not prove native WKWebView/CEF coexistence or expose a browser engine picker.
+`src/coexistence_policy.rs` and `fixtures/coexistence.html` define the native experiment's fixed sequence: both engines ready, same-origin cookie/localStorage separation, native input WebKit → CEF → WebKit, retained CEF input and both viewports resized to 600 CSS pixels. The pure model rejects invalid, untrusted, wrong-engine and out-of-order reports, tolerates accepted duplicates without advancing, and issues each action once. **26 behavioral unit tests pass**, including latest-width tracking for repeated resize reports and failure on viewport regression during the completion grace period. The native implementation below now passes; a browser engine picker remains unimplemented.
+
+## Same-window system WebKit + CEF probe
+
+**Native functional and window-only visual checks passed on 13 November 2026**, on the macOS 27 arm64/Xcode 27 host documented here. This is a standalone developer fixture, not two separately launched browsers and not yet the main Felinaut adapter.
+
+```sh
+# Uses the same explicitly prepared CEF SDK; never acquires an SDK here.
+python3 tools/cef-probe/run_probe.py --coexistence              # plan only
+python3 tools/cef-probe/run_probe.py --run --build --coexistence
+python3 tools/cef-probe/run_probe.py --run --build --coexistence --capture
+```
+
+The runner builds this tool with the optional **`coexistence`** feature, which includes `runtime` and the existing project baseline **Wry 0.57.1**. It invokes `--run-coexistence`; a binary built without the feature refuses that mode explicitly, before opening a profile. The default tool remains SDK-free; `runtime` alone does not include Wry. No browser-root manifest, lockfile, engine gate, installed application or user profile is changed. Wry's non-macOS dependency metadata appears in this standalone lockfile, not as Linux/Windows validation or a new runtime dependency on those platforms.
+
+`src/coexistence_webkit.rs` creates an initially hidden/unfocused WKWebView child in the same GPUI window as CEF, with an explicitly nonpersistent store. The live `WKWebView` class and `stopLoading` implementation must resolve through `dladdr` to system WebKit, not a user agent or fixture label. The native check reports `/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit`. CEF retains its own in-memory request context. Both engines use the runner's same literal-loopback origin; only `/cef` and `/webkit` serve the coexistence fixture.
+
+The bounded native sequence verifies:
+
+1. Both real documents load and run JavaScript in one GPUI host window.
+2. The same cookie name/root path and localStorage key initially have no value, then remain independently assigned to each engine after both write them.
+3. Scoped AppKit native clicks/key events type `Hello from Felinaut` into WebKit, then CEF, then return to WebKit and append ` Meow`. Both buttons report trusted pointer events. CEF's original input and both engines' storage values remain intact. This proves the view-scoped native input/focus sequence, **not full hardware-event dispatch, IME or accessibility**.
+4. Resizing the window to 1200×760 produces two 600-CSS-pixel viewports. Repeated/nonfinal resize reports cannot satisfy the gate from historical evidence; a regression after completion is armed fails the run.
+5. WebKit callbacks are disabled, loading stops and its native child is removed/dropped on the main thread before CEF close/shutdown and GPUI termination. Layout callbacks skip teardown. This is not a claim that all system-managed WebKit subprocesses immediately terminate.
+6. The unchanged CEF canary, helper policy, notification-broker exclusion and independent helper-exit audit also pass. Coexistence has its own ordered completion markers; single-engine markers cannot substitute for them.
+
+The final fresh `--run --build --coexistence --capture` equivalent passed with root exit 0, every native marker and `helper_audit_passed: true`. The reviewed window-only capture contains only generated test content:
+
+![Actual CEF and system WKWebView documents side by side in one GPUI window, after native input handoff and resize.](../../docs/screenshots/macos-webkit-cef-coexistence.png)
+
+Validation passed: tool/default/coexistence formatting and Clippy with warnings denied; **43 coexistence-enabled host tests** (26 sequence, 7 WebKit adapter, 7 runtime-policy, 3 lifecycle), **8 helper tests**, **157 Python tests** (32 preparation, 21 bundle, 41 observer, 63 runner), the SDK-free native lifecycle/pump/negative-singleton checks, the original single-engine native runner and the coexistence native/capture runs. No test result from this Mac establishes another OS or macOS version.
+
+Remaining: production CEF page/event/capability adapter, generation/cancellation and permission handling, normal chrome/content keyboard routing, IME/accessibility, media/downloads, renderer crash/recovery, durable profiles/real Keychain, production packaging/security updates and per-tab engine selection/reload policy. The browser's `engine-cef` gate remains blocked. The system/upstream Cocoa WebKit process-exclusivity constraint is unchanged: this probe pairs **system WebKit with Chromium/CEF**, not two Cocoa WebKit builds.
 
 ## Real CEF runtime probe
 
@@ -141,7 +173,7 @@ The private `report.json` contains raw per-helper query outcomes, role summaries
 
 ### Evidence and limitations
 
-On the same macOS 27 arm64/Xcode 27 host, actual native runs passed protocol conformance, initialization, child creation, loopback HTTP 200/JavaScript, native text and trusted pointer interaction, viewport resize, `OnBeforeClose`, CEF shutdown and original GPUI termination. Tool unit tests also cover loopback/resource policy, invalid/private profiles, mode handling and close-before-create/duplicate-close transitions. Validation passed: tool formatting, default/runtime/helper Clippy with warnings denied, **10 runtime-enabled host unit tests**, **8 helper unit tests**, **144 Python tests** (32 SDK preparation, 21 bundle, 41 observer, 50 runner), native pump/conflicting-singleton/lifecycle checks, and the runner's actual `--run --build` sequence with root exit 0. The default host also passed its 3 SDK-free unit tests. The scoped native helper audit is recorded above; wider security/compatibility gates remain below.
+On the same macOS 27 arm64/Xcode 27 host, actual native runs passed protocol conformance, initialization, child creation, loopback HTTP 200/JavaScript, native text and trusted pointer interaction, viewport resize, `OnBeforeClose`, CEF shutdown and original GPUI termination. Tool unit tests also cover loopback/resource policy, invalid/private profiles, mode handling and close-before-create/duplicate-close transitions. Validation passed: tool formatting, default/runtime/helper Clippy with warnings denied, **10 runtime-enabled host unit tests**, **8 helper unit tests**, **157 Python tests** (32 SDK preparation, 21 bundle, 41 observer, 63 runner), native pump/conflicting-singleton/lifecycle checks, and the runner's actual `--run --build` sequence with root exit 0. The default host also passed its 3 SDK-free unit tests. The scoped native helper audit is recorded above; wider security/compatibility gates remain below.
 
 Private logs, reports, canaries and bundles stay under ignored `target/`; temporary homes are **retained even after a passing audit** for inspection (`home_cleanup: retained-audit-artifacts`). Failure/unknown evidence keeps HOME and is explicitly reported. The runner stops only roots it owns; it does not issue global/process-group kills or automatically delete profiles. Missing helper evidence is not permission to remove a retained profile.
 
@@ -151,4 +183,4 @@ Private logs, reports, canaries and bundles stay under ignored `target/`; tempor
 
 Earlier locked-session attempts failed through `screencapture` and ScreenCaptureKit despite permission preflight succeeding; the first unlocked attempt also failed window selection. Subsequent captures succeeded without changing engine or capture code. No display-wide fallback or personal-window capture was attempted. The image in the earlier lifecycle section remains SDK-free evidence only.
 
-Not yet proved: complete sandbox/broker coverage beyond the scoped audit, real persistent Keychain integration, Unicode/IME, accessibility, media, renderer-crash recovery, arbitrary-site behavior, WKWebView coexistence, per-tab selection, engine switching, signing/distribution or compatibility beyond this host. Resource/redirect negative cases currently have policy unit coverage, not an end-to-end hostile-response test. Do not enable the browser's CEF flag based on this prototype. Next: verify WebKit coexistence, then implement the production adapter against the [backend contract](../../docs/engine-backends.md). See [the CEF feasibility report](../../docs/macos-cef-gecko.md).
+Not yet proved: complete sandbox/broker coverage beyond the scoped audit, real persistent Keychain integration, Unicode/IME, accessibility, media, renderer-crash recovery, arbitrary-site behavior, production WebKit/CEF feature parity, per-tab selection, engine switching, signing/distribution or compatibility beyond this host. Resource/redirect negative cases currently have policy unit coverage, not an end-to-end hostile-response test. Do not enable the browser's CEF flag based on this prototype. Next: implement the production adapter and per-tab replacement policy against the [backend contract](../../docs/engine-backends.md). See [the CEF feasibility report](../../docs/macos-cef-gecko.md).

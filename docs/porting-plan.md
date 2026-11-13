@@ -83,6 +83,8 @@ Plan a [per-tab backend picker](web-engines.md#proposed-experimental-backend-pic
 
 A [system/upstream Cocoa WebKit developer comparison](macos-webkit-comparison.md) now passes functional smoke in the current `multiplatform` working implementation on macOS 27 arm64. It uses a native picker and separate temporary processes/profiles, not WPE, a production engine preference, live switching or a performance benchmark. The WPE feasibility gate above remains unresolved.
 
+A separate [same-window WKWebView/CEF developer probe](../tools/cef-probe/README.md#same-window-system-webkit--cef-probe) now passes on macOS 27 arm64, with [actual UI evidence](screenshots/macos-webkit-cef-coexistence.png), isolated same-origin cookie/localStorage checks, scoped native input handoff, resize, ordered teardown and the scoped CEF helper audit. This establishes minimal coexistence feasibility, not completed M3 input/IME/accessibility coverage or a working browser picker. Next is the production CEF page/event/capability adapter and safe per-tab replacement policy; the browser's CEF build request remains blocked.
+
 ### Readiness rule
 
 A platform is not ready merely because it compiles, draws the mascot, or passes fake-adapter tests. Require native input/accessibility, safe engine integration, real UI evidence, compatible persistence, measured performance, usable packaging and an engine-security-update owner. Missing features must be visible in the capability matrix, never replaced with successful no-ops.

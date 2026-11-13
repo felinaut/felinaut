@@ -1,3 +1,7 @@
+#[cfg(feature = "coexistence")]
+mod coexistence_policy;
+#[cfg(feature = "coexistence")]
+mod coexistence_webkit;
 #[cfg(feature = "runtime")]
 mod runtime;
 
@@ -31,6 +35,17 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if mode == Mode::Coexistence {
+        #[cfg(feature = "coexistence")]
+        return runtime::run_coexistence();
+        #[cfg(not(feature = "coexistence"))]
+        {
+            eprintln!(
+                "WebKit/CEF coexistence support was not built; build this probe with --features coexistence"
+            );
+            return ExitCode::from(2);
+        }
+    }
     if mode == Mode::Cef {
         #[cfg(feature = "runtime")]
         return runtime::run();

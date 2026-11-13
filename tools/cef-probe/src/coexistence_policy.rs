@@ -17,8 +17,10 @@
 //! phrase (CEF cannot have the WebKit suffix). `ok` means storage was initially
 //! empty AND both localStorage and the root-path cookie still contain this role.
 //! The boolean is event.isTrusted for focus/typing/input, otherwise the current
-//! successful button-verification state. Failures latch; duplicate accepted
-//! reports are harmless but never discharge a later wait. No clock or IO here.
+//! successful button-verification state. Failures latch; duplicate non-resize
+//! reports are harmless but never discharge a later wait. Resize reports always
+//! update the latest pane width while waiting; after both panes verify, every
+//! resize must remain valid at width 600, including after Complete. No clock or IO.
 
 const TEXT: &str = "Hello from Felinaut";
 const RETURN_TEXT: &str = "Hello from Felinaut Meow";
@@ -57,7 +59,8 @@ const ACTIONS: [Action; 17] = [
     Action::CefClick(100., 150.),
     Action::CefType(TEXT),
     Action::CefClick(110., 220.),
-    Action::WebKitClick(100., 150.),
+    // Click past the existing phrase to place the caret at its end on return.
+    Action::WebKitClick(300., 150.),
     Action::WebKitType(" Meow"),
     Action::WebKitClick(110., 220.),
     Action::CefReport,
@@ -170,6 +173,7 @@ pub struct Probe {
     wait: Wait,
     both: [bool; 2],
     typing_len: usize,
+    resize_verified: bool,
     seen: Vec<Report>,
     failure: Option<&'static str>,
 }
@@ -187,6 +191,7 @@ impl Probe {
             wait: Wait::Ready,
             both: [false; 2],
             typing_len: 0,
+            resize_verified: false,
             seen: Vec::new(),
             failure: None,
         }
@@ -205,10 +210,18 @@ impl Probe {
     }
 
     fn accept(&mut self, report: Report) -> Result<(), &'static str> {
-        if self.seen.contains(&report) {
+        if self.resize_verified && report.phase == Phase::Resize {
+            require_resize(report)?;
+            if report.width != 600 {
+                return Err("Coexistence pane width regressed after resize verification");
+            }
             return Ok(());
         }
-        if self.seen.len() == MAX_REPORTS {
+        let seen = self.seen.contains(&report);
+        if seen && !(self.wait == Wait::Resize && report.phase == Phase::Resize) {
+            return Ok(());
+        }
+        if !seen && self.seen.len() == MAX_REPORTS {
             return Err("Too many distinct coexistence reports");
         }
         let complete = match self.wait {
@@ -250,18 +263,17 @@ impl Probe {
                 true
             }
             Wait::Resize => {
-                let length = match report.engine {
-                    Engine::Cef => TEXT.len(),
-                    Engine::WebKit => RETURN_TEXT.len(),
-                };
-                require_event(report, report.engine, Phase::Resize, length)?;
-                // Intermediate native layout sizes are evidence, not completion.
+                require_resize(report)?;
+                // Replayed widths are still the latest state, not stale evidence.
                 self.both[engine_index(report.engine)] = report.width == 600;
-                self.both == [true; 2]
+                self.resize_verified = self.both == [true; 2];
+                self.resize_verified
             }
             Wait::None => return Err("Coexistence report arrived before its action"),
         };
-        self.seen.push(report);
+        if !seen {
+            self.seen.push(report);
+        }
         if complete {
             self.wait = Wait::None;
         }
@@ -306,6 +318,14 @@ fn engine_index(engine: Engine) -> usize {
         Engine::Cef => 0,
         Engine::WebKit => 1,
     }
+}
+
+fn require_resize(report: Report) -> Result<(), &'static str> {
+    let length = match report.engine {
+        Engine::Cef => TEXT.len(),
+        Engine::WebKit => RETURN_TEXT.len(),
+    };
+    require_event(report, report.engine, Phase::Resize, length)
 }
 
 fn require_event(
@@ -381,7 +401,7 @@ mod tests {
                 TEXT,
             ),
             (Engine::WebKit, true) => (
-                Action::WebKitClick(100., 150.),
+                Action::WebKitClick(300., 150.),
                 Action::WebKitType(" Meow"),
                 Action::WebKitClick(110., 220.),
                 TEXT,
@@ -736,6 +756,119 @@ mod tests {
     }
 
     #[test]
+    fn resize_replays_update_latest_width_before_completion() {
+        for first in [Engine::Cef, Engine::WebKit] {
+            let second = if first == Engine::Cef {
+                Engine::WebKit
+            } else {
+                Engine::Cef
+            };
+            let mut probe = focus();
+            action(&mut probe, Action::Resize);
+            resize(&mut probe, first, 599);
+            resize(&mut probe, first, 600);
+            resize(&mut probe, first, 599);
+            resize(&mut probe, second, 600);
+            assert_eq!(probe.next_action(), None);
+            // This repeated 600 must also be processed, not deduplicated away.
+            resize(&mut probe, first, 600);
+            action(&mut probe, Action::ResizeVerified);
+            action(&mut probe, Action::Complete);
+            assert_eq!(probe.next_action(), None);
+        }
+    }
+
+    #[test]
+    fn historical_resize_regression_fails_after_completion_is_armed() {
+        for engine in [Engine::Cef, Engine::WebKit] {
+            for markers_consumed in 0..=2 {
+                let mut probe = focus();
+                action(&mut probe, Action::Resize);
+                resize(&mut probe, engine, 599);
+                resize(&mut probe, Engine::Cef, 600);
+                resize(&mut probe, Engine::WebKit, 600);
+                if markers_consumed >= 1 {
+                    action(&mut probe, Action::ResizeVerified);
+                }
+                if markers_consumed == 2 {
+                    action(&mut probe, Action::Complete);
+                }
+                let text = if engine == Engine::Cef {
+                    TEXT
+                } else {
+                    RETURN_TEXT
+                };
+                let error = probe
+                    .update(engine, &title(engine, "resize", 599, text, true))
+                    .expect_err("historical width must still invalidate completion");
+                assert_eq!(probe.next_action(), None);
+                assert_eq!(
+                    probe.update(engine, &title(engine, "resize", 600, text, true)),
+                    Err(error)
+                );
+                assert_eq!(probe.next_action(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_valid_resize_reports_do_not_reissue_completion() {
+        let mut probe = focus();
+        action(&mut probe, Action::Resize);
+        resize(&mut probe, Engine::Cef, 600);
+        resize(&mut probe, Engine::WebKit, 600);
+        for marker in [Action::ResizeVerified, Action::Complete] {
+            for engine in [Engine::Cef, Engine::WebKit] {
+                resize(&mut probe, engine, 600);
+            }
+            action(&mut probe, marker);
+        }
+        for _ in 0..MAX_REPORTS + 1 {
+            for engine in [Engine::Cef, Engine::WebKit] {
+                resize(&mut probe, engine, 600);
+                assert_eq!(probe.next_action(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn completion_grace_resize_reports_still_require_text_isolation_and_trust() {
+        for value in [
+            "COEX:cef:resize:600:ok:Hello:true",
+            "COEX:cef:resize:600:ok:Hello from Felinaut:false",
+            "COEX:cef:resize:600:bad:Hello from Felinaut:true",
+            "COEX:webkit:resize:600:ok:Hello from Felinaut:true",
+            "COEX:webkit:resize:600:ok:Hello from Felinaut Meow:false",
+            "COEX:webkit:resize:600:bad:Hello from Felinaut Meow:true",
+        ] {
+            let mut probe = focus();
+            action(&mut probe, Action::Resize);
+            resize(&mut probe, Engine::Cef, 600);
+            resize(&mut probe, Engine::WebKit, 600);
+            action(&mut probe, Action::ResizeVerified);
+            action(&mut probe, Action::Complete);
+            let engine = if value.starts_with("COEX:cef:") {
+                Engine::Cef
+            } else {
+                Engine::WebKit
+            };
+            assert!(probe.update(engine, value).is_err());
+            assert_eq!(probe.next_action(), None);
+        }
+    }
+
+    #[test]
+    fn resize_before_its_action_remains_out_of_order() {
+        let mut probe = focus();
+        assert!(
+            probe
+                .update(Engine::Cef, &title(Engine::Cef, "resize", 600, TEXT, true))
+                .is_err()
+        );
+        assert_eq!(probe.next_action(), None);
+    }
+
+    #[test]
     fn resize_requires_correct_text_isolation_and_verification() {
         for value in [
             "COEX:cef:resize:600:ok:Hello:true",
@@ -774,7 +907,7 @@ mod tests {
                 TEXT,
             ),
             (
-                Action::WebKitClick(100., 150.),
+                Action::WebKitClick(300., 150.),
                 Engine::WebKit,
                 TEXT,
                 Action::WebKitType(" Meow"),

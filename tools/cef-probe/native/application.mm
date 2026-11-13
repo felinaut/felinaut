@@ -221,19 +221,22 @@ extern "C" bool felinaut_cef_resize_window(double width, double height) {
     return true;
 }
 
-extern "C" bool felinaut_cef_click(double x, double y) {
-    if (!owns_application() || !container || ![container window] ||
+static bool click_surface(NSView *surface, double x, double y) {
+    if (!owns_application() || !container_parent || !surface || surface == container_parent ||
+        ![surface isDescendantOf:container_parent] || [surface window] != [container_parent window]) return false;
+    if (!owns_application() || !surface || ![surface window] ||
         !std::isfinite(x) || !std::isfinite(y) || x < 0 || y < 0 ||
-        x >= [container bounds].size.width || y >= [container bounds].size.height) return false;
-    NSWindow *window = [container window];
+        x >= [surface bounds].size.width || y >= [surface bounds].size.height) return false;
+    NSWindow *window = [surface window];
     [window makeKeyAndOrderFront:nil];
-    const NSPoint local = NSMakePoint(x, [container isFlipped] ? y : [container bounds].size.height - y);
-    const NSPoint location = [container convertPoint:local toView:nil];
-    const NSPoint in_parent = [container convertPoint:local toView:[container superview]];
-    NSView *target = [[container hitTest:in_parent] retain];
-    if (!target || target == container || ![target isDescendantOf:container]) { [target release]; return false; }
-    fprintf(stderr, "CEF native pointer target %s, container %.0fx%.0f, window visible %d\n",
-        object_getClassName(target), [container bounds].size.width, [container bounds].size.height, [window isVisible]);
+    const NSPoint local = NSMakePoint(x, [surface isFlipped] ? y : [surface bounds].size.height - y);
+    const NSPoint location = [surface convertPoint:local toView:nil];
+    const NSPoint in_parent = [surface convertPoint:local toView:[surface superview]];
+    NSView *target = [[surface hitTest:in_parent] retain];
+    // WKWebView can itself be the event target; the CEF surface is a container.
+    if (!target || ![target isDescendantOf:surface]) { [target release]; return false; }
+    fprintf(stderr, "CEF native pointer target %s, surface %.0fx%.0f, window visible %d\n",
+        object_getClassName(target), [surface bounds].size.width, [surface bounds].size.height, [window isVisible]);
     @try {
         [window makeFirstResponder:target];
         event_scope(^{
@@ -251,13 +254,15 @@ extern "C" bool felinaut_cef_click(double x, double y) {
     return true;
 }
 
-extern "C" bool felinaut_cef_type_ascii(const char *text) {
-    if (!owns_application() || !container || ![container window] || !text || std::strlen(text) > 128)
+static bool type_surface(NSView *surface, const char *text) {
+    if (!owns_application() || !container_parent || !surface || surface == container_parent ||
+        ![surface isDescendantOf:container_parent] || [surface window] != [container_parent window]) return false;
+    if (!owns_application() || !surface || ![surface window] || !text || std::strlen(text) > 128)
         return false;
     for (const unsigned char *p = reinterpret_cast<const unsigned char *>(text); *p; ++p)
         if (*p < 32 || *p > 126) return false;
-    id responder = [[[container window] firstResponder] retain];
-    if (![responder isKindOfClass:[NSView class]] || ![static_cast<NSView *>(responder) isDescendantOf:container] ||
+    id responder = [[[surface window] firstResponder] retain];
+    if (![responder isKindOfClass:[NSView class]] || ![static_cast<NSView *>(responder) isDescendantOf:surface] ||
         ![responder respondsToSelector:@selector(insertText:replacementRange:)]) {
         [responder release]; return false;
     }
@@ -268,7 +273,7 @@ extern "C" bool felinaut_cef_type_ascii(const char *text) {
             [responder release]; return false;
         }
     }
-    NSWindow *window = [container window];
+    NSWindow *window = [surface window];
     @try {
         event_scope(^{
             for (const char *p = text; *p; ++p) {
@@ -291,6 +296,23 @@ extern "C" bool felinaut_cef_type_ascii(const char *text) {
     } @catch (NSException *) { return false; }
       @finally { [responder release]; }
     return true;
+}
+
+extern "C" bool felinaut_cef_click(double x, double y) {
+    return click_surface(container, x, y);
+}
+
+extern "C" bool felinaut_cef_type_ascii(const char *text) {
+    return type_surface(container, text);
+}
+
+// Only trusted native callers supply live Wry-owned views; no page IPC exports these.
+extern "C" bool felinaut_coexist_click_view(void *view, double x, double y) {
+    return click_surface(static_cast<NSView *>(view), x, y);
+}
+
+extern "C" bool felinaut_coexist_type_view(void *view, const char *text) {
+    return type_surface(static_cast<NSView *>(view), text);
 }
 
 extern "C" bool felinaut_cef_release_container() {

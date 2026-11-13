@@ -221,34 +221,57 @@ wrap_download_handler! {
     }
 }
 
-struct ProbeWindow;
+#[cfg(feature = "coexistence")]
+type WebKitOwner = StdRc<RefCell<Option<crate::coexistence_webkit::Page>>>;
+
+struct ProbeWindow {
+    coexistence: bool,
+    #[cfg(feature = "coexistence")]
+    webkit: WebKitOwner,
+}
 impl Render for ProbeWindow {
     fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+        let coexistence = self.coexistence;
+        #[cfg(feature = "coexistence")]
+        let webkit = self.webkit.clone();
         div()
             .flex()
             .flex_col()
             .size_full()
             .bg(rgb(0x0b1026))
             .text_color(rgb(0xf7f6ff))
-            .child(
-                div()
-                    .h(px(50.))
-                    .p_3()
-                    .child("Felinaut · Chromium / CEF · trusted-loopback prototype"),
-            )
+            .child(div().h(px(50.)).p_3().child(if coexistence {
+                "Felinaut · CEF + system WKWebView · isolated loopback coexistence"
+            } else {
+                "Felinaut · Chromium / CEF · trusted-loopback prototype"
+            }))
             .child(
                 canvas(
-                    |bounds, _, _| {
+                    move |bounds, _, _| {
+                        if native::close_requested() {
+                            return;
+                        }
+                        let x = f64::from(bounds.origin.x);
+                        let y = f64::from(bounds.origin.y);
+                        let width = f64::from(bounds.size.width);
+                        let height = f64::from(bounds.size.height);
+                        let cef_width = if coexistence {
+                            (width / 2.).floor()
+                        } else {
+                            width
+                        };
+                        #[cfg(feature = "coexistence")]
+                        if coexistence
+                            && let Some(page) = webkit.borrow().as_ref()
+                            && page
+                                .set_bounds(x + cef_width, y, width - cef_width, height)
+                                .is_err()
+                        {
+                            CALLBACK_FAILURE.store(true, Ordering::Release);
+                        }
                         // SAFETY: main-thread render/layout only updates the retained native
                         // container. It never pumps CEF or re-enters GPUI from a callback.
-                        let ok = unsafe {
-                            felinaut_cef_resize_container(
-                                f64::from(bounds.origin.x),
-                                f64::from(bounds.origin.y),
-                                f64::from(bounds.size.width),
-                                f64::from(bounds.size.height),
-                            )
-                        };
+                        let ok = unsafe { felinaut_cef_resize_container(x, y, cef_width, height) };
                         if !ok {
                             CALLBACK_FAILURE.store(true, Ordering::Release);
                         }
@@ -293,13 +316,38 @@ fn configuration() -> Result<(url::Url, PathBuf, PathBuf), String> {
 }
 
 pub fn run() -> ExitCode {
-    let (target, home, bundle) = match configuration() {
+    run_with_mode(false)
+}
+
+#[cfg(feature = "coexistence")]
+pub fn run_coexistence() -> ExitCode {
+    run_with_mode(true)
+}
+
+#[cfg(feature = "coexistence")]
+fn cef_storage_report() -> Result<(), String> {
+    let frame = browser()
+        .and_then(|browser| browser.main_frame())
+        .ok_or("CEF main frame unavailable for storage check")?;
+    frame.execute_java_script(
+        Some(&CefString::from("window.probe.report('storage')")),
+        None,
+        0,
+    );
+    Ok(())
+}
+
+fn run_with_mode(coexistence: bool) -> ExitCode {
+    let (mut target, home, bundle) = match configuration() {
         Ok(config) => config,
         Err(error) => {
             eprintln!("FAIL: {error}");
             return ExitCode::FAILURE;
         }
     };
+    if coexistence {
+        target.set_path("/cef");
+    }
     std::thread::spawn(|| {
         std::thread::sleep(Duration::from_secs(45));
         eprintln!("FAIL: CEF probe exceeded its 45-second watchdog");
@@ -363,6 +411,14 @@ pub fn run() -> ExitCode {
     );
     let parent = StdRc::new(Cell::new(std::ptr::null_mut()));
     let container = parent.clone();
+    #[cfg(feature = "coexistence")]
+    let webkit: WebKitOwner = StdRc::new(RefCell::new(None));
+    #[cfg(feature = "coexistence")]
+    let window_webkit = webkit.clone();
+    #[cfg(feature = "coexistence")]
+    let mut webkit_target = target.clone();
+    #[cfg(feature = "coexistence")]
+    webkit_target.set_path("/webkit");
     Application::new().run(move |cx| {
         if !native::verify_application() {
             crate::fail("CEF changed the GPUI application/delegate boundary");
@@ -371,7 +427,11 @@ pub fn run() -> ExitCode {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,
-                    size(px(900.), px(650.)),
+                    if coexistence {
+                        size(px(1100.), px(700.))
+                    } else {
+                        size(px(900.), px(650.))
+                    },
                     cx,
                 ))),
                 ..Default::default()
@@ -386,11 +446,34 @@ pub fn run() -> ExitCode {
                 if container.get().is_null() {
                     crate::fail("Could not attach CEF container");
                 }
+                #[cfg(feature = "coexistence")]
+                if coexistence {
+                    match crate::coexistence_webkit::Page::new(window, &webkit_target) {
+                        Ok(page) => {
+                            println!(
+                                "WKWebView source: {}; nonpersistent store verified",
+                                page.source_identity()
+                            );
+                            *window_webkit.borrow_mut() = Some(page);
+                        }
+                        Err(error) => {
+                            eprintln!("WebKit coexistence creation failed: {error}");
+                            CALLBACK_FAILURE.store(true, Ordering::Release);
+                        }
+                    }
+                    if !native::verify_application() {
+                        CALLBACK_FAILURE.store(true, Ordering::Release);
+                    }
+                }
                 window.on_window_should_close(cx, |_, cx| {
                     cx.quit();
                     false
                 });
-                cx.new(|_| ProbeWindow)
+                cx.new(|_| ProbeWindow {
+                    coexistence,
+                    #[cfg(feature = "coexistence")]
+                    webkit: window_webkit,
+                })
             },
         )
         .unwrap_or_else(|_| crate::fail("Could not open GPUI CEF window"));
@@ -413,6 +496,12 @@ pub fn run() -> ExitCode {
             let mut stage = 0;
             let mut action_at = Instant::now();
             let mut failure = None;
+            #[cfg(feature = "coexistence")]
+            let mut coex = crate::coexistence_policy::Probe::new();
+            #[cfg(feature = "coexistence")]
+            let mut webkit_loaded = false;
+            #[cfg(feature = "coexistence")]
+            let mut coex_complete = false;
 
             loop {
                 Timer::after(Duration::from_millis(15)).await;
@@ -433,6 +522,14 @@ pub fn run() -> ExitCode {
                         Event::Loaded(_) => failure = Some("Fixture returned a non-200 status"),
                         Event::Title(value) => {
                             println!("CEF fixture title event ({} bytes)", value.len());
+                            #[cfg(feature = "coexistence")]
+                            if coexistence
+                                && value.starts_with("COEX:")
+                                && let Err(error) =
+                                    coex.update(crate::coexistence_policy::Engine::Cef, &value)
+                            {
+                                failure = Some(error);
+                            }
                             title = value;
                         }
                         Event::CloseReady => {
@@ -453,6 +550,25 @@ pub fn run() -> ExitCode {
                         }
                     }
                 }
+                #[cfg(feature = "coexistence")]
+                if coexistence && let Some(page) = webkit.borrow().as_ref() {
+                    for event in page.drain() {
+                        match event {
+                            crate::coexistence_webkit::Event::Loaded => webkit_loaded = true,
+                            crate::coexistence_webkit::Event::Title(value) => {
+                                if value.starts_with("COEX:")
+                                    && let Err(error) = coex
+                                        .update(crate::coexistence_policy::Engine::WebKit, &value)
+                                {
+                                    failure = Some(error);
+                                }
+                            }
+                            crate::coexistence_webkit::Event::Failed(error) => {
+                                failure = Some(error)
+                            }
+                        }
+                    }
+                }
                 if CALLBACK_FAILURE.load(Ordering::Acquire) {
                     failure = Some("Callback queue, pump, or native layout failed");
                 }
@@ -467,8 +583,8 @@ pub fn run() -> ExitCode {
                         &Rect {
                             x: 0,
                             y: 0,
-                            width: 900,
-                            height: 600,
+                            width: if coexistence { 550 } else { 900 },
+                            height: if coexistence { 650 } else { 600 },
                         },
                     );
                     let mut client = ProbeClient::new(events.clone(), target.clone());
@@ -496,7 +612,89 @@ pub fn run() -> ExitCode {
                 if started.elapsed() > Duration::from_secs(32) {
                     failure = Some("CEF fixture checks exceeded their deadline");
                 }
-                if failure.is_none() && !closing && loaded {
+                #[cfg(feature = "coexistence")]
+                if coexistence && failure.is_none() && !closing && loaded && webkit_loaded {
+                    use crate::coexistence_policy::Action;
+                    while let Some(action) = coex.next_action() {
+                        let result: Result<(), String> = match action {
+                            Action::Loaded => {
+                                println!(
+                                    "PASS: system WKWebView and CEF loaded in one GPUI window"
+                                );
+                                Ok(())
+                            }
+                            Action::CheckStorage => cef_storage_report().and_then(|_| {
+                                webkit
+                                    .borrow()
+                                    .as_ref()
+                                    .ok_or("Missing WebKit page")?
+                                    .evaluate("window.probe.report('storage')")
+                            }),
+                            Action::StorageVerified => {
+                                println!("PASS: WebKit and CEF storage contexts stayed isolated");
+                                Ok(())
+                            }
+                            Action::WebKitClick(x, y) => webkit
+                                .borrow()
+                                .as_ref()
+                                .ok_or("Missing WebKit page".into())
+                                .and_then(|page| page.click(x, y)),
+                            Action::WebKitType(text) => webkit
+                                .borrow()
+                                .as_ref()
+                                .ok_or("Missing WebKit page".into())
+                                .and_then(|page| page.type_text(text)),
+                            Action::CefClick(x, y) => {
+                                if unsafe { felinaut_cef_click(x, y) } {
+                                    Ok(())
+                                } else {
+                                    Err("Native CEF coexistence click failed".into())
+                                }
+                            }
+                            Action::CefType(text) => {
+                                let text = CString::new(text).unwrap();
+                                if unsafe { felinaut_cef_type_ascii(text.as_ptr()) } {
+                                    Ok(())
+                                } else {
+                                    Err("Native CEF coexistence text failed".into())
+                                }
+                            }
+                            Action::CefReport => cef_storage_report(),
+                            Action::FocusVerified => {
+                                println!(
+                                    "PASS: native focus and input moved WebKit to CEF to WebKit"
+                                );
+                                Ok(())
+                            }
+                            Action::Resize => {
+                                if unsafe { felinaut_cef_resize_window(1200., 760.) } {
+                                    Ok(())
+                                } else {
+                                    Err("Coexistence window resize failed".into())
+                                }
+                            }
+                            Action::ResizeVerified => {
+                                println!("PASS: both engine viewports followed the GPUI resize");
+                                Ok(())
+                            }
+                            Action::Complete => {
+                                coex_complete = true;
+                                action_at = Instant::now();
+                                Ok(())
+                            }
+                        };
+                        if let Err(error) = result {
+                            eprintln!("Coexistence action failed: {error}");
+                            failure = Some("Native coexistence action failed");
+                            break;
+                        }
+                    }
+                    if coex_complete && stage != 7 && action_at.elapsed() > Duration::from_secs(2) {
+                        cx.update(|cx| cx.quit()).unwrap();
+                        stage = 7;
+                    }
+                }
+                if !coexistence && failure.is_none() && !closing && loaded {
                     if stage == 0 && title.starts_with("CEF_PROBE:ready:") {
                         println!(
                             "READY: real CEF loopback document loaded and JavaScript executed"
@@ -541,6 +739,19 @@ pub fn run() -> ExitCode {
                 if native::close_requested() && !closing {
                     closing = true;
                     close_gate.request();
+                }
+                #[cfg(feature = "coexistence")]
+                if coexistence
+                    && closing
+                    && let Some(mut page) = webkit.borrow_mut().take()
+                {
+                    if let Err(error) = page.stop_and_detach() {
+                        eprintln!("WebKit detach failed: {error}");
+                        failure = Some("WebKit coexistence teardown failed");
+                    } else {
+                        println!("PASS: WebKit detached before CEF shutdown");
+                    }
+                    drop(page);
                 }
                 if close_gate.should_dispatch()
                     && let Some(browser) = browser()

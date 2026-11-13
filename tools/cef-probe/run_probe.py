@@ -2,7 +2,8 @@
 """Opt-in, isolated macOS arm64 CEF probe. Default: print a plan, do nothing.
 
 --run permits a bounded native launch; --build additionally permits two bounded
-Cargo builds. --capture requires Screen Recording and captures only the owned
+Cargo builds. --coexistence selects system WebKit plus CEF in one GPUI window.
+--capture requires Screen Recording and captures only the owned
 root's window. No arbitrary URLs, profiles, engine flags, signing or installation.
 Only owned process roots are stopped. Announced helpers are independently
 observed for identity, policy and exit; HOME is retained for audit inspection.
@@ -35,6 +36,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGET = ROOT / "target"
 SDK = TARGET / "cef-runtime/156.0.26/macosarm64"
 FIXTURE = ROOT / "tools/cef-probe/fixtures/loopback.html"
+COEX_FIXTURE = ROOT / "tools/cef-probe/fixtures/coexistence.html"
 MAIN = TARGET / "debug/felinaut-cef-probe"
 HELPER = TARGET / "debug/felinaut-cef-probe-helper"
 MARKER_NAME = ".felinaut-cef-probe"
@@ -43,6 +45,15 @@ MARKERS = (
     "READY: real CEF loopback document loaded and JavaScript executed",
     "PASS: native text input and trusted pointer click",
     "PASS: CEF viewport followed the GPUI/native container resize",
+    "PASS: CEF OnBeforeClose, callback release, pump cancellation and shutdown before GPUI termination",
+    "PASS: original GPUI shutdown callback after CEF shutdown",
+)
+COEX_MARKERS = (
+    "PASS: system WKWebView and CEF loaded in one GPUI window",
+    "PASS: WebKit and CEF storage contexts stayed isolated",
+    "PASS: native focus and input moved WebKit to CEF to WebKit",
+    "PASS: both engine viewports followed the GPUI resize",
+    "PASS: WebKit detached before CEF shutdown",
     "PASS: CEF OnBeforeClose, callback release, pump cancellation and shutdown before GPUI termination",
     "PASS: original GPUI shutdown callback after CEF shutdown",
 )
@@ -98,7 +109,7 @@ def capture_environment(inherited):
     return env
 
 
-def build_commands():
+def build_commands(coexistence=False):
     common = [
         "cargo",
         "build",
@@ -109,20 +120,30 @@ def build_commands():
         str(TARGET),
     ]
     return [
-        common + ["--package", "felinaut-cef-probe", "--features", "runtime"],
+        common
+        + [
+            "--package",
+            "felinaut-cef-probe",
+            "--features",
+            "coexistence" if coexistence else "runtime",
+        ],
         common + ["--package", "felinaut-cef-probe-helper"],
     ]
 
 
-def plan(build=False, capture=False):
+def plan(build=False, capture=False, coexistence=False):
     return {
         "mode": "dry-run",
+        "probe_mode": "coexistence" if coexistence else "cef",
         "sdk": str(SDK),
-        "build_commands": build_commands() if build else [],
+        "build_commands": build_commands(coexistence) if build else [],
         "build_timeout_seconds_each": 180,
         "binaries": [str(MAIN), str(HELPER)],
         "output": str(TARGET / "cef-probe-run-<fresh>/felinaut-cef-probe.app"),
-        "command": ["<fresh app>/Contents/MacOS/felinaut-cef-probe", "--run-cef"],
+        "command": [
+            "<fresh app>/Contents/MacOS/felinaut-cef-probe",
+            "--run-coexistence" if coexistence else "--run-cef",
+        ],
         "home": str(Path("/tmp").resolve() / "felinaut-cef-probe-<fresh>"),
         "fixture": "own ephemeral http://127.0.0.1:<port>/ only",
         "native_timeout_seconds": 60,
@@ -292,11 +313,13 @@ def validate_renderer_canaries(text, audit):
 
 
 @contextmanager
-def fixture_server():
-    prepare_runtime.regular_file(FIXTURE)
-    if FIXTURE.stat().st_size > 1024**2:
+def fixture_server(coexistence=False):
+    fixture = COEX_FIXTURE if coexistence else FIXTURE
+    prepare_runtime.regular_file(fixture)
+    if fixture.stat().st_size > 1024**2:
         raise ProbeError("Oversized loopback fixture")
-    body = FIXTURE.read_bytes()
+    body = fixture.read_bytes()
+    routes = ("/cef", "/webkit") if coexistence else ("/",)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, format, *args):
@@ -322,7 +345,7 @@ def fixture_server():
         def do_GET(self):
             if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
                 self.reply(403)
-            elif self.path == "/":
+            elif self.path in routes:
                 self.reply(200, body, "text/html; charset=utf-8")
             elif self.path == "/favicon.ico":
                 self.reply(204)
@@ -417,10 +440,10 @@ def run_command(command, env, log_path, roots, timeout):
             raise ProbeError(f"Owned command exited {code}; inspect {log_path}")
 
 
-def build_binaries(env, output, roots):
+def build_binaries(env, output, roots, coexistence=False):
     # This exact SDK validation precedes every Cargo invocation; never rely on
     # cef-dll-sys's permissive version check or its download fallback.
-    for index, command in enumerate(build_commands()):
+    for index, command in enumerate(build_commands(coexistence)):
         sdk, _ = bundle_probe.verify_prepared_sdk(SDK, prepare_runtime.Deadline())
         build_env = sanitized_environment(env)
         build_env["CEF_PATH"] = str(sdk)
@@ -495,17 +518,22 @@ def read_log(path):
     return data.decode("utf-8", errors="replace")
 
 
-def validate_completion(text, exit_code):
+def validate_completion(text, exit_code, markers=MARKERS):
     lines = text.splitlines()
     if exit_code != 0:
         raise ProbeError(f"Native CEF root exit was {exit_code!r}, not zero")
     if any(line.startswith("FAIL:") for line in lines):
         raise ProbeError("Native log reported a failure")
-    if any(lines.count(marker) != 1 for marker in MARKERS):
+    foreign_markers = (set(MARKERS) | set(COEX_MARKERS)) - set(markers)
+    if foreign_markers.intersection(lines):
+        raise ProbeError(
+            "Native log contains completion markers from another probe mode"
+        )
+    if any(lines.count(marker) != 1 for marker in markers):
         raise ProbeError(
             "Native log is missing or duplicates required completion markers"
         )
-    positions = [lines.index(marker) for marker in MARKERS]
+    positions = [lines.index(marker) for marker in markers]
     if positions != sorted(positions):
         raise ProbeError("Native completion markers appeared out of order")
 
@@ -519,6 +547,8 @@ def monitor(
     capture_helper=None,
     budget=None,
     observer=None,
+    markers=MARKERS,
+    viewport_marker=VIEWPORT_MARKER,
 ):
     budget = budget or Budget()
     captured = None
@@ -538,7 +568,7 @@ def monitor(
         lines = text.splitlines()
         if any(line.startswith("FAIL:") for line in lines):
             raise ProbeError("Native failure reported; inspect the private native log")
-        if capture_helper is not None and captured is None and VIEWPORT_MARKER in lines:
+        if capture_helper is not None and captured is None and viewport_marker in lines:
             captured = capture_root(
                 root, capture_helper, output, capture_env, roots, budget
             )
@@ -547,7 +577,7 @@ def monitor(
             # Read again after confirmed exit so final buffered shutdown output counts.
             final_text = read_log(log_path)
             observe(final_text)
-            validate_completion(final_text, code)
+            validate_completion(final_text, code, markers)
             if capture_helper is not None and captured is None:
                 raise ProbeError("Requested completed-window capture was not obtained")
             return captured
@@ -563,7 +593,7 @@ def stop_owned(roots):
         ) from error
 
 
-def execute(build=False, capture=False):
+def execute(build=False, capture=False, coexistence=False):
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ProbeError("Native CEF probe requires a macOS arm64 desktop session")
     bundle_probe.verify_prepared_sdk(SDK, prepare_runtime.Deadline())
@@ -572,14 +602,19 @@ def execute(build=False, capture=False):
     roots, profile, root = [], None, None
     observer, canary, canary_identity = None, None, None
     success = False
-    report = {"success": False, "output": str(output), "helper_lifecycle": "unverified"}
+    report = {
+        "mode": "coexistence" if coexistence else "cef",
+        "success": False,
+        "output": str(output),
+        "helper_lifecycle": "unverified",
+    }
     with interruption_cleanup():
         try:
             inherited = dict(os.environ)
             build_env = sanitized_environment(inherited)
             capture_env = capture_environment(inherited)
             if build:
-                build_binaries(build_env, output, roots)
+                build_binaries(build_env, output, roots, coexistence)
             app = bundle_probe.create_bundle(
                 output / "felinaut-cef-probe.app", SDK, MAIN, HELPER
             )
@@ -589,13 +624,16 @@ def execute(build=False, capture=False):
             canary, canary_identity = create_canary(output)
             profile = create_profile()
             report["home"] = str(profile.path)
-            with fixture_server() as url:
+            with fixture_server(coexistence) as url:
                 env = launch_environment(inherited, profile, url, canary)
                 report["fixture_url"] = url
                 with private_log(output / "native.log") as log:
                     budget = Budget()
                     root = spawn(
-                        [app / "Contents/MacOS/felinaut-cef-probe", "--run-cef"],
+                        [
+                            app / "Contents/MacOS/felinaut-cef-probe",
+                            "--run-coexistence" if coexistence else "--run-cef",
+                        ],
                         env,
                         log,
                         roots,
@@ -617,6 +655,14 @@ def execute(build=False, capture=False):
                         capture_helper,
                         budget,
                         observer,
+                        **(
+                            {
+                                "markers": COEX_MARKERS,
+                                "viewport_marker": COEX_MARKERS[3],
+                            }
+                            if coexistence
+                            else {}
+                        ),
                     )
                     report["capture"] = str(image) if image else None
             success = True
@@ -708,12 +754,21 @@ def main(argv=None):
         action="store_true",
         help="with --run, capture only the completed owned window",
     )
+    parser.add_argument(
+        "--coexistence",
+        action="store_true",
+        help="select the system WebKit + CEF probe (still requires --run to execute)",
+    )
     args = parser.parse_args(argv)
     if not args.run:
-        print(json.dumps(plan(args.build, args.capture), indent=2))
+        print(json.dumps(plan(args.build, args.capture, args.coexistence), indent=2))
         return 0
     try:
-        report = execute(args.build, args.capture)
+        report = (
+            execute(args.build, args.capture, True)
+            if args.coexistence
+            else execute(args.build, args.capture)
+        )
     except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
         print(f"CEF probe failed: {error}", file=sys.stderr)
         return 1

@@ -8,6 +8,7 @@ pub enum Mode {
     ExistingApplication,
     Pump,
     Cef,
+    Coexistence,
 }
 
 impl Mode {
@@ -17,8 +18,9 @@ impl Mode {
             [argument] if argument == "--check-existing-app" => Ok(Self::ExistingApplication),
             [argument] if argument == "--check-pump" => Ok(Self::Pump),
             [argument] if argument == "--run-cef" => Ok(Self::Cef),
+            [argument] if argument == "--run-coexistence" => Ok(Self::Coexistence),
             _ => Err(
-                "Usage: felinaut-cef-probe --run-lifecycle | --check-existing-app | --check-pump | --run-cef",
+                "Usage: felinaut-cef-probe --run-lifecycle | --check-existing-app | --check-pump | --run-cef | --run-coexistence",
             ),
         }
     }
@@ -92,6 +94,7 @@ mod tests {
             ("--check-existing-app", Mode::ExistingApplication),
             ("--check-pump", Mode::Pump),
             ("--run-cef", Mode::Cef),
+            ("--run-coexistence", Mode::Coexistence),
         ] {
             assert_eq!(Mode::parse(&[argument.to_owned()]), Ok(expected));
         }

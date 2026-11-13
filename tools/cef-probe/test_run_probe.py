@@ -78,7 +78,7 @@ def successful_audit():
     }
 
 
-def native_fixture():
+def native_fixture(markers=runner.MARKERS):
     lines = []
     for helper in successful_audit()["helpers"]:
         pid, role = helper["pid"], helper["role"]
@@ -92,7 +92,7 @@ def native_fixture():
         )
         if role == "renderer":
             lines.append(f"CEF_RENDERER_CANARY pid={pid} outcome=denied errno=1")
-    return "\n".join(lines + list(runner.MARKERS)) + "\n"
+    return "\n".join(lines + list(markers)) + "\n"
 
 
 def png_fixture():
@@ -127,11 +127,19 @@ class RunnerTests(unittest.TestCase):
         self.fixture.write_bytes(
             b"<!doctype html><script>document.title='offline fixture'</script>"
         )
+        self.coex_fixture = self.base / "coexistence.html"
+        self.coex_fixture.write_bytes(
+            b"<!doctype html><title>offline coexistence fixture</title>"
+        )
         self.profiles = []
         self.addCleanup(self.clean_profiles)
-        fixture_patch = patch.object(runner, "FIXTURE", self.fixture)
-        fixture_patch.start()
-        self.addCleanup(fixture_patch.stop)
+        for name, fixture in (
+            ("FIXTURE", self.fixture),
+            ("COEX_FIXTURE", self.coex_fixture),
+        ):
+            fixture_patch = patch.object(runner, name, fixture)
+            fixture_patch.start()
+            self.addCleanup(fixture_patch.stop)
         for guard in (
             patch.object(
                 runner.subprocess,
@@ -192,6 +200,76 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(plan["capture"], "--capture" in arguments)
         self.assertEqual(list(self.output.iterdir()), [])
 
+    def test_coexistence_without_run_is_a_pure_plan_with_selected_commands(self):
+        for build, capture in (
+            (False, False),
+            (True, False),
+            (False, True),
+            (True, True),
+        ):
+            arguments = ["--coexistence"]
+            if build:
+                arguments.append("--build")
+            if capture:
+                arguments.append("--capture")
+            with (
+                self.subTest(build=build, capture=capture),
+                redirect_stdout(io.StringIO()) as output,
+                patch.object(
+                    runner, "execute", side_effect=AssertionError("execution")
+                ),
+                patch.object(
+                    runner, "create_output", side_effect=AssertionError("disk write")
+                ),
+                patch.object(
+                    runner.bundle_probe,
+                    "verify_prepared_sdk",
+                    side_effect=AssertionError("SDK access"),
+                ),
+            ):
+                self.assertEqual(runner.main(arguments), 0)
+            plan = json.loads(output.getvalue())
+            self.assertEqual(plan, runner.plan(build, capture, True))
+            self.assertEqual(plan["mode"], "dry-run")
+            self.assertEqual(plan["probe_mode"], "coexistence")
+            self.assertEqual(plan["command"][-1], "--run-coexistence")
+            self.assertEqual(plan["capture"], capture)
+            self.assertEqual(
+                plan["build_commands"], runner.build_commands(True) if build else []
+            )
+        self.assertEqual(runner.plan()["probe_mode"], "cef")
+        self.assertEqual(runner.plan()["command"][-1], "--run-cef")
+        self.assertEqual(list(self.output.iterdir()), [])
+
+    def test_coexistence_cli_forwards_mode_only_with_explicit_run(self):
+        for build, capture in (
+            (False, False),
+            (True, False),
+            (False, True),
+            (True, True),
+        ):
+            arguments = ["--run", "--coexistence"]
+            if build:
+                arguments.append("--build")
+            if capture:
+                arguments.append("--capture")
+            with (
+                self.subTest(build=build, capture=capture),
+                patch.object(
+                    runner, "execute", return_value={"success": True}
+                ) as execute,
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(runner.main(arguments), 0)
+            execute.assert_called_once_with(build, capture, True)
+        with (
+            patch.object(
+                runner, "execute", side_effect=runner.ProbeError("coexistence failure")
+            ),
+            redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(runner.main(["--run", "--coexistence"]), 1)
+
     def test_parser_rejects_urls_profiles_and_unsafe_flags(self):
         for arguments in (
             ["--url", "https://example.com"],
@@ -200,6 +278,9 @@ class RunnerTests(unittest.TestCase):
             ["--single-process"],
             ["--r"],
             ["https://example.com"],
+            ["--coexistence", "--url", "http://127.0.0.1:1234/cef"],
+            ["--coexistence", "--features", "engine-cef"],
+            ["--coexistence", "--run-coexistence"],
         ):
             with self.subTest(arguments=arguments), redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
@@ -560,6 +641,8 @@ class RunnerTests(unittest.TestCase):
             "http://u:p@127.0.0.1:3/",
             "http://127.0.0.1/",
             "http://127.0.0.1:3/x",
+            "http://127.0.0.1:3/cef",
+            "http://127.0.0.1:3/webkit",
             "http://127.0.0.1:3/?x",
             "http://127.0.0.1:3/#x",
         ):
@@ -701,6 +784,130 @@ class RunnerTests(unittest.TestCase):
                 connection.close()
         self.assertEqual(diagnostics.getvalue(), "")
 
+    def test_coexistence_fixture_serves_only_exact_engine_routes_with_same_policy(self):
+        with redirect_stderr(io.StringIO()) as diagnostics:
+            with runner.fixture_server(True) as url:
+                parsed = urlsplit(url)
+                self.assertEqual(url, f"http://127.0.0.1:{parsed.port}/")
+                cases = [
+                    ("GET", "/cef", None, 200),
+                    ("GET", "/webkit", None, 200),
+                    ("GET", "/", None, 404),
+                    ("GET", "/favicon.ico", None, 204),
+                ]
+                for route in ("/cef", "/webkit"):
+                    cases.extend(
+                        ("GET", path, f"127.0.0.1:{parsed.port}", 404)
+                        for path in (
+                            route + "?query",
+                            route + "/",
+                            route + "/../secret",
+                            "/%63ef",
+                            "/unknown",
+                            url + route.lstrip("/"),
+                            "http://attacker.invalid" + route,
+                        )
+                    )
+                    cases.append(("GET", route, "attacker.invalid", 403))
+                    cases.append(("GET", route, f"localhost:{parsed.port}", 403))
+                    cases.extend(
+                        (method, route, None, 405)
+                        for method in (
+                            "POST",
+                            "HEAD",
+                            "PUT",
+                            "DELETE",
+                            "OPTIONS",
+                            "PATCH",
+                            "TRACE",
+                            "CONNECT",
+                        )
+                    )
+                for method, path, host, status in cases:
+                    with self.subTest(method=method, path=path, host=host):
+                        connection = http.client.HTTPConnection(
+                            parsed.hostname, parsed.port, timeout=2
+                        )
+                        try:
+                            connection.request(
+                                method, path, headers={"Host": host} if host else {}
+                            )
+                            response = connection.getresponse()
+                            self.assertEqual(response.status, status)
+                            self.assertEqual(
+                                response.getheader("Content-Security-Policy"),
+                                runner.CSP,
+                            )
+                            self.assertEqual(
+                                response.getheader("Cache-Control"), "no-store"
+                            )
+                            self.assertEqual(
+                                response.getheader("X-Content-Type-Options"), "nosniff"
+                            )
+                            self.assertEqual(
+                                response.getheader("Referrer-Policy"), "no-referrer"
+                            )
+                            self.assertEqual(response.getheader("Connection"), "close")
+                            body = response.read()
+                            self.assertEqual(
+                                body,
+                                self.coex_fixture.read_bytes()
+                                if status == 200
+                                else b"",
+                            )
+                            if status == 200:
+                                self.assertEqual(
+                                    response.getheader("Content-Type"),
+                                    "text/html; charset=utf-8",
+                                )
+                        finally:
+                            connection.close()
+            connection = http.client.HTTPConnection(
+                parsed.hostname, parsed.port, timeout=0.2
+            )
+            try:
+                with self.assertRaises(OSError):
+                    connection.request("GET", "/cef")
+            finally:
+                connection.close()
+        self.assertEqual(diagnostics.getvalue(), "")
+
+    def test_fixture_modes_do_not_expose_each_others_routes_or_files(self):
+        with runner.fixture_server() as url:
+            parsed = urlsplit(url)
+            for route in ("/cef", "/webkit", "/coexistence.html"):
+                with self.subTest(route=route):
+                    connection = http.client.HTTPConnection(
+                        parsed.hostname, parsed.port, timeout=2
+                    )
+                    try:
+                        connection.request("GET", route)
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 404)
+                        self.assertEqual(response.read(), b"")
+                    finally:
+                        connection.close()
+        self.fixture.unlink()
+        with runner.fixture_server(True):
+            pass
+        self.coex_fixture.unlink()
+        with self.assertRaises((ValueError, OSError)):
+            with runner.fixture_server(True):
+                self.fail("missing coexistence fixture must not fall back")
+
+    def test_coexistence_fixture_rejects_oversized_and_redirected_files_before_serving(
+        self,
+    ):
+        self.coex_fixture.write_bytes(b"x" * (1024**2 + 1))
+        with self.assertRaisesRegex(runner.ProbeError, "Oversized"):
+            with runner.fixture_server(True):
+                self.fail("oversized fixture served")
+        self.coex_fixture.unlink()
+        self.coex_fixture.symlink_to(self.fixture)
+        with self.assertRaises((ValueError, OSError)):
+            with runner.fixture_server(True):
+                self.fail("redirected fixture served")
+
     def test_server_closes_even_if_body_raises(self):
         with self.assertRaisesRegex(runner.ProbeError, "interrupted"):
             with runner.fixture_server() as url:
@@ -737,6 +944,67 @@ class RunnerTests(unittest.TestCase):
         ):
             with self.subTest(text=text), self.assertRaises(runner.ProbeError):
                 runner.validate_completion(text, 0)
+
+    def test_coexistence_markers_match_the_native_contract(self):
+        self.assertEqual(
+            runner.COEX_MARKERS,
+            (
+                "PASS: system WKWebView and CEF loaded in one GPUI window",
+                "PASS: WebKit and CEF storage contexts stayed isolated",
+                "PASS: native focus and input moved WebKit to CEF to WebKit",
+                "PASS: both engine viewports followed the GPUI resize",
+                "PASS: WebKit detached before CEF shutdown",
+                "PASS: CEF OnBeforeClose, callback release, pump cancellation and shutdown before GPUI termination",
+                "PASS: original GPUI shutdown callback after CEF shutdown",
+            ),
+        )
+
+    def test_coexistence_completion_requires_every_exact_ordered_unique_marker(self):
+        markers = runner.COEX_MARKERS
+        complete = "\n".join(markers) + "\n"
+        runner.validate_completion(complete, 0, markers)
+        runner.validate_completion(native_fixture(markers), 0, markers=markers)
+        for code in (None, 1, -9):
+            with self.subTest(code=code), self.assertRaises(runner.ProbeError):
+                runner.validate_completion(complete, code, markers)
+        invalid = [
+            "",
+            complete + "FAIL: fixture failure\n",
+            "\n".join(reversed(markers)),
+        ]
+        for index, marker in enumerate(markers):
+            invalid.extend(
+                (
+                    "\n".join(markers[:index] + markers[index + 1 :]),
+                    complete + marker + "\n",
+                    complete.replace(marker, "prefix " + marker),
+                    complete.replace(marker, marker + " suffix"),
+                )
+            )
+            if index + 1 < len(markers):
+                swapped = list(markers)
+                swapped[index : index + 2] = reversed(swapped[index : index + 2])
+                invalid.append("\n".join(swapped))
+        for index, text in enumerate(invalid):
+            with self.subTest(invalid=index), self.assertRaises(runner.ProbeError):
+                runner.validate_completion(text, 0, markers)
+
+    def test_completion_refuses_wrong_mode_and_mixed_mode_markers(self):
+        for selected, other in (
+            (runner.MARKERS, runner.COEX_MARKERS),
+            (runner.COEX_MARKERS, runner.MARKERS),
+        ):
+            with self.subTest(selected=selected):
+                with self.assertRaises(runner.ProbeError):
+                    runner.validate_completion("\n".join(other), 0, selected)
+                for foreign in set(other) - set(selected):
+                    with (
+                        self.subTest(foreign=foreign),
+                        self.assertRaisesRegex(runner.ProbeError, "another probe mode"),
+                    ):
+                        runner.validate_completion(
+                            "\n".join((*selected, foreign)), 0, selected
+                        )
 
     def test_log_inspection_and_native_budget_are_bounded(self):
         log = self.output / "native.log"
@@ -802,6 +1070,45 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.build_binaries({}, self.output, [])
             command.assert_not_called()
+
+    def test_coexistence_build_selects_only_the_host_feature_and_still_prevalidates_sdk(
+        self,
+    ):
+        default = runner.build_commands()
+        coex = runner.build_commands(True)
+        self.assertEqual(coex[0][:-1], default[0][:-1])
+        self.assertEqual(default[0][-2:], ["--features", "runtime"])
+        self.assertEqual(coex[0][-2:], ["--features", "coexistence"])
+        self.assertEqual(coex[1], default[1])
+        self.assertNotIn("--features", coex[1])
+        with (
+            patch.object(
+                runner.bundle_probe,
+                "verify_prepared_sdk",
+                return_value=(runner.SDK, {}),
+            ) as verify,
+            patch.object(runner, "run_command") as command,
+        ):
+            runner.build_binaries(
+                {"CEF_PATH": "/wrong", "FELINAUT_ENGINE": "cef"}, self.output, [], True
+            )
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual([call.args[0] for call in command.call_args_list], coex)
+        for index, call in enumerate(command.call_args_list):
+            self.assertEqual(call.args[1], {"CEF_PATH": str(runner.SDK)})
+            self.assertEqual(call.args[2], self.output / f"build-{index + 1}.log")
+            self.assertEqual(call.args[4], 180)
+        with (
+            patch.object(
+                runner.bundle_probe,
+                "verify_prepared_sdk",
+                side_effect=ValueError("pin mismatch"),
+            ),
+            patch.object(runner, "run_command") as command,
+            self.assertRaisesRegex(ValueError, "pin mismatch"),
+        ):
+            runner.build_binaries({}, self.output, [], True)
+        command.assert_not_called()
 
     def test_spawn_and_timeout_track_only_owned_root_without_process_groups(self):
         root, roots = Root(), []
@@ -942,6 +1249,83 @@ class RunnerTests(unittest.TestCase):
             runner.monitor(root, log, self.output, {}, [], self.output / "selector")
         capture.assert_not_called()
 
+    def test_coexistence_monitor_waits_for_both_viewports_before_capture_and_shutdown(
+        self,
+    ):
+        root = Root()
+        log = self.output / "native.log"
+        log.write_text("\n".join(runner.COEX_MARKERS[:3]) + "\n")
+        image = self.output / "capture.png"
+        sleeps = []
+
+        def resize(_):
+            sleeps.append(True)
+            with log.open("a") as output:
+                output.write(runner.COEX_MARKERS[3] + "\n")
+
+        def capture(*args):
+            self.assertEqual(sleeps, [True], "capture must wait for the resize marker")
+            with log.open("a") as output:
+                output.write("\n".join(runner.COEX_MARKERS[4:]) + "\n")
+            root.returncode = 0
+            return image
+
+        observer = Mock(spec=["observe"])
+        with (
+            patch.object(runner.time, "sleep", side_effect=resize),
+            patch.object(runner, "capture_root", side_effect=capture) as captured,
+        ):
+            self.assertEqual(
+                runner.monitor(
+                    root,
+                    log,
+                    self.output,
+                    {},
+                    [],
+                    self.output / "selector",
+                    observer=observer,
+                    markers=runner.COEX_MARKERS,
+                    viewport_marker=runner.COEX_MARKERS[3],
+                ),
+                image,
+            )
+        captured.assert_called_once()
+        self.assertEqual(
+            "".join(call.args[0] for call in observer.observe.call_args_list),
+            "\n".join(runner.COEX_MARKERS) + "\n",
+        )
+        log.write_text("\n".join(runner.COEX_MARKERS[:4]) + "\n")
+        with (
+            patch.object(runner, "capture_root", return_value=image),
+            self.assertRaisesRegex(runner.ProbeError, "missing or duplicates"),
+        ):
+            runner.monitor(
+                root,
+                log,
+                self.output,
+                {},
+                [],
+                self.output / "selector",
+                markers=runner.COEX_MARKERS,
+                viewport_marker=runner.COEX_MARKERS[3],
+            )
+        log.write_text(native_fixture())
+        with (
+            patch.object(runner, "capture_root") as captured,
+            self.assertRaises(runner.ProbeError),
+        ):
+            runner.monitor(
+                root,
+                log,
+                self.output,
+                {},
+                [],
+                self.output / "selector",
+                markers=runner.COEX_MARKERS,
+                viewport_marker=runner.COEX_MARKERS[3],
+            )
+        captured.assert_not_called()
+
     def test_monitor_feeds_only_complete_appended_lines_once_including_exit_tail(self):
         root = Root()
         root.poll = Mock(side_effect=[None, None, None, 0])
@@ -1030,7 +1414,8 @@ class RunnerTests(unittest.TestCase):
             return value
 
         @contextmanager
-        def server():
+        def server(coexistence=False):
+            state["server_coexistence"] = coexistence
             try:
                 yield "http://127.0.0.1:45678/"
             finally:
@@ -1072,6 +1457,8 @@ class RunnerTests(unittest.TestCase):
         with self.execution() as state:
             report = runner.execute()
         self.assertTrue(report["success"])
+        self.assertEqual(report["mode"], "cef")
+        self.assertFalse(state["server_coexistence"])
         self.assertTrue(state["server_stopped"])
         self.assertTrue(state["profile"].path.exists())
         self.assertEqual(report["home_cleanup"], "retained-audit-artifacts")
@@ -1099,6 +1486,167 @@ class RunnerTests(unittest.TestCase):
         )
         for name in ("native.log", "report.json", "sandbox-canary"):
             self.assertEqual((self.output / name).stat().st_mode & 0o777, 0o600)
+
+    def test_mock_coexistence_cli_builds_host_feature_launches_and_reports_strict_audit(
+        self,
+    ):
+        text = native_fixture(runner.COEX_MARKERS)
+        with (
+            self.execution(text=text) as state,
+            patch.dict(
+                runner.os.environ, {"FELINAUT_ENGINE": "cef", "FELINAUT_AGENT": "1"}
+            ),
+            patch.object(runner, "run_command") as build,
+            patch.object(
+                runner, "compile_capture_helper", return_value=self.output / "selector"
+            ),
+            patch.object(
+                runner,
+                "capture_root",
+                return_value=self.output / "cef-probe-window.png",
+            ) as capture,
+        ):
+            self.assertEqual(
+                runner.main(["--run", "--build", "--capture", "--coexistence"]), 0
+            )
+        report = json.loads((self.output / "report.json").read_text())
+        self.assertTrue(report["success"])
+        self.assertEqual(report["mode"], "coexistence")
+        self.assertEqual(
+            [call.args[0] for call in build.call_args_list], runner.build_commands(True)
+        )
+        self.assertEqual(
+            state["command"],
+            [
+                self.output / "probe.app/Contents/MacOS/felinaut-cef-probe",
+                "--run-coexistence",
+            ],
+        )
+        self.assertTrue(state["server_coexistence"])
+        self.assertTrue(state["server_stopped"])
+        self.assertEqual(report["fixture_url"], "http://127.0.0.1:45678/")
+        self.assertEqual(state["env"]["FELINAUT_CEF_PROBE_URL"], report["fixture_url"])
+        self.assertEqual(state["env"]["HOME"], str(state["profile"].path))
+        self.assertEqual(state["env"]["CFFIXED_USER_HOME"], str(state["profile"].path))
+        self.assertEqual(
+            state["env"]["FELINAUT_CEF_PROBE_HOME"], str(state["profile"].path)
+        )
+        self.assertEqual(
+            (state["profile"].path / runner.MARKER_NAME).read_bytes(), runner.MARKER
+        )
+        self.assertNotIn("FELINAUT_ENGINE", state["env"])
+        self.assertNotIn("FELINAUT_AGENT", state["env"])
+        self.assertEqual(report["helper_audit"], state["audit"])
+        self.assertEqual(report["helper_lifecycle"], "verified-announced-helper-exit")
+        for key in (
+            "helper_audit_passed",
+            "renderer_canary_denied",
+            "notification_broker_absent",
+            "canary_control_unchanged",
+            "home_retained",
+        ):
+            self.assertTrue(report[key], key)
+        self.assertEqual(report["home_cleanup"], "retained-audit-artifacts")
+        self.assertEqual(report["root_exit"], 0)
+        self.assertTrue(state["profile"].path.exists())
+        state["create_observer"].assert_called_once()
+        state["observer"].observe.assert_called_once_with(text)
+        state["observer"].finish.assert_called_once_with(deadline_seconds=3)
+        self.assertEqual(state["exit_at_finish"], 0)
+        capture.assert_called_once()
+        self.assertEqual(report["capture"], str(self.output / "cef-probe-window.png"))
+
+    def test_mock_coexistence_refuses_cef_only_mixed_missing_and_nonzero_completion(
+        self,
+    ):
+        complete = native_fixture(runner.COEX_MARKERS)
+        for index, (text, code) in enumerate(
+            (
+                (native_fixture(), 0),
+                (complete + runner.MARKERS[0] + "\n", 0),
+                (complete.replace(runner.COEX_MARKERS[4] + "\n", ""), 0),
+                (complete, 1),
+            )
+        ):
+            with self.subTest(case=index):
+                self.output = self.base / f"coex-completion-{index}"
+                self.output.mkdir(mode=0o700)
+                with self.execution(text=text, code=code) as state:
+                    with self.assertRaises(runner.ProbeError):
+                        runner.execute(coexistence=True)
+                report = json.loads((self.output / "report.json").read_text())
+                self.assertEqual(report["mode"], "coexistence")
+                self.assertFalse(report["success"])
+                self.assertTrue(report["helper_audit_passed"])
+                self.assertEqual(report["home_cleanup"], "preserved")
+                self.assertTrue(state["profile"].path.exists())
+                self.assertTrue(state["server_stopped"])
+                state["observer"].finish.assert_called_once_with(deadline_seconds=3)
+
+    def test_mock_coexistence_keeps_all_audit_gates_mandatory(self):
+        for case in (
+            "audit-gap",
+            "no-helpers",
+            "missing-renderer",
+            "missing-gpu-process",
+            "missing-utility",
+            "seatbelt-renderer",
+            "seatbelt-gpu-process",
+            "seatbelt-utility",
+            "notification-broker",
+            "renderer-canary",
+            "changed-canary",
+        ):
+            with self.subTest(case=case):
+                self.output = self.base / ("coex-" + case)
+                self.output.mkdir(mode=0o700)
+                audit = successful_audit()
+                text = native_fixture(runner.COEX_MARKERS)
+                if case == "audit-gap":
+                    audit["ok"] = False
+                    audit["gaps"] = ["announced helper exit is unverified"]
+                elif case == "no-helpers":
+                    audit["helpers"] = []
+                    for role in audit["roles"].values():
+                        role["count"] = 0
+                elif case.startswith("missing-"):
+                    audit["roles"][case.removeprefix("missing-")]["count"] = 0
+                elif case.startswith("seatbelt-"):
+                    role = case.removeprefix("seatbelt-")
+                    next(
+                        helper for helper in audit["helpers"] if helper["role"] == role
+                    )["seatbelt"] = 0
+                elif case == "notification-broker":
+                    audit["helpers"][2]["subtype"] = (
+                        "mac_notifications.mojom.MacNotificationProvider"
+                    )
+                elif case == "renderer-canary":
+                    text = text.replace(
+                        "CEF_RENDERER_CANARY pid=43214 outcome=denied errno=1\n", ""
+                    )
+                with (
+                    self.execution(text=text, audit=audit) as state,
+                    patch.object(
+                        runner, "validate_canary", wraps=runner.validate_canary
+                    ) as control,
+                ):
+                    if case == "changed-canary":
+                        control.side_effect = [(1, 2, 3, 4), (1, 2, 3, 5)]
+                    with self.assertRaisesRegex(
+                        runner.ProbeError, "inspect report.json"
+                    ):
+                        runner.execute(False, False, True)
+                report = json.loads((self.output / "report.json").read_text())
+                self.assertEqual(report["mode"], "coexistence")
+                self.assertFalse(report["success"])
+                self.assertFalse(report["helper_audit_passed"])
+                self.assertEqual(report["helper_audit"], audit)
+                self.assertEqual(report["root_exit"], 0)
+                self.assertEqual(report["home_cleanup"], "preserved")
+                self.assertTrue(report["home_retained"])
+                self.assertTrue(state["profile"].path.exists())
+                self.assertTrue(state["server_stopped"])
+                state["observer"].finish.assert_called_once_with(deadline_seconds=3)
 
     def test_successful_cli_exit_does_not_treat_retained_home_as_failure(self):
         with self.execution() as state:

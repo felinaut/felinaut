@@ -13,6 +13,7 @@ resolver = "2"
 
 [features]
 runtime = ["dep:cef", "dep:cef-dll-sys", "dep:raw-window-handle", "dep:url"]
+coexistence = ["runtime", "dep:wry"]
 
 [dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"] }
@@ -26,6 +27,9 @@ cef = { version = "=156.4.0", optional = true, default-features = false, feature
 cef-dll-sys = { version = "=156.4.0", optional = true, features = ["sandbox"] }
 raw-window-handle = { version = "0.6.2", optional = true }
 url = { version = "2.5", optional = true }
+wry = { version = "=0.57.1", optional = true, default-features = false, features = [
+    "os-webview",
+] }
 
 [build-dependencies]
 cc = "1"
