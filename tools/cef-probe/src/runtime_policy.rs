@@ -5,6 +5,17 @@ use std::{
 
 pub const MARKER: &[u8] = b"felinaut-cef-runtime-v1\n";
 
+pub fn fixture_disabled_features(existing: &str) -> String {
+    let mut features: Vec<_> = existing
+        .split(',')
+        .filter(|value| !value.is_empty())
+        .collect();
+    if !features.contains(&"SystemNotifications") {
+        features.push("SystemNotifications");
+    }
+    features.join(",")
+}
+
 pub fn target_url(value: &str) -> Result<url::Url, String> {
     if value.len() > 2048 {
         return Err("Loopback fixture URL exceeds the probe limit".into());
@@ -99,6 +110,27 @@ pub fn profile(requested: &Path, home: &Path, cocoa: &Path) -> Result<PathBuf, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabling_unused_os_notifications_preserves_cef_feature_overrides() {
+        assert_eq!(fixture_disabled_features(""), "SystemNotifications");
+        assert_eq!(
+            fixture_disabled_features("CEFWorkaround,Other<Trial"),
+            "CEFWorkaround,Other<Trial,SystemNotifications"
+        );
+        assert_eq!(
+            fixture_disabled_features("SystemNotifications,CEFWorkaround"),
+            "SystemNotifications,CEFWorkaround"
+        );
+        assert_eq!(
+            fixture_disabled_features(",CEFWorkaround,,"),
+            "CEFWorkaround,SystemNotifications"
+        );
+        assert_eq!(
+            fixture_disabled_features(&fixture_disabled_features("CEFWorkaround")),
+            "CEFWorkaround,SystemNotifications"
+        );
+    }
 
     #[test]
     fn only_explicit_loopback_http_without_credentials_is_accepted() {

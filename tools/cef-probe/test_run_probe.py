@@ -1,5 +1,6 @@
 """Offline runner tests: no GUI, compiler, engine or real subprocess is launched."""
 
+import errno
 import http.client
 import io
 import json
@@ -43,6 +44,57 @@ class Root:
         return self.returncode
 
 
+def successful_audit():
+    helpers = [
+        {
+            "pid": 43211 + index,
+            "role": role,
+            "seatbelt": 1,
+            "ready": True,
+            "policy_verified": True,
+            "exit_evidence": "kqueue_NOTE_EXIT",
+            "gaps": [],
+        }
+        for index, role in enumerate(("renderer", "gpu-process", "utility", "renderer"))
+    ]
+    return {
+        "ok": True,
+        "root_pid": 43210,
+        "host_launch_count": len(helpers),
+        "distinct_starts": len(helpers),
+        "record_counts": {"start": 4, "ready": 4, "launch": 4},
+        "controls": {"canary_open": True, "allowed_bundle_file": True},
+        "roles": {
+            role: {
+                "count": sum(helper["role"] == role for helper in helpers),
+                "policy_verified": True,
+                "exits_verified": True,
+                "gaps": [],
+            }
+            for role in ("renderer", "gpu-process", "utility")
+        },
+        "helpers": helpers,
+        "gaps": [],
+    }
+
+
+def native_fixture():
+    lines = []
+    for helper in successful_audit()["helpers"]:
+        pid, role = helper["pid"], helper["role"]
+        lines.extend(
+            (
+                "CEF_HELPER_LAUNCH",
+                f"CEF_HELPER_START pid={pid} ppid=43210 role={role} "
+                f"subtype=none sandbox={role} seatbelt=1",
+                f"CEF_HELPER_SANDBOX_READY pid={pid}",
+            )
+        )
+        if role == "renderer":
+            lines.append(f"CEF_RENDERER_CANARY pid={pid} outcome=denied errno=1")
+    return "\n".join(lines + list(runner.MARKERS)) + "\n"
+
+
 def png_fixture():
     def chunk(kind, data):
         return (
@@ -80,6 +132,20 @@ class RunnerTests(unittest.TestCase):
         fixture_patch = patch.object(runner, "FIXTURE", self.fixture)
         fixture_patch.start()
         self.addCleanup(fixture_patch.stop)
+        for guard in (
+            patch.object(
+                runner.subprocess,
+                "Popen",
+                side_effect=AssertionError("real subprocess"),
+            ),
+            patch.object(
+                runner.helper_observer,
+                "NativeAPI",
+                side_effect=AssertionError("real native API"),
+            ),
+        ):
+            guard.start()
+            self.addCleanup(guard.stop)
 
     def clean_profiles(self):
         for profile in self.profiles:
@@ -300,6 +366,164 @@ class RunnerTests(unittest.TestCase):
             runner.capture_environment({}), {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
         )
 
+    def test_native_canary_environment_uses_explicit_path_not_shell_override(self):
+        profile = self.profile()
+        canary, _ = runner.create_canary(self.output)
+        inherited = {"FELINAUT_CEF_PROBE_CANARY": "/outside/shell-canary"}
+        without = runner.launch_environment(
+            inherited, profile, "http://127.0.0.1:45678/"
+        )
+        self.assertNotIn("FELINAUT_CEF_PROBE_CANARY", without)
+        with_canary = runner.launch_environment(
+            inherited, profile, "http://127.0.0.1:45678/", canary
+        )
+        self.assertEqual(
+            with_canary, {**without, "FELINAUT_CEF_PROBE_CANARY": str(canary)}
+        )
+        self.assertEqual(
+            inherited, {"FELINAUT_CEF_PROBE_CANARY": "/outside/shell-canary"}
+        )
+        self.assertNotIn(
+            "FELINAUT_CEF_PROBE_CANARY", runner.sanitized_environment(inherited)
+        )
+        self.assertNotIn(
+            "FELINAUT_CEF_PROBE_CANARY", runner.capture_environment(inherited)
+        )
+
+    def test_canary_is_private_owned_and_returns_stable_file_identity(self):
+        path, identity = runner.create_canary(self.output)
+        self.assertEqual(path, self.output / "sandbox-canary")
+        self.assertFalse(path.is_symlink())
+        info = path.stat()
+        self.assertEqual(info.st_uid, os.getuid())
+        self.assertEqual(info.st_mode & 0o777, 0o600)
+        self.assertEqual(path.read_bytes(), runner.CANARY_BYTES)
+        self.assertEqual(
+            identity, (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+        )
+        self.assertEqual(runner.validate_canary(path), identity)
+        self.assertEqual(runner.validate_canary(path), identity)
+        self.assertEqual(list(self.output.iterdir()), [path])
+
+    def test_canary_rejects_empty_changed_truncated_and_appended_contents(self):
+        path, _ = runner.create_canary(self.output)
+        for content in (
+            b"",
+            b"wrong fixture\n",
+            runner.CANARY_BYTES[:-1],
+            runner.CANARY_BYTES + b"extra",
+            runner.CANARY_BYTES + b"x" * 256,
+        ):
+            with self.subTest(content=content):
+                path.write_bytes(content)
+                with self.assertRaisesRegex(runner.ProbeError, "changed"):
+                    runner.validate_canary(path)
+        with self.assertRaises(runner.ProbeError):
+            runner.validate_canary(self.output)
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            runner.validate_canary(path)
+
+    def test_canary_identity_detects_metadata_change_and_same_bytes_replacement(self):
+        path, original = runner.create_canary(self.output)
+        info = path.stat()
+        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+        changed = runner.validate_canary(path)
+        self.assertEqual(changed[:3], original[:3])
+        self.assertNotEqual(changed[3], original[3])
+        path.rename(self.output / "original-canary")
+        path.write_bytes(runner.CANARY_BYTES)
+        replacement = runner.validate_canary(path)
+        self.assertNotEqual(replacement[:2], original[:2])
+        self.assertEqual(replacement[2], original[2])
+
+    def test_canary_duplicate_creation_does_not_overwrite_existing_file(self):
+        path, original = runner.create_canary(self.output)
+        with self.assertRaises(FileExistsError):
+            runner.create_canary(self.output)
+        self.assertEqual(runner.validate_canary(path), original)
+        path.write_bytes(b"preserve existing foreign content")
+        with self.assertRaises(FileExistsError):
+            runner.create_canary(self.output)
+        self.assertEqual(path.read_bytes(), b"preserve existing foreign content")
+
+    def test_canary_creation_and_validation_refuse_symlinks_without_touching_target(
+        self,
+    ):
+        target = self.base / "canary-target"
+        target.write_bytes(runner.CANARY_BYTES)
+        before = target.stat()
+        path = self.output / "sandbox-canary"
+        path.symlink_to(target)
+        with self.assertRaises(FileExistsError):
+            runner.create_canary(self.output)
+        with self.assertRaises(OSError) as error:
+            runner.validate_canary(path)
+        self.assertEqual(error.exception.errno, errno.ELOOP)
+        self.assertTrue(path.is_symlink())
+        self.assertEqual(target.read_bytes(), runner.CANARY_BYTES)
+        self.assertEqual(target.stat().st_mtime_ns, before.st_mtime_ns)
+        self.assertEqual(target.stat().st_ino, before.st_ino)
+
+    def test_renderer_canaries_accept_exact_denials_for_two_renderers_only(self):
+        audit = successful_audit()
+        records = (
+            "CEF_RENDERER_CANARY pid=43211 outcome=denied errno=1",
+            "CEF_RENDERER_CANARY pid=43214 outcome=denied errno=1",
+        )
+        for order in (records, tuple(reversed(records))):
+            with self.subTest(order=order):
+                text = "unrelated native output\n\n" + "\n".join(order)
+                self.assertTrue(runner.validate_renderer_canaries(text, audit))
+        self.assertTrue(runner.validate_renderer_canaries(native_fixture(), audit))
+
+    def test_renderer_canaries_reject_malformed_duplicate_foreign_missing_and_io_errors(
+        self,
+    ):
+        audit = successful_audit()
+        first = "CEF_RENDERER_CANARY pid=43211 outcome=denied errno=1\n"
+        second = "CEF_RENDERER_CANARY pid=43214 outcome=denied errno=1\n"
+        for label, text in {
+            "empty": "",
+            "unrelated only": "native output\n",
+            "missing second renderer": first,
+            "missing first renderer": second,
+            "duplicate": first + second + first,
+            "foreign pid": first + second.replace("43214", "99999"),
+            "gpu is not renderer": first + second.replace("43214", "43212"),
+            "utility is not renderer": first + second.replace("43214", "43213"),
+            "extra foreign record": first + second + first.replace("43211", "99999"),
+            "allowed read": first
+            + second.replace("outcome=denied errno=1", "outcome=allowed errno=0"),
+            "io error": first + second.replace("denied", "error"),
+            "zero errno": first + second.replace("errno=1", "errno=0"),
+            "missing file is not denial": first + second.replace("errno=1", "errno=2"),
+            "other permission error": first + second.replace("errno=1", "errno=13"),
+            "negative errno": first + second.replace("errno=1", "errno=-1"),
+            "nonnumeric errno": first + second.replace("errno=1", "errno=EPERM"),
+            "missing errno": first + second.replace(" errno=1", ""),
+            "zero pid": first + second.replace("43214", "0"),
+            "negative pid": first + second.replace("43214", "-1"),
+            "leading zero pid": first + second.replace("43214", "043214"),
+            "oversize pid": first + second.replace("43214", "12345678901"),
+            "nonnumeric pid": first + second.replace("43214", "renderer"),
+            "extra field": first + second.rstrip() + " extra=1\n",
+            "trailing whitespace": first + second.rstrip() + " \n",
+            "malformed prefix": first + second + "CEF_RENDERER_CANARY_BROKEN\n",
+            "prefixed marker": first + "prefix " + second,
+        }.items():
+            with self.subTest(case=label):
+                self.assertFalse(runner.validate_renderer_canaries(text, audit))
+        without_renderers = {
+            **audit,
+            "helpers": [h for h in audit["helpers"] if h["role"] != "renderer"],
+        }
+        for text in ("", first + second):
+            with self.subTest(no_renderers=text):
+                self.assertFalse(
+                    runner.validate_renderer_canaries(text, without_renderers)
+                )
+
     def test_profile_rejects_permissions_marker_symlinks_and_nonfresh_content(self):
         profile = self.profile()
         profile.path.chmod(0o755)
@@ -346,10 +570,14 @@ class RunnerTests(unittest.TestCase):
                 runner.launch_environment({}, profile, url)
 
     def test_profile_is_never_deleted_while_helper_exit_is_unverified(self):
-        for success, root in (
-            (False, Root(0)),
-            (True, Root()),
-            (True, Mock(poll=Mock(side_effect=OSError("unconfirmed")))),
+        for success, root, reason in (
+            (False, Root(0), "unsuccessful run/shutdown"),
+            (True, Root(), "owned root stop is unconfirmed"),
+            (
+                True,
+                Mock(poll=Mock(side_effect=OSError("unconfirmed"))),
+                "owned root stop is unconfirmed",
+            ),
         ):
             profile = self.profile()
             with redirect_stderr(io.StringIO()) as diagnostics:
@@ -358,7 +586,7 @@ class RunnerTests(unittest.TestCase):
                 )
             self.assertTrue(profile.path.exists())
             self.assertIn(str(profile.path), diagnostics.getvalue())
-            self.assertIn("helper lifecycle is unverified", diagnostics.getvalue())
+            self.assertIn(reason, diagnostics.getvalue())
         profile = self.profile()
         (profile.path / runner.MARKER_NAME).write_bytes(b"wrong")
         with redirect_stderr(io.StringIO()):
@@ -382,6 +610,37 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("native root passed", diagnostics.getvalue())
         self.assertTrue(profile.path.exists())
         self.assertEqual(helper_cache.read_bytes(), b"a helper may still be using this")
+
+    def test_verified_helper_exit_retains_artifacts_only_after_success_and_root_stop(
+        self,
+    ):
+        for success, code, expected in (
+            (True, 0, "retained-audit-artifacts"),
+            (False, 0, "preserved"),
+            (True, None, "preserved"),
+        ):
+            with self.subTest(success=success, code=code):
+                profile = self.profile()
+                artifact = profile.path / "audit-artifact"
+                artifact.write_bytes(b"retain for inspection")
+                with (
+                    redirect_stderr(io.StringIO()) as diagnostics,
+                    patch("shutil.rmtree") as delete,
+                ):
+                    self.assertEqual(
+                        runner.finish_profile(
+                            profile, success, [Root(code)], helper_exit_verified=True
+                        ),
+                        expected,
+                    )
+                delete.assert_not_called()
+                self.assertTrue(profile.path.exists())
+                self.assertEqual(artifact.read_bytes(), b"retain for inspection")
+                if expected == "retained-audit-artifacts":
+                    self.assertIn(
+                        "announced helper exits verified", diagnostics.getvalue()
+                    )
+                    self.assertNotIn("unverified", diagnostics.getvalue())
 
     def test_output_is_fresh_private_and_private_logs_refuse_overwrite(self):
         with patch.object(runner, "TARGET", self.base):
@@ -683,11 +942,86 @@ class RunnerTests(unittest.TestCase):
             runner.monitor(root, log, self.output, {}, [], self.output / "selector")
         capture.assert_not_called()
 
+    def test_monitor_feeds_only_complete_appended_lines_once_including_exit_tail(self):
+        root = Root()
+        root.poll = Mock(side_effect=[None, None, None, 0])
+        observer = Mock(spec=["observe"])
+        first = "CEF_HELPER_LAUNCH\n"
+        second = (
+            "CEF_HELPER_START pid=43211 ppid=43210 role=renderer "
+            "subtype=none sandbox=renderer seatbelt=1\n"
+        )
+        complete = "\n".join(runner.MARKERS) + "\n"
+        snapshots = [
+            first[:8],
+            first + second[:20],
+            first + second[:20],
+            first + second + complete[:10],
+            first + second + complete + "CEF_HELPER_SANDBOX_READY pid=",
+        ]
+        with (
+            patch.object(runner, "read_log", side_effect=snapshots) as read,
+            patch.object(runner.time, "sleep"),
+        ):
+            self.assertIsNone(
+                runner.monitor(
+                    root,
+                    self.output / "native.log",
+                    self.output,
+                    {},
+                    [],
+                    budget=Mock(remaining=Mock(return_value=1)),
+                    observer=observer,
+                )
+            )
+        self.assertEqual(read.call_count, len(snapshots))
+        self.assertEqual(
+            [call.args[0] for call in observer.observe.call_args_list],
+            [first, second, complete],
+        )
+        self.assertEqual(root.poll.call_count, 4)
+
+    def test_monitor_does_not_redeliver_unchanged_final_log_to_observer(self):
+        log = self.output / "native.log"
+        log.write_text(native_fixture())
+        observer = Mock(spec=["observe"])
+        self.assertIsNone(
+            runner.monitor(Root(0), log, self.output, {}, [], observer=observer)
+        )
+        observer.observe.assert_called_once_with(native_fixture())
+
     @contextmanager
-    def execution(self, code=0, text=None, capture=False):
+    def execution(self, code=0, text=None, audit=None):
         root = Root(code)
-        state = {"server_stopped": False, "root": root}
+        audit = successful_audit() if audit is None else audit
+        observer = Mock(spec=["observe", "finish"])
+        state = {
+            "server_stopped": False,
+            "root": root,
+            "observer": observer,
+            "audit": audit,
+        }
         original_profile = runner.create_profile
+
+        def observe(root_pid, app, canary, allowed):
+            self.assertIn("command", state, "observer must be created after spawn")
+            self.assertEqual(root_pid, root.pid)
+            self.assertEqual(app, self.output / "probe.app")
+            self.assertEqual(canary, self.output / "sandbox-canary")
+            self.assertEqual(
+                allowed,
+                app
+                / "Contents/Frameworks/Chromium Embedded Framework.framework"
+                / "Chromium Embedded Framework",
+            )
+            self.assertEqual(canary.read_bytes(), runner.CANARY_BYTES)
+            return observer
+
+        def finish(*, deadline_seconds):
+            state["exit_at_finish"] = root.poll()
+            return audit
+
+        observer.finish.side_effect = finish
 
         def profile():
             value = original_profile()
@@ -704,11 +1038,7 @@ class RunnerTests(unittest.TestCase):
 
         def spawn(argv, env, log, roots):
             state["command"], state["env"] = argv, env
-            log.write(
-                (
-                    text if text is not None else "\n".join(runner.MARKERS) + "\n"
-                ).encode()
-            )
+            log.write((text if text is not None else native_fixture()).encode())
             roots.append(root)
             return root
 
@@ -729,9 +1059,13 @@ class RunnerTests(unittest.TestCase):
             patch.object(runner, "create_profile", side_effect=profile),
             patch.object(runner, "fixture_server", side_effect=server),
             patch.object(runner, "spawn", side_effect=spawn),
+            patch.object(
+                runner.helper_observer, "HelperObserver", side_effect=observe
+            ) as create_observer,
             redirect_stdout(io.StringIO()),
             redirect_stderr(io.StringIO()),
         ):
+            state["create_observer"] = create_observer
             yield state
 
     def test_successful_mock_native_run_reports_success_and_retains_home(self):
@@ -740,7 +1074,7 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(report["success"])
         self.assertTrue(state["server_stopped"])
         self.assertTrue(state["profile"].path.exists())
-        self.assertEqual(report["home_cleanup"], "retained-helper-exit-unverified")
+        self.assertEqual(report["home_cleanup"], "retained-audit-artifacts")
         self.assertTrue(report["home_retained"])
         self.assertEqual(json.loads((self.output / "report.json").read_text()), report)
         self.assertEqual(report["root_exit"], 0)
@@ -749,8 +1083,21 @@ class RunnerTests(unittest.TestCase):
             [self.output / "probe.app/Contents/MacOS/felinaut-cef-probe", "--run-cef"],
         )
         self.assertEqual(state["env"]["HOME"], str(state["profile"].path))
-        self.assertEqual(report["helper_lifecycle"], "unverified")
-        for name in ("native.log", "report.json"):
+        self.assertEqual(report["helper_lifecycle"], "verified-announced-helper-exit")
+        self.assertEqual(report["helper_audit"], state["audit"])
+        self.assertTrue(report["notification_broker_absent"])
+        self.assertTrue(report["helper_audit_passed"])
+        self.assertTrue(report["renderer_canary_denied"])
+        self.assertTrue(report["canary_control_unchanged"])
+        state["create_observer"].assert_called_once()
+        state["observer"].observe.assert_called_once_with(native_fixture())
+        state["observer"].finish.assert_called_once_with(deadline_seconds=3)
+        self.assertEqual(state["exit_at_finish"], 0)
+        self.assertEqual(
+            state["env"]["FELINAUT_CEF_PROBE_CANARY"],
+            str(self.output / "sandbox-canary"),
+        )
+        for name in ("native.log", "report.json", "sandbox-canary"):
             self.assertEqual((self.output / name).stat().st_mode & 0o777, 0o600)
 
     def test_successful_cli_exit_does_not_treat_retained_home_as_failure(self):
@@ -759,7 +1106,7 @@ class RunnerTests(unittest.TestCase):
         report = json.loads((self.output / "report.json").read_text())
         self.assertTrue(report["success"])
         self.assertTrue(report["home_retained"])
-        self.assertEqual(report["home_cleanup"], "retained-helper-exit-unverified")
+        self.assertEqual(report["home_cleanup"], "retained-audit-artifacts")
         self.assertTrue(state["profile"].path.exists())
 
     def test_execute_separates_build_native_and_capture_environments(self):
@@ -774,6 +1121,7 @@ class RunnerTests(unittest.TestCase):
             "SSLKEYLOGFILE": "/outside/keys",
             "DYLD_INSERT_LIBRARIES": "/inject",
             "FELINAUT_AGENT": "1",
+            "FELINAUT_CEF_PROBE_CANARY": "/outside/shell-canary",
         }
         with (
             self.execution() as state,
@@ -799,6 +1147,19 @@ class RunnerTests(unittest.TestCase):
         native = state["env"]
         self.assertEqual(native["HOME"], str(state["profile"].path))
         self.assertEqual(native["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin")
+        self.assertEqual(
+            native["FELINAUT_CEF_PROBE_CANARY"],
+            str(self.output / "sandbox-canary"),
+        )
+        for env in (
+            build.call_args.args[0],
+            compile_helper.call_args.args[0],
+            capture.call_args.args[3],
+        ):
+            self.assertNotIn("FELINAUT_CEF_PROBE_CANARY", env)
+        self.assertEqual(
+            inherited["FELINAUT_CEF_PROBE_CANARY"], "/outside/shell-canary"
+        )
         for key in (
             "GITHUB_TOKEN",
             "SSLKEYLOGFILE",
@@ -812,6 +1173,252 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertNotEqual(capture.call_args.args[3]["HOME"], native["HOME"])
         self.assertTrue(state["profile"].path.exists())
+
+    def test_failed_audit_missing_roles_or_seatbelt_make_completed_run_fail(self):
+        cases = (
+            ["audit-gap", "no-helpers"]
+            + ["missing-" + role for role in ("renderer", "gpu-process", "utility")]
+            + ["seatbelt-" + role for role in ("renderer", "gpu-process", "utility")]
+        )
+        for case in cases:
+            with self.subTest(case=case):
+                self.output = self.base / case
+                self.output.mkdir(mode=0o700)
+                audit = successful_audit()
+                if case == "audit-gap":
+                    audit["ok"] = False
+                    audit["gaps"] = ["registered helper survives deadline"]
+                    audit["helpers"][0]["exit_evidence"] = "unknown"
+                    audit["roles"]["renderer"]["exits_verified"] = False
+                elif case == "no-helpers":
+                    audit["helpers"] = []
+                    for role in audit["roles"].values():
+                        role["count"] = 0
+                elif case.startswith("missing-"):
+                    audit["roles"][case.removeprefix("missing-")]["count"] = 0
+                else:
+                    role = case.removeprefix("seatbelt-")
+                    next(h for h in audit["helpers"] if h["role"] == role)[
+                        "seatbelt"
+                    ] = 0
+                with self.execution(audit=audit) as state:
+                    with self.assertRaises(runner.ProbeError):
+                        runner.execute()
+                report = json.loads((self.output / "report.json").read_text())
+                self.assertFalse(report["success"])
+                self.assertFalse(report["helper_audit_passed"])
+                self.assertEqual(report["helper_audit"], audit)
+                self.assertEqual(report["root_exit"], 0)
+                self.assertTrue(report["canary_control_unchanged"])
+                if case != "no-helpers":
+                    self.assertTrue(report["renderer_canary_denied"])
+                self.assertEqual(report["home_cleanup"], "preserved")
+                self.assertTrue(report["home_retained"])
+                self.assertTrue(state["profile"].path.exists())
+                self.assertTrue(state["server_stopped"])
+                state["observer"].finish.assert_called_once_with(deadline_seconds=3)
+                self.assertEqual(state["exit_at_finish"], 0)
+                if case == "audit-gap":
+                    self.assertEqual(report["helper_lifecycle"], "unverified")
+
+    def test_notification_broker_makes_otherwise_valid_audit_run_fail(self):
+        audit = successful_audit()
+        utility = next(h for h in audit["helpers"] if h["role"] == "utility")
+        utility["subtype"] = "mac_notifications.mojom.MacNotificationProvider"
+        with self.execution(audit=audit) as state:
+            with self.assertRaisesRegex(runner.ProbeError, "inspect report.json"):
+                runner.execute()
+        report = json.loads((self.output / "report.json").read_text())
+        self.assertEqual(report["helper_audit"], audit)
+        self.assertTrue(report["helper_audit"]["ok"])
+        self.assertTrue(all(h["seatbelt"] == 1 for h in audit["helpers"]))
+        self.assertTrue(all(role["count"] > 0 for role in audit["roles"].values()))
+        self.assertTrue(report["renderer_canary_denied"])
+        self.assertTrue(report["canary_control_unchanged"])
+        self.assertFalse(report["notification_broker_absent"])
+        self.assertFalse(report["helper_audit_passed"])
+        self.assertFalse(report["success"])
+        self.assertEqual(report["root_exit"], 0)
+        self.assertEqual(report["home_cleanup"], "preserved")
+        self.assertTrue(report["home_retained"])
+        self.assertTrue(state["profile"].path.exists())
+        self.assertTrue(state["server_stopped"])
+
+    def test_failed_renderer_canary_makes_otherwise_valid_audit_run_fail(self):
+        record = "CEF_RENDERER_CANARY pid=43214 outcome=denied errno=1\n"
+        for case, replacement in {
+            "missing": "",
+            "allowed": record.replace(
+                "outcome=denied errno=1", "outcome=allowed errno=0"
+            ),
+            "error": record.replace("denied errno=1", "error errno=2"),
+            "duplicate": record + record,
+        }.items():
+            with self.subTest(case=case):
+                self.output = self.base / case
+                self.output.mkdir(mode=0o700)
+                with self.execution(
+                    text=native_fixture().replace(record, replacement)
+                ) as state:
+                    with self.assertRaises(runner.ProbeError):
+                        runner.execute()
+                report = json.loads((self.output / "report.json").read_text())
+                self.assertTrue(report["helper_audit"]["ok"])
+                self.assertTrue(report["canary_control_unchanged"])
+                self.assertFalse(report["renderer_canary_denied"])
+                self.assertFalse(report["helper_audit_passed"])
+                self.assertFalse(report["success"])
+                self.assertEqual(report["root_exit"], 0)
+                self.assertEqual(report["home_cleanup"], "preserved")
+                self.assertTrue(report["home_retained"])
+                self.assertTrue(state["profile"].path.exists())
+
+    def test_same_content_canary_replacement_fails_report_and_retains_home(self):
+        with self.execution() as state:
+            finish = state["observer"].finish.side_effect
+
+            def replace_canary(*, deadline_seconds):
+                path = self.output / "sandbox-canary"
+                path.rename(self.output / "original-canary")
+                path.write_bytes(runner.CANARY_BYTES)
+                return finish(deadline_seconds=deadline_seconds)
+
+            state["observer"].finish.side_effect = replace_canary
+            with self.assertRaises(runner.ProbeError):
+                runner.execute()
+        report = json.loads((self.output / "report.json").read_text())
+        self.assertTrue(report["helper_audit"]["ok"])
+        self.assertTrue(report["renderer_canary_denied"])
+        self.assertFalse(report["canary_control_unchanged"])
+        self.assertFalse(report["helper_audit_passed"])
+        self.assertFalse(report["success"])
+        self.assertEqual(report["home_cleanup"], "preserved")
+        self.assertTrue(report["home_retained"])
+        self.assertTrue(state["profile"].path.exists())
+        state["observer"].finish.assert_called_once_with(deadline_seconds=3)
+        self.assertEqual(state["exit_at_finish"], 0)
+
+    def test_changed_deleted_or_symlinked_canary_writes_failed_report_and_retains_home(
+        self,
+    ):
+        for case in ("changed", "deleted", "symlinked"):
+            with self.subTest(case=case):
+                self.output = self.base / case
+                self.output.mkdir(mode=0o700)
+                target = self.output / "symlink-target"
+                target.write_bytes(runner.CANARY_BYTES)
+                with self.execution() as state:
+                    finish = state["observer"].finish.side_effect
+
+                    def invalidate_canary(*, deadline_seconds):
+                        path = self.output / "sandbox-canary"
+                        if case == "changed":
+                            path.write_bytes(b"changed canary contents\n")
+                        else:
+                            path.unlink()
+                            if case == "symlinked":
+                                path.symlink_to(target)
+                        return finish(deadline_seconds=deadline_seconds)
+
+                    state["observer"].finish.side_effect = invalidate_canary
+                    with self.assertRaisesRegex(
+                        runner.ProbeError, "inspect report.json"
+                    ):
+                        runner.execute()
+                report_path = self.output / "report.json"
+                report = json.loads(report_path.read_text())
+                self.assertEqual(report_path.stat().st_mode & 0o777, 0o600)
+                self.assertTrue(report["helper_audit"]["ok"])
+                self.assertTrue(report["renderer_canary_denied"])
+                self.assertFalse(report["canary_control_unchanged"])
+                self.assertIsInstance(report["canary_control_error"], str)
+                self.assertTrue(report["canary_control_error"])
+                if case == "changed":
+                    self.assertIn("changed", report["canary_control_error"])
+                else:
+                    self.assertIn(
+                        str(self.output / "sandbox-canary"),
+                        report["canary_control_error"],
+                    )
+                self.assertFalse(report["helper_audit_passed"])
+                self.assertFalse(report["success"])
+                self.assertEqual(report["root_exit"], 0)
+                self.assertEqual(report["home_cleanup"], "preserved")
+                self.assertTrue(report["home_retained"])
+                self.assertEqual(report["home"], str(state["profile"].path))
+                self.assertTrue(state["profile"].path.exists())
+                self.assertTrue(state["server_stopped"])
+                self.assertEqual(target.read_bytes(), runner.CANARY_BYTES)
+                state["observer"].finish.assert_called_once_with(deadline_seconds=3)
+                self.assertEqual(state["exit_at_finish"], 0)
+
+    def test_oversized_missing_or_unreadable_log_writes_failed_report_and_retains_home(
+        self,
+    ):
+        original_open = Path.open
+        for case, expected_error in (
+            ("oversized", runner.ProbeError),
+            ("missing", FileNotFoundError),
+            ("unreadable", PermissionError),
+        ):
+            with self.subTest(case=case):
+                self.output = self.base / case
+                self.output.mkdir(mode=0o700)
+                native_log = self.output / "native.log"
+
+                def open_log(path, mode="r", *args, **kwargs):
+                    if path == native_log and mode == "rb":
+                        if case == "missing":
+                            path.unlink(missing_ok=True)
+                        elif case == "unreadable":
+                            raise PermissionError(
+                                errno.EACCES,
+                                "mock native log permission denied",
+                                str(path),
+                            )
+                    return original_open(path, mode, *args, **kwargs)
+
+                with (
+                    self.execution(code=None, text="x" * 65) as state,
+                    patch.object(runner, "MAX_LOG_BYTES", 64),
+                    patch.object(Path, "open", open_log),
+                    patch.object(runner, "read_log", wraps=runner.read_log) as read_log,
+                ):
+                    with self.assertRaises(expected_error) as error:
+                        runner.execute()
+                # Both monitor and the final audit attempt the same failing read.
+                self.assertEqual(read_log.call_count, 2)
+                self.assertTrue(
+                    all(call.args == (native_log,) for call in read_log.call_args_list)
+                )
+                report_path = self.output / "report.json"
+                report = json.loads(report_path.read_text())
+                self.assertEqual(report_path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(report["native_log_error"], str(error.exception))
+                if case == "oversized":
+                    self.assertIn(
+                        "bounded inspection limit", report["native_log_error"]
+                    )
+                    self.assertEqual(native_log.stat().st_size, 65)
+                elif case == "missing":
+                    self.assertFalse(native_log.exists())
+                else:
+                    self.assertEqual(native_log.read_bytes(), b"x" * 65)
+                self.assertTrue(report["helper_audit"]["ok"])
+                self.assertTrue(report["notification_broker_absent"])
+                self.assertTrue(report["canary_control_unchanged"])
+                self.assertFalse(report["renderer_canary_denied"])
+                self.assertFalse(report["helper_audit_passed"])
+                self.assertFalse(report["success"])
+                self.assertEqual(report["home_cleanup"], "preserved")
+                self.assertTrue(report["home_retained"])
+                self.assertEqual(report["home"], str(state["profile"].path))
+                self.assertTrue(state["profile"].path.exists())
+                self.assertTrue(state["server_stopped"])
+                self.assertTrue(state["root"].terminated)
+                self.assertEqual(report["root_exit"], -15)
+                state["observer"].finish.assert_called_once_with(deadline_seconds=3)
+                self.assertEqual(state["exit_at_finish"], -15)
 
     def test_missing_marker_preserves_home_and_reports_failure_even_with_exit_zero(
         self,
@@ -847,6 +1454,8 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(state["root"].terminated)
         self.assertTrue(state["server_stopped"])
         self.assertTrue(state["profile"].path.exists())
+        state["observer"].finish.assert_called_once_with(deadline_seconds=3)
+        self.assertEqual(state["exit_at_finish"], -15)
 
     def test_interrupt_restores_handlers_stops_root_and_server_and_preserves_home(self):
         before = {
@@ -866,6 +1475,8 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(state["root"].terminated)
         self.assertTrue(state["server_stopped"])
         self.assertTrue(state["profile"].path.exists())
+        state["observer"].finish.assert_called_once_with(deadline_seconds=3)
+        self.assertEqual(state["exit_at_finish"], -15)
         self.assertEqual(
             before, {signum: signal.getsignal(signum) for signum in before}
         )

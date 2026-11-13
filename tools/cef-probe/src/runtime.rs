@@ -98,8 +98,12 @@ wrap_app! {
         fn on_before_command_line_processing(&self, _process_type: Option<&CefString>, command_line: Option<&mut CommandLine>) {
             if let Some(command) = command_line {
                 // Disposable loopback fixture only: never access the user's Keychain.
-                                // Chromium's fake test key is public, not production secret storage.
-                                for name in ["use-mock-keychain", "disable-background-networking", "disable-component-update", "no-first-run", "no-default-browser-check", "no-proxy-server"] {
+                // Chromium's fake test key is public, not production secret storage.
+                let switch = CefString::from("disable-features");
+                let existing = CefString::from(&command.switch_value(Some(&switch))).to_string();
+                let disabled = policy::fixture_disabled_features(&existing);
+                command.append_switch_with_value(Some(&switch), Some(&CefString::from(disabled.as_str())));
+                for name in ["disable-notifications", "use-mock-keychain", "disable-background-networking", "disable-component-update", "no-first-run", "no-default-browser-check", "no-proxy-server"] {
                     command.append_switch(Some(&CefString::from(name)));
                 }
             }
@@ -111,6 +115,9 @@ wrap_browser_process_handler! {
     impl BrowserProcessHandler {
         fn on_context_initialized(&self) { emit(&self.events, Event::ContextReady); }
         fn on_schedule_message_pump_work(&self, delay_ms: i64) { pump::schedule(delay_ms); }
+        fn on_before_child_process_launch(&self, _command_line: Option<&mut CommandLine>) {
+            eprintln!("CEF_HELPER_LAUNCH");
+        }
     }
 }
 wrap_client! {
@@ -352,7 +359,7 @@ pub fn run() -> ExitCode {
     INITIALIZED.store(true, Ordering::Release);
     pump::schedule(0);
     println!(
-        "CEF initialized with sandbox requested; effective helper confinement still requires separate validation"
+        "CEF initialized with sandbox requested and OS notifications disabled; helper evidence is verified separately by the runner"
     );
     let parent = StdRc::new(Cell::new(std::ptr::null_mut()));
     let container = parent.clone();

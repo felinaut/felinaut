@@ -4,8 +4,8 @@
 --run permits a bounded native launch; --build additionally permits two bounded
 Cargo builds. --capture requires Screen Recording and captures only the owned
 root's window. No arbitrary URLs, profiles, engine flags, signing or installation.
-Only owned process roots are stopped. HOME is retained even after a passing
-native run because CEF helper exit remains unverified.
+Only owned process roots are stopped. Announced helpers are independently
+observed for identity, policy and exit; HOME is retained for audit inspection.
 """
 
 import argparse
@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 
 sys.dont_write_bytecode = True
 import bundle_probe
+import helper_observer
 import prepare_runtime
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -126,8 +127,8 @@ def plan(build=False, capture=False):
         "fixture": "own ephemeral http://127.0.0.1:<port>/ only",
         "native_timeout_seconds": 60,
         "capture": capture,
-        "cleanup": "owned roots only; always retain HOME while helper exit is unverified",
-        "note": "No action without --run; CEF helper lifecycle is unverified",
+        "cleanup": "owned roots only; retain HOME and helper audit artifacts",
+        "note": "No action without --run; targeted helper identity, policy, canary and exit checks are required",
     }
 
 
@@ -203,25 +204,27 @@ def confirmed_stopped(roots):
         return False
 
 
-def finish_profile(profile, success, roots):
-    # Root exit and cef::shutdown() are not a helper-exit barrier. No automatic
-    # deletion is safe until run-owned helper termination is separately verified.
+def finish_profile(profile, success, roots, helper_exit_verified=False):
+    # Always retain audit artifacts. A root exit alone is not a helper-exit barrier.
     status = "preserved"
     if not confirmed_stopped(roots):
         reason = "owned root stop is unconfirmed"
     elif not success:
         reason = "unsuccessful run/shutdown"
+    elif helper_exit_verified:
+        reason = "native audit passed; announced helper exits verified; retained for inspection"
+        status = "retained-audit-artifacts"
     else:
         reason = "native root passed; helper exit is unverified"
         status = "retained-helper-exit-unverified"
     print(
-        f"Preserved HOME {profile.path}: {reason}; CEF helper lifecycle is unverified",
+        f"Preserved HOME {profile.path}: {reason}",
         file=sys.stderr,
     )
     return status
 
 
-def launch_environment(inherited, profile, url):
+def launch_environment(inherited, profile, url, canary=None):
     validate_profile(profile.path, fresh=True)
     parsed = urlsplit(url)
     if (
@@ -243,7 +246,49 @@ def launch_environment(inherited, profile, url):
         FELINAUT_CEF_PROBE_HOME=str(profile.path),
         FELINAUT_CEF_PROBE_URL=url,
     )
+    if canary is not None:
+        env["FELINAUT_CEF_PROBE_CANARY"] = str(canary)
     return env
+
+
+CANARY_BYTES = b"Felinaut sandbox canary v1\n"
+
+
+def create_canary(output):
+    path = output / "sandbox-canary"
+    with private_log(path) as file:
+        file.write(CANARY_BYTES)
+    return path, validate_canary(path)
+
+
+def validate_canary(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or os.read(fd, 129) != CANARY_BYTES:
+            raise ProbeError(
+                "Generated canary changed or is not a regular fixture file"
+            )
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+    finally:
+        os.close(fd)
+
+
+def validate_renderer_canaries(text, audit):
+    expected = {
+        helper["pid"] for helper in audit["helpers"] if helper["role"] == "renderer"
+    }
+    seen = set()
+    for line in text.splitlines():
+        if not line.startswith("CEF_RENDERER_CANARY"):
+            continue
+        match = re.fullmatch(
+            r"CEF_RENDERER_CANARY pid=([1-9][0-9]{0,9}) outcome=denied errno=1", line
+        )
+        if match is None or int(match[1]) not in expected or int(match[1]) in seen:
+            return False
+        seen.add(int(match[1]))
+    return bool(expected) and seen == expected
 
 
 @contextmanager
@@ -466,13 +511,30 @@ def validate_completion(text, exit_code):
 
 
 def monitor(
-    root, log_path, output, capture_env, roots, capture_helper=None, budget=None
+    root,
+    log_path,
+    output,
+    capture_env,
+    roots,
+    capture_helper=None,
+    budget=None,
+    observer=None,
 ):
     budget = budget or Budget()
     captured = None
+    consumed = 0
+
+    def observe(text):
+        nonlocal consumed
+        end = text.rfind("\n") + 1
+        if observer is not None and end > consumed:
+            observer.observe(text[consumed:end])
+            consumed = end
+
     while True:
         budget.remaining()
         text = read_log(log_path)
+        observe(text)
         lines = text.splitlines()
         if any(line.startswith("FAIL:") for line in lines):
             raise ProbeError("Native failure reported; inspect the private native log")
@@ -483,7 +545,9 @@ def monitor(
         code = root.poll()
         if code is not None:
             # Read again after confirmed exit so final buffered shutdown output counts.
-            validate_completion(read_log(log_path), code)
+            final_text = read_log(log_path)
+            observe(final_text)
+            validate_completion(final_text, code)
             if capture_helper is not None and captured is None:
                 raise ProbeError("Requested completed-window capture was not obtained")
             return captured
@@ -506,6 +570,7 @@ def execute(build=False, capture=False):
     output = create_output()
     print(f"PROBE_OUTPUT={output}", flush=True)
     roots, profile, root = [], None, None
+    observer, canary, canary_identity = None, None, None
     success = False
     report = {"success": False, "output": str(output), "helper_lifecycle": "unverified"}
     with interruption_cleanup():
@@ -521,10 +586,11 @@ def execute(build=False, capture=False):
             capture_helper = (
                 compile_capture_helper(build_env, output, roots) if capture else None
             )
+            canary, canary_identity = create_canary(output)
             profile = create_profile()
             report["home"] = str(profile.path)
             with fixture_server() as url:
-                env = launch_environment(inherited, profile, url)
+                env = launch_environment(inherited, profile, url, canary)
                 report["fixture_url"] = url
                 with private_log(output / "native.log") as log:
                     budget = Budget()
@@ -535,6 +601,13 @@ def execute(build=False, capture=False):
                         roots,
                     )
                     report["root_pid"] = root.pid
+                    observer = helper_observer.HelperObserver(
+                        root.pid,
+                        app,
+                        canary,
+                        app
+                        / "Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework",
+                    )
                     image = monitor(
                         root,
                         output / "native.log",
@@ -543,6 +616,7 @@ def execute(build=False, capture=False):
                         roots,
                         capture_helper,
                         budget,
+                        observer,
                     )
                     report["capture"] = str(image) if image else None
             success = True
@@ -554,8 +628,59 @@ def execute(build=False, capture=False):
                     success = False
                     raise
                 finally:
+                    if observer is not None:
+                        audit = observer.finish(deadline_seconds=3)
+                        report["helper_audit"] = audit
+                        try:
+                            report["renderer_canary_denied"] = (
+                                validate_renderer_canaries(
+                                    read_log(output / "native.log"), audit
+                                )
+                            )
+                        except (OSError, ProbeError) as error:
+                            report["renderer_canary_denied"] = False
+                            report["native_log_error"] = str(error)
+                        try:
+                            report["canary_control_unchanged"] = (
+                                validate_canary(canary) == canary_identity
+                            )
+                        except (OSError, ProbeError) as error:
+                            report["canary_control_unchanged"] = False
+                            report["canary_control_error"] = str(error)
+                        roles_observed = all(
+                            role["count"] > 0 for role in audit["roles"].values()
+                        )
+                        seatbelt_requested = all(
+                            helper["seatbelt"] == 1 for helper in audit["helpers"]
+                        )
+                        report["notification_broker_absent"] = all(
+                            helper.get("subtype")
+                            != "mac_notifications.mojom.MacNotificationProvider"
+                            for helper in audit["helpers"]
+                        )
+                        audit_passed = (
+                            audit["ok"]
+                            and report["notification_broker_absent"]
+                            and roles_observed
+                            and seatbelt_requested
+                            and report["renderer_canary_denied"]
+                            and report["canary_control_unchanged"]
+                        )
+                        report["helper_audit_passed"] = audit_passed
+                        report["helper_lifecycle"] = (
+                            "verified-announced-helper-exit"
+                            if audit["ok"]
+                            else "unverified"
+                        )
+                        success = success and audit_passed
                     if profile is not None:
-                        report["home_cleanup"] = finish_profile(profile, success, roots)
+                        report["home_cleanup"] = finish_profile(
+                            profile,
+                            success,
+                            roots,
+                            report["helper_lifecycle"]
+                            == "verified-announced-helper-exit",
+                        )
                         report["home_retained"] = True
                     report["root_exit"] = root.returncode if root is not None else None
                     report["success"] = success
@@ -563,7 +688,7 @@ def execute(build=False, capture=False):
                         record.write((json.dumps(report, indent=2) + "\n").encode())
         if not success:
             raise ProbeError(
-                "Native run or owned-root stop was not fully confirmed; inspect report.json"
+                "Native checks, helper audit or owned-root stop failed; inspect report.json"
             )
     return report
 
