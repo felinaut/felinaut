@@ -2190,12 +2190,13 @@ impl Browser {
     fn search(&mut self, backwards: bool, cx: &mut Context<Self>) {
         let text = self.find.read(cx).text();
         let tab = &self.tabs[self.active];
-        if let Some(page) = tab
-            .page
-            .as_ref()
-            .filter(|_| self.find_bar.search(!tab.home, text))
-        {
-            page.find(text, backwards);
+        let request = self.find_bar.search(!tab.home, text);
+        if let Some(page) = &tab.page {
+            match request {
+                FindRequest::Search => page.find(text, backwards),
+                FindRequest::Deselect => page.deselect(),
+                FindRequest::Nothing => {}
+            }
         }
         cx.notify();
     }
@@ -4253,6 +4254,13 @@ struct Find(i8);
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = felinaut, no_json)]
 struct FindPreviousFromBar;
+#[derive(Debug, PartialEq)]
+enum FindRequest {
+    Search,
+    /// The query was emptied: clear the last match's selection.
+    Deselect,
+    Nothing,
+}
 #[derive(Default)]
 struct FindBar {
     open: bool,
@@ -4281,11 +4289,18 @@ impl FindBar {
             ..Self::default()
         };
     }
-    /// Whether to search for `text`; an empty or unsearchable query clears "Not found".
-    fn search(&mut self, searchable: bool, text: &str) -> bool {
-        let search = searchable && !text.is_empty();
-        self.missing &= search;
-        search
+    /// What a changed or repeated query asks of the page; an empty or unsearchable query also
+    /// clears "Not found".
+    fn search(&mut self, searchable: bool, text: &str) -> FindRequest {
+        if !searchable {
+            self.missing = false;
+            FindRequest::Nothing
+        } else if text.is_empty() {
+            self.missing = false;
+            FindRequest::Deselect
+        } else {
+            FindRequest::Search
+        }
     }
     fn found(&mut self, active: bool, found: bool) {
         if active {
@@ -4498,7 +4513,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        FETCH_TIMEOUT, drop_index, live_refresh_can_poll, restore_tabs, session::SavedTab,
+        FETCH_TIMEOUT, FindRequest, drop_index, live_refresh_can_poll, restore_tabs,
+        session::SavedTab,
     };
     use std::time::{Duration, Instant};
 
@@ -4515,20 +4531,22 @@ mod tests {
         bar.open(start + Duration::from_secs(1));
         assert_eq!(bar.slid(start + Duration::from_secs(1), true), 1.);
         // Only the active tab's result counts.
-        assert!(bar.search(true, "cat"));
+        assert_eq!(bar.search(true, "cat"), FindRequest::Search);
         bar.found(false, false);
         assert!(!bar.missing);
         bar.found(true, false);
         assert!(bar.missing);
         bar.found(true, true);
         assert!(!bar.missing);
-        // An emptied query or the home page clears "Not found" without searching.
+        // An emptied query clears "Not found" and the last match's selection; the home page
+        // clears "Not found" and has nothing to search or deselect.
         bar.found(true, false);
-        assert!(!bar.search(true, ""));
+        assert_eq!(bar.search(true, ""), FindRequest::Deselect);
         assert!(!bar.missing);
         bar.found(true, false);
-        assert!(!bar.search(false, "cat"));
+        assert_eq!(bar.search(false, "cat"), FindRequest::Nothing);
         assert!(!bar.missing);
+        assert_eq!(bar.search(false, ""), FindRequest::Nothing);
         bar.found(true, false);
         let closed = start + Duration::from_secs(2);
         bar.close(closed);
@@ -4558,7 +4576,7 @@ mod tests {
     fn find_bar_forgets_a_miss_when_the_active_tab_commits_a_new_page() {
         let mut bar = super::FindBar::default();
         bar.open(Instant::now());
-        assert!(bar.search(true, "foo"));
+        assert_eq!(bar.search(true, "foo"), FindRequest::Search);
         bar.found(true, false);
         // Another tab's new page leaves the active tab's result alone.
         bar.committed(false);

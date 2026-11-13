@@ -214,6 +214,26 @@ impl NativePage {
         }
     }
 
+    /// Clears the selection that the last match left, in the page and its frames. The script
+    /// runs in WebKit's client world, where the page's own scripts can neither replace the
+    /// functions it calls nor see it run; the page can still observe `selectionchange`.
+    pub fn deselect(&self) {
+        use objc2::MainThreadOnly;
+        use objc2_web_kit::WKContentWorld;
+        use wry::WebViewExtMacOS;
+        let webview = self.webview.webview();
+        // SAFETY: a live WKWebView on the main thread; no frame means the main frame, and no
+        // completion handler means the result is dropped.
+        unsafe {
+            webview.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+                &objc2_foundation::NSString::from_str(DESELECT),
+                None,
+                &WKContentWorld::defaultClientWorld(webview.mtm()),
+                None,
+            );
+        }
+    }
+
     pub fn navigate(&self, url: &str) -> Result<(), String> {
         check_url(url)?;
         self.webview
@@ -815,6 +835,12 @@ pub fn pointer(window: &gpui::Window) -> Option<gpui::Point<f32>> {
 pub fn pointer(_: &gpui::Window) -> Option<gpui::Point<f32>> {
     None
 }
+
+/// Empties the selection of a window and of its frames; cross-origin frames throw and are skipped.
+const DESELECT: &str = "(function deselect(w) { \
+    try { w.getSelection().removeAllRanges(); } catch (_) {} \
+    try { for (let i = 0; i < w.frames.length; i++) deselect(w.frames[i]); } catch (_) {} \
+})(window)";
 
 fn allowed_url(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {

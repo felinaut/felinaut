@@ -346,8 +346,14 @@ fn main() {
                                     ] {
                                         assert_eq!(find_step(&second_page, text, backwards).await, (true, selected.to_string()), "finding {text:?}, backwards: {backwards}");
                                     }
+                                    // Emptying the query clears the match, here inside the frame.
+                                    second_page.deselect();
+                                    assert_eq!(read(&second_page, SELECTION).await, "", "the last match in the frame is deselected");
+                                    assert_eq!(find_step(&second_page, "tap", false).await, (true, "m1:tap".to_string()));
+                                    second_page.deselect();
+                                    assert_eq!(read(&second_page, SELECTION).await, "", "the last match in the page is deselected");
                                     assert_eq!(read(&second_page, "String(!!top.findTouched)").await, "false", "the page never sees the find bar edit its selection");
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and find in page, refining letter by letter and inside a frame");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and find in page: refining letter by letter, inside a frame, and clearing the match");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;
