@@ -2172,14 +2172,17 @@ impl Browser {
         let Some(page) = tab.page.as_ref().filter(|_| !tab.home) else {
             return;
         };
-        self.find_bar.open(Instant::now());
         if find.0 == 0 {
+            self.find_bar.open(Instant::now());
             let _ = page.focus_parent();
             self.find.update(cx, |input, cx| {
                 window.focus(&input.focus_handle(cx));
                 input.select_all_text(cx);
             });
-        } else {
+        } else if self
+            .find_bar
+            .step(self.find.read(cx).text(), Instant::now())
+        {
             self.search(find.0 < 0, cx);
         }
         cx.notify();
@@ -4264,6 +4267,14 @@ impl FindBar {
         }
         self.open = true;
     }
+    /// ⌘G or ⇧⌘G: opens the bar to step through `text`, or does nothing without a query.
+    fn step(&mut self, text: &str, now: Instant) -> bool {
+        let step = !text.is_empty();
+        if step {
+            self.open(now);
+        }
+        step
+    }
     fn close(&mut self, now: Instant) {
         *self = Self {
             toggled: Some(now),
@@ -4524,6 +4535,23 @@ mod tests {
         assert!(!bar.open && !bar.missing);
         assert_eq!(bar.slid(closed, true), 0.);
         assert_eq!(bar.slid(closed + Duration::from_millis(150), true), 1.);
+    }
+
+    #[test]
+    fn find_bar_steps_only_with_a_query() {
+        let start = Instant::now();
+        let mut bar = super::FindBar::default();
+        // ⌘G before anything was searched leaves the bar closed.
+        assert!(!bar.step("", start));
+        assert!(!bar.open);
+        assert_eq!(bar.slid(start, true), 1., "nothing slides");
+        // A query left from an earlier, closed search opens the bar and steps.
+        assert!(bar.step("cat", start));
+        assert!(bar.open);
+        assert_eq!(bar.slid(start, true), 0.);
+        // An emptied query in an open bar steps nowhere but leaves the bar open.
+        assert!(!bar.step("", start));
+        assert!(bar.open);
     }
 
     #[test]
