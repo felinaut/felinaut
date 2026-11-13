@@ -84,6 +84,22 @@ fn step(selected: Option<usize>, forward: bool) -> usize {
     }
 }
 
+/// The toolbar button's label, and whether a click only stops the capture (true) or forgets
+/// the stored decisions (false). A capture in progress comes first: the stop controls never
+/// forget an "Always Allow".
+fn site_button(
+    capture: (bool, bool),
+    stored: impl FnOnce() -> Option<String>,
+) -> Option<(String, bool)> {
+    let in_use = match capture {
+        (true, true) => "● Camera and microphone in use",
+        (true, false) => "● Camera in use",
+        (false, true) => "● Microphone in use",
+        (false, false) => return stored().map(|summary| (summary, false)),
+    };
+    Some((in_use.to_owned(), true))
+}
+
 /// The choice that the keys selected, and the time from which an allow choice counts.
 struct Selection {
     index: Option<usize>,
@@ -372,30 +388,33 @@ impl Browser {
             .flatten()
     }
 
-    /// The toolbar button for the active site: what it uses now, or its stored decisions.
-    /// A click stops the use and forgets the decisions.
+    /// The toolbar button for the active site. While the tab uses a device, the button shows
+    /// that, and a click only stops the use, as a click on the tab's capture icon does.
+    /// Otherwise the button shows the stored decisions, and a click forgets them.
     pub(crate) fn permission_button(
         &self,
         p: Palette,
         cx: &mut Context<Self>,
     ) -> Option<Stateful<Div>> {
-        let label = match self.tabs[self.active].capture {
-            (true, true) => "● Camera and microphone in use".to_owned(),
-            (true, false) => "● Camera in use".to_owned(),
-            (false, true) => "● Microphone in use".to_owned(),
-            (false, false) => self.permissions.summary(&self.active_origin()?)?,
+        let stored = || self.permissions.summary(&self.active_origin()?);
+        let (label, stops) = site_button(self.tabs[self.active].capture, stored)?;
+        let hint = if stops {
+            "Stop camera and microphone use"
+        } else {
+            "Forget this site's decisions"
         };
         Some(
             self.button("site-permissions", "", p)
                 .flex_shrink_0()
                 .text_size(px(12.))
                 .text_color(rgb(p.text))
-                .on_hover(Self::hint_on_hover(
-                    "Stop camera and microphone use and forget this site's decisions",
-                    cx,
-                ))
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.reset_site_permissions(&ResetSitePermissions, window, cx);
+                .on_hover(Self::hint_on_hover(hint, cx))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if !stops {
+                        this.reset_site_permissions(&ResetSitePermissions, window, cx);
+                    } else if let Some(page) = &this.tabs[this.active].page {
+                        page.stop_capture();
+                    }
                 }))
                 .child(format!("{label}  ×")),
         )
@@ -548,6 +567,28 @@ mod tests {
         let shown = permissions::display_origin(&long);
         assert_eq!(shown.chars().count(), permissions::ORIGIN_MAX);
         assert!(shown.ends_with(".example:8443"));
+    }
+
+    #[test]
+    fn the_site_button_only_stops_a_capture_and_forgets_decisions_when_nothing_is_in_use() {
+        let stored = || Some("Camera allowed".to_owned());
+        for (capture, label) in [
+            ((true, true), "● Camera and microphone in use"),
+            ((true, false), "● Camera in use"),
+            ((false, true), "● Microphone in use"),
+        ] {
+            // With or without stored decisions, a click only stops the use.
+            assert_eq!(site_button(capture, stored), Some((label.to_owned(), true)));
+            assert_eq!(
+                site_button(capture, || None),
+                Some((label.to_owned(), true))
+            );
+        }
+        assert_eq!(
+            site_button((false, false), stored),
+            Some(("Camera allowed".to_owned(), false))
+        );
+        assert_eq!(site_button((false, false), || None), None);
     }
 
     #[test]

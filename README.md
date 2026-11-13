@@ -288,7 +288,7 @@ A site gets the camera or the microphone only after you allow it. When a page as
 
 While a tab uses a device, its sidebar row or pinned tile shows a **camera** or **microphone** icon; click the icon to stop the use.
 
-The toolbar has a button for the active site while the site uses a device or has stored decisions: **● Camera in use**, or for example **Camera and microphone allowed ×** or **Requests refused for now ×**. Click that button, or choose **View → Reset Site Permissions**, to stop the use and to forget the decisions of the active site: the site then has to ask again. This button is the only place that shows stored decisions; there is no list of all sites.
+The toolbar has a button for the active site while the site uses a device or has stored decisions: **● Camera in use**, or for example **Camera and microphone allowed ×** or **Requests refused for now ×**. While the site uses a device, a click on that button only stops the use, exactly as the tab's icon does: the stored decisions stay. When nothing is in use, the button shows the stored decisions and a click forgets them. **View → Reset Site Permissions** does both at any time: it stops the use and forgets the decisions of the active site, and the site then has to ask again. This button is the only place that shows stored decisions; there is no list of all sites.
 
 Decisions are kept in `permissions.tsv` (see _Scope and limitations_), one line for each site and device: `allow` or `deny`, `camera` or `microphone`, and the origin. Delete the file to forget every decision. A line that Felinaut cannot read is ignored, and never becomes a permission.
 
