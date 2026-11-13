@@ -855,7 +855,7 @@ unsafe fn inspector_is_detached(inspector: &AnyObject) -> bool {
             return false;
         };
         let window: Option<Retained<AnyObject>> = msg_send![&*page, window];
-        window.is_some_and(|window| is_inspector_window(window.class().name().to_bytes()))
+        window.is_some_and(|window| is_inspector_window(reported_class_name(&window)))
     }
 }
 
@@ -863,10 +863,19 @@ unsafe fn inspector_is_detached(inspector: &AnyObject) -> bool {
 pub fn close_key_window() {
     if let Some(mtm) = objc2::MainThreadMarker::new()
         && let Some(window) = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow()
-        && is_inspector_window(window.class().name().to_bytes())
+        && is_inspector_window(reported_class_name(&window))
     {
         window.performClose(None);
     }
+}
+
+/// An object's class as it reports it (`-class`). That hides the subclass Key-Value Observing
+/// swaps in (`NSKVONotifying_…`), which `object_getClass` returns: AppKit observes its
+/// windows, so a detached inspector's window is really an `NSKVONotifying__WKInspectorWindow`.
+fn reported_class_name(object: &AnyObject) -> &'static [u8] {
+    // SAFETY: `-class` is NSObject protocol API, returns a class and has no side effects.
+    let class: &'static objc2::runtime::AnyClass = unsafe { msg_send![object, class] };
+    class.name().to_bytes()
 }
 
 /// Whether a window class is WebKit's detached Web Inspector window. A positive match: GPUI's
@@ -1030,6 +1039,66 @@ mod tests {
             }
         }
     );
+
+    objc2::define_class!(
+        /// Something with a `level` property for Key-Value Observing.
+        #[unsafe(super(objc2::runtime::NSObject))]
+        #[name = "FelinautTestObserved"]
+        struct Observed;
+
+        impl Observed {
+            #[unsafe(method(level))]
+            fn level(&self) -> isize {
+                0
+            }
+
+            #[unsafe(method(setLevel:))]
+            fn set_level(&self, _: isize) {}
+        }
+    );
+
+    objc2::define_class!(
+        #[unsafe(super(objc2::runtime::NSObject))]
+        #[name = "FelinautTestObserver"]
+        struct Observer;
+
+        impl Observer {
+            #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
+            fn observe(
+                &self,
+                _: *mut objc2::runtime::AnyObject,
+                _: *mut objc2::runtime::AnyObject,
+                _: *mut objc2::runtime::AnyObject,
+                _: *mut std::ffi::c_void,
+            ) {
+            }
+        }
+    );
+
+    #[test]
+    fn a_key_value_observed_window_is_still_recognised_by_its_class() {
+        use objc2::msg_send;
+        let observed = new_object::<Observed>();
+        let observer = new_object::<Observer>();
+        let key = objc2_foundation::NSString::from_str("level");
+        // SAFETY: plain NSObject subclasses; the observer is removed before either is dropped.
+        unsafe {
+            let () = msg_send![&*observed, addObserver: &*observer, forKeyPath: &*key, options: 0usize, context: std::ptr::null_mut::<std::ffi::c_void>()];
+            // AppKit observes its windows the same way, which swaps in a KVO subclass.
+            assert!(
+                observed
+                    .class()
+                    .name()
+                    .to_bytes()
+                    .starts_with(b"NSKVONotifying_")
+            );
+            assert_eq!(
+                super::reported_class_name(&observed),
+                b"FelinautTestObserved"
+            );
+            let () = msg_send![&*observed, removeObserver: &*observer, forKeyPath: &*key];
+        }
+    }
 
     fn new_object<T: objc2::ClassType>() -> objc2::rc::Retained<objc2::runtime::AnyObject> {
         // SAFETY: `new` on an NSObject subclass with no extra state.
