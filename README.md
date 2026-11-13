@@ -331,6 +331,8 @@ FELINAUT_NATIVE_TEST=1 cargo test --test native_webview
 FELINAUT_NATIVE_TEST=1 cargo test --test brand_ui
 # Per-tab audio in real WebKit (plays a quiet tone from two loopback origins):
 FELINAUT_NATIVE_TEST=1 cargo test --test native_audio
+# Certificate exceptions against loopback HTTPS (needs /usr/bin/openssl and python3):
+FELINAUT_NATIVE_TEST=1 cargo test --test native_certificate
 ```
 
 Add `-F gpui/runtime_shaders` to these commands on machines without full Xcode.
@@ -359,5 +361,6 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.
 - `tests/native_audio.rs`: opt-in WebKit check of audio routing, cross-origin fallback and reset.
+- `tests/native_certificate.rs`: opt-in WebKit check of certificate exceptions against two loopback HTTPS servers with a throwaway self-signed certificate (needs `/usr/bin/openssl` and `python3`): the error carries the certificate, an accepted one loads and is marked in two tabs, the hidden live-folder page refuses the site, and an image that used an exception is reported.
 
 Felinaut source is MIT licensed. Dependencies retain their own licenses, including GPUI (Apache-2.0) and Wry (Apache-2.0 OR MIT).
