@@ -4,6 +4,7 @@ mod appearance;
 mod art;
 mod audio;
 mod brand;
+mod clean_link;
 mod download_panel;
 mod downloads;
 mod engine;
@@ -11,6 +12,7 @@ mod history;
 mod icons;
 mod input;
 mod language;
+mod link_toast;
 mod live;
 mod load_error;
 mod session;
@@ -292,6 +294,7 @@ actions!(
         NextTab,
         PreviousTab,
         ReopenTab,
+        CopyCleanLink,
         NewLiveFolder,
         ShowDownloads
     ]
@@ -2044,6 +2047,17 @@ impl Browser {
     }
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         self.close_tab_at(self.active, window, cx);
+    }
+    /// ⌘⇧C: copy the page address without tracking parameters (see `clean_link`), then
+    /// confirm it in a small pop-up under the toolbar.
+    fn copy_clean_link(&mut self, _: &CopyCleanLink, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = &self.tabs[self.active];
+        let link = (!tab.home).then(|| clean_link::clean(&tab.url)).flatten();
+        let copied = link_toast::Copied::from(link.as_ref());
+        if let Some(link) = link {
+            cx.write_to_clipboard(ClipboardItem::new_string(link.link));
+        }
+        link_toast::show(copied, window, self.sidebar_width(cx), CHROME_ROW, cx);
     }
     /// Reopens the most recently closed tab where it was, back in its split view when the
     /// other half is still open and free.
@@ -3994,6 +4008,7 @@ impl Render for Browser {
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::reopen_tab))
+            .on_action(cx.listener(Self::copy_clean_link))
             .on_action(cx.listener(Self::new_live_folder))
             .on_action(cx.listener(Self::show_downloads))
             // Mouse drags stay with the GPUI view even over the native page, so the root
@@ -4188,6 +4203,7 @@ fn main() {
             KeyBinding::new("cmd-s", ToggleSidebar, None),
             KeyBinding::new("cmd-d", PinTab, None),
             KeyBinding::new("cmd-shift-t", ReopenTab, None),
+            KeyBinding::new("cmd-shift-c", CopyCleanLink, None),
             KeyBinding::new("ctrl-tab", NextTab, None),
             KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
             KeyBinding::new("cmd-shift-]", NextTab, None),
@@ -4232,6 +4248,8 @@ fn main() {
                     MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
                     MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
                     MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+                    MenuItem::separator(),
+                    MenuItem::action("Copy Clean Link", CopyCleanLink),
                 ],
             },
             Menu {
