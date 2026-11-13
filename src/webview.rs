@@ -245,6 +245,17 @@ impl NativePage {
 
     /// Bounds are window-relative logical pixels, as supplied by the GPUI canvas.
     pub fn set_bounds(&self, bounds: Bounds<Pixels>) -> Result<(), String> {
+        use objc2::{runtime::NSObjectProtocol, sel};
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // While a page element is full screen, WebKit owns the view's frame in its own window.
+        // SAFETY: a property read on a live WKWebView on the main thread, checked for macOS 13+.
+        if view.respondsToSelector(sel!(fullscreenState))
+            && unsafe { view.fullscreenState() }
+                != objc2_web_kit::WKFullscreenState::NotInFullscreen
+        {
+            return Ok(());
+        }
         self.webview
             .set_bounds(wry::Rect {
                 position: wry::dpi::LogicalPosition::new(
@@ -665,16 +676,14 @@ fn parse_icon_event(message: &str) -> Option<Event> {
 #[cfg(target_os = "macos")]
 pub fn forward_command_arrows() {
     use objc2::{ClassType, runtime::NSObjectProtocol};
-    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
+    use objc2_app_kit::{NSEvent, NSEventMask};
     let handler = block2::RcBlock::new(|event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
         // SAFETY: AppKit gives a live event on the main thread.
         let key = unsafe { event.as_ref() };
         let Some(mtm) = objc2::MainThreadMarker::new() else {
             return event.as_ptr();
         };
-        // Key codes 123 to 126 are the arrows.
-        if (123..=126).contains(&key.keyCode())
-            && key.modifierFlags().contains(NSEventModifierFlags::Command)
+        if forwards_to_page(key.keyCode(), key.modifierFlags())
             && let Some(responder) = key.window(mtm).and_then(|window| window.firstResponder())
             && responder.isKindOfClass(objc2_web_kit::WKWebView::class())
         {
@@ -688,6 +697,13 @@ pub fn forward_command_arrows() {
         NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler)
     };
     std::mem::forget(monitor);
+}
+
+/// Whether the key monitor hands a key straight to a focused page: only Command+arrows. Every
+/// other key, Escape included, goes the usual way to GPUI, the chrome and the page.
+fn forwards_to_page(key_code: u16, flags: objc2_app_kit::NSEventModifierFlags) -> bool {
+    // Key codes 123 to 126 are the arrows.
+    (123..=126).contains(&key_code) && flags.contains(objc2_app_kit::NSEventModifierFlags::Command)
 }
 
 /// Agent control is opt-in. The new setting takes precedence, including an explicit disable.
@@ -802,6 +818,28 @@ fn check_url(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn key_monitor_takes_only_command_arrows_and_never_escape() {
+        use super::forwards_to_page;
+        use objc2_app_kit::NSEventModifierFlags as Flags;
+        for code in 123..=126 {
+            assert!(forwards_to_page(code, Flags::Command));
+            assert!(forwards_to_page(code, Flags::Command | Flags::Shift));
+            assert!(!forwards_to_page(code, Flags::empty()));
+            assert!(!forwards_to_page(code, Flags::Option));
+        }
+        // Escape belongs to the suggestion list, the find bar and the page, also in full screen.
+        for flags in [
+            Flags::empty(),
+            Flags::Command,
+            Flags::Control | Flags::Command,
+        ] {
+            assert!(!forwards_to_page(53, flags));
+        }
+        assert!(!forwards_to_page(122, Flags::Command));
+        assert!(!forwards_to_page(127, Flags::Command));
+    }
+
     #[test]
     fn renamed_agent_flag_preserves_opt_in_and_honors_explicit_disable() {
         use std::ffi::OsStr;

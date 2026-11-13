@@ -44,11 +44,14 @@ pub fn open(cx: &mut App) {
         cx.global_mut::<SettingsWindow>().handle = None;
     }
 
-    let bounds = Bounds::centered(None, size(px(460.), px(620.)), cx);
+    let display = cx
+        .primary_display()
+        .map(|display| f32::from(display.bounds().size.height));
+    let bounds = Bounds::centered(None, size(px(460.), px(window_height(display))), cx);
     match cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(400.), px(360.))),
+            window_min_size: Some(size(px(400.), px(MIN_HEIGHT))),
             titlebar: Some(TitlebarOptions {
                 title: Some("Settings".into()),
                 ..Default::default()
@@ -62,6 +65,24 @@ pub fn open(cx: &mut App) {
             cx.activate(true);
         }
         Err(error) => eprintln!("Could not open Settings: {error}"),
+    }
+}
+
+/// The height that shows every section at once.
+const FULL_HEIGHT: f32 = 760.;
+/// The window's minimum height; its content scrolls below the full height.
+const MIN_HEIGHT: f32 = 360.;
+/// Room left on the display for the menu bar, the Dock and a margin.
+const DISPLAY_MARGIN: f32 = 140.;
+
+/// The Settings window's height on a display `display` points tall: all of it where it fits,
+/// as on a 1280×800 screen it doesn't.
+fn window_height(display: Option<f32>) -> f32 {
+    match display {
+        Some(height) if height.is_finite() => {
+            (height - DISPLAY_MARGIN).clamp(MIN_HEIGHT, FULL_HEIGHT)
+        }
+        _ => FULL_HEIGHT,
     }
 }
 
@@ -197,6 +218,7 @@ impl Render for Settings {
         let p = theme::palette(cx);
         let settings = cx.global::<ThemeSettings>();
         let (search, language) = (settings.search, settings.language);
+        let native_full_screen = settings.native_full_screen;
         let launch = cx
             .try_global::<LaunchLanguage>()
             .map_or(language, |launch| launch.0);
@@ -267,12 +289,46 @@ impl Render for Settings {
                     )
                 }),
             )
+            .child(
+                section(p, "FULL SCREEN", "What ⌃⌘F does.").children(
+                    choice_rows(&[true, false], native_full_screen)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (native, active))| {
+                            let label = if native {
+                                "Use native full screen"
+                            } else {
+                                "Fill the current desktop"
+                            };
+                            choice_row(p, "full-screen", index, label, active, move |cx| {
+                                cx.update_global::<ThemeSettings, _>(|settings, _| {
+                                    settings.native_full_screen = native;
+                                    settings.save();
+                                })
+                            })
+                        }),
+                ),
+            )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_fits_small_displays_and_scrolls_there() {
+        // 1280×800 leaves about 660 points under the menu bar and above the Dock.
+        assert_eq!(window_height(Some(800.)), 660.);
+        assert_eq!(window_height(Some(1117.)), FULL_HEIGHT);
+        assert_eq!(window_height(Some(900.)), FULL_HEIGHT);
+        // Never below the minimum size, and the full height without a display.
+        assert_eq!(window_height(Some(400.)), MIN_HEIGHT);
+        assert_eq!(window_height(Some(0.)), MIN_HEIGHT);
+        assert_eq!(window_height(None), FULL_HEIGHT);
+        assert_eq!(window_height(Some(f32::NAN)), FULL_HEIGHT);
+        assert_eq!(window_height(Some(f32::INFINITY)), FULL_HEIGHT);
+    }
 
     #[test]
     fn search_rows_list_every_engine_once_and_mark_only_the_current_one() {
