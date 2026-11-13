@@ -497,6 +497,12 @@ pub struct WindowState {
     /// as the cookies shown under the branch are no longer the ones it named.
     confirming: Option<Pending>,
     revealed: bool,
+    /// What the details panel and the summary show, kept with the state rather than
+    /// recomputed on every frame: totals walk every cookie under the selection.
+    totals: Totals,
+    selected_cookie: Option<Cookie>,
+    total: usize,
+    shown_count: usize,
     loaded: bool,
     /// A delete is on its way; its answer is the next list of cookies. This is the tree from
     /// before it, which is still what WebKit stores if the request never reaches it.
@@ -515,6 +521,10 @@ impl Default for WindowState {
             selection: Node::All,
             confirming: None,
             revealed: false,
+            totals: Totals::default(),
+            selected_cookie: None,
+            total: 0,
+            shown_count: 0,
             loaded: false,
             deleting: None,
             error: None,
@@ -529,6 +539,7 @@ impl WindowState {
         &self.tree
     }
 
+    #[cfg(test)]
     pub fn shown(&self) -> &Tree {
         &self.shown
     }
@@ -551,6 +562,26 @@ impl WindowState {
 
     pub fn revealed(&self) -> bool {
         self.revealed
+    }
+
+    /// The totals of the selected node, as shown.
+    pub fn totals(&self) -> Totals {
+        self.totals
+    }
+
+    /// The selected cookie, when a shown cookie is selected.
+    pub fn selected_cookie(&self) -> Option<&Cookie> {
+        self.selected_cookie.as_ref()
+    }
+
+    /// Every cookie WebKit reported, filter or not.
+    pub fn total(&self) -> usize {
+        self.total
+    }
+
+    /// The cookies the filter shows.
+    pub fn shown_count(&self) -> usize {
+        self.shown_count
     }
 
     /// Whether WebKit has answered at least once.
@@ -629,6 +660,22 @@ impl WindowState {
             self.confirming = None;
         }
         self.rows = self.shown.rows(&self.expanded);
+        self.total = self.tree.count();
+        self.shown_count = self.shown.count();
+        self.describe_selection();
+    }
+
+    fn describe_selection(&mut self) {
+        self.totals = self.shown.totals(&self.selection);
+        self.selected_cookie = match self.selection {
+            Node::Cookie(_) => self
+                .shown
+                .subtree(&self.selection)
+                .first()
+                .copied()
+                .cloned(),
+            _ => None,
+        };
     }
 
     pub fn select(&mut self, node: Node) {
@@ -636,6 +683,7 @@ impl WindowState {
             self.selection = node;
             self.revealed = false;
             self.confirming = None;
+            self.describe_selection();
         }
     }
 
@@ -1861,5 +1909,47 @@ mod tests {
         assert_eq!(answer_timeout(5_000), Duration::from_secs(110));
         // A huge store still has a bounded wait.
         assert_eq!(answer_timeout(usize::MAX), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn what_the_details_show_is_kept_up_to_date_between_changes() {
+        let cookies = store();
+        let mut state = WindowState::default();
+        let fresh = |state: &WindowState| {
+            assert_eq!(state.totals(), state.shown().totals(state.selection()));
+            assert_eq!(
+                state.selected_cookie(),
+                match state.selection() {
+                    Node::Cookie(_) => state.shown().subtree(state.selection()).first().copied(),
+                    _ => None,
+                }
+            );
+            assert_eq!(state.total(), state.tree().count());
+            assert_eq!(state.shown_count(), state.shown().count());
+        };
+        fresh(&state);
+        assert_eq!(state.answered(Some(&cookies)), Follow::Nothing);
+        fresh(&state);
+        assert_eq!(state.totals().cookies, 4);
+        state.select(Node::Cookie(cookies[1].key()));
+        fresh(&state);
+        assert_eq!(state.selected_cookie(), Some(&cookies[1]));
+        state.set_query("example");
+        fresh(&state);
+        assert_eq!(state.selected_cookie(), None, "the filter hid it");
+        state.select(Node::Cookie(cookies[3].key()));
+        state.request_delete();
+        fresh(&state);
+        assert_eq!(state.totals().cookies, 0);
+        state.send_failed("no store".into());
+        fresh(&state);
+        state.step(-1);
+        fresh(&state);
+        state.set_query("");
+        state.toggle(&Node::All);
+        fresh(&state);
+        assert_eq!(state.answered(Some(&cookies[..1])), Follow::Nothing);
+        fresh(&state);
+        assert_eq!(state.total(), 1);
     }
 }

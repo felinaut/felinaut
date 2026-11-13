@@ -350,11 +350,11 @@ impl CookieManager {
 
     fn details(&self, p: Palette, cx: &mut Context<Self>) -> Div {
         let node = self.state.selection();
-        let totals = self.state.shown().totals(node);
+        let totals = self.state.totals();
         let panel = div().flex().flex_col().gap_3();
         let panel = match node {
             Node::Cookie(key) => {
-                let Some(cookie) = self.state.shown().subtree(node).first().copied() else {
+                let Some(cookie) = self.state.selected_cookie() else {
                     return panel;
                 };
                 let now = SystemTime::now()
@@ -587,7 +587,7 @@ impl Render for CookieManager {
         if graph.animating && active {
             window.request_animation_frame();
         }
-        let total = self.state.tree().count();
+        let total = self.state.total();
         let query = self.state.query().trim().to_string();
         let summary = if !self.state.loaded() {
             "Loading…".to_string()
@@ -603,7 +603,7 @@ impl Render for CookieManager {
         } else {
             format!(
                 "{} of {} match",
-                self.state.shown().count(),
+                self.state.shown_count(),
                 cookies::cookie_count(total)
             )
         };
@@ -611,7 +611,7 @@ impl Render for CookieManager {
             None
         } else if total == 0 {
             Some("No cookies yet. Sites you visit and sign in to appear here.".to_string())
-        } else if self.state.shown().count() == 0 {
+        } else if self.state.shown_count() == 0 {
             Some(format!(
                 "No site or host matches “{}”.",
                 cookies::display(&query, 40)
