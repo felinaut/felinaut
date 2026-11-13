@@ -85,14 +85,14 @@ impl NativePage {
             .with_visible(false)
             .with_focused(false)
             .with_navigation_handler(move |url| {
-                // A forgotten site is refused before any request: WebKit would reuse the
-                // connection it trusted.
-                if EXCEPTIONS.with_borrow(|exceptions| exceptions.blocked(&url)) {
-                    let failure = crate::load_error::forgotten(&url);
-                    let _ = blocked_sender.send(Event::Failed(failure));
-                    return false;
+                match EXCEPTIONS.with_borrow(|exceptions| navigation(exceptions, &url, true)) {
+                    Navigation::Allow => true,
+                    Navigation::Refuse => false,
+                    Navigation::Report(failure) => {
+                        let _ = blocked_sender.send(Event::Failed(failure));
+                        false
+                    }
                 }
-                allowed_url(&url)
             })
             .with_new_window_req_handler(move |url, _| {
                 if allowed_url(&url) {
@@ -143,7 +143,10 @@ impl NativePage {
                 position: wry::dpi::LogicalPosition::new(-20_000., -20_000.).into(),
                 size: wry::dpi::LogicalSize::new(1024., 768.).into(),
             })
-            .with_navigation_handler(|url| allowed_url(&url))
+            .with_navigation_handler(|url| {
+                EXCEPTIONS.with_borrow(|exceptions| navigation(exceptions, &url, false))
+                    == Navigation::Allow
+            })
             .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
             .with_on_page_load_handler(move |event, url| {
                 if matches!(event, PageLoadEvent::Finished) {
@@ -865,6 +868,28 @@ pub fn pointer(_: &gpui::Window) -> Option<gpui::Point<f32>> {
     None
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Navigation {
+    Allow,
+    Refuse,
+    /// Refuse, and show this error page in the tab.
+    Report(LoadFailure),
+}
+
+/// The navigation policy. Forgotten sites are refused before any request, because WebKit
+/// would reuse the connection it trusted; only a page the user sees (`reports`) says so.
+fn navigation(exceptions: &Exceptions, url: &str, reports: bool) -> Navigation {
+    if !allowed_url(url) {
+        Navigation::Refuse
+    } else if !exceptions.blocked(url) {
+        Navigation::Allow
+    } else if reports {
+        Navigation::Report(crate::load_error::forgotten(url))
+    } else {
+        Navigation::Refuse
+    }
+}
+
 fn allowed_url(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {
         scheme.eq_ignore_ascii_case("http")
@@ -974,6 +999,54 @@ mod tests {
         assert_eq!(super::native_modifiers("+"), (Flags::empty(), "+"));
         assert_eq!(super::native_modifiers("Alt+"), (Flags::empty(), "Alt+"));
         assert_eq!(native_key(""), None);
+    }
+
+    #[test]
+    fn refuses_forgotten_sites_before_any_request() {
+        use super::{Navigation, navigation};
+        use crate::load_error::{Exceptions, Kind};
+        let mut exceptions = Exceptions::default();
+        assert_eq!(
+            navigation(&exceptions, "https://wiki.corp.example/", true),
+            Navigation::Allow
+        );
+        exceptions.allow("https://wiki.corp.example/", vec![1]);
+        exceptions.forget();
+        match navigation(&exceptions, "https://wiki.corp.example/a", true) {
+            Navigation::Report(failure) => {
+                assert_eq!(failure.kind, Kind::Forgotten);
+                assert_eq!(failure.url, "https://wiki.corp.example/a");
+            }
+            other => panic!("{other:?}"),
+        }
+        // The hidden live-folder page refuses too, without an error page.
+        assert_eq!(
+            navigation(&exceptions, "https://wiki.corp.example/a", false),
+            Navigation::Refuse
+        );
+        for reports in [true, false] {
+            for url in [
+                "https://other.example/",
+                "http://wiki.corp.example/",
+                "about:blank",
+            ] {
+                assert_eq!(
+                    navigation(&exceptions, url, reports),
+                    Navigation::Allow,
+                    "{url}"
+                );
+            }
+            assert_eq!(
+                navigation(&exceptions, "file:///etc/passwd", reports),
+                Navigation::Refuse
+            );
+        }
+        // Try Again lifts the block.
+        exceptions.retry(&crate::load_error::forgotten("https://wiki.corp.example/"));
+        assert_eq!(
+            navigation(&exceptions, "https://wiki.corp.example/a", false),
+            Navigation::Allow
+        );
     }
 
     #[test]
