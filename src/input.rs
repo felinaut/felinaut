@@ -108,6 +108,8 @@ pub struct AddressInput {
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     not_secure: bool,
+    /// A password field: draws a bullet per character and refuses copy and cut.
+    masked: bool,
     _theme_observer: gpui::Subscription,
 }
 
@@ -128,8 +130,18 @@ impl AddressInput {
             last_layout: None,
             last_bounds: None,
             not_secure: false,
+            masked: false,
             is_selecting: false,
             _theme_observer: cx.observe_global::<ThemeSettings>(|_, cx| cx.notify()),
+        }
+    }
+
+    /// A form field: `placeholder` is shown while it is empty.
+    pub fn field(placeholder: &str, masked: bool, cx: &mut Context<Self>) -> Self {
+        Self {
+            placeholder: placeholder.to_owned().into(),
+            masked,
+            ..Self::new(cx)
         }
     }
 
@@ -179,6 +191,26 @@ impl AddressInput {
         match &self.ghost {
             Some((prefix, _)) if !self.content.is_empty() => prefix.len(),
             _ => 0,
+        }
+    }
+
+    /// The layout index drawn for content byte `offset`.
+    fn to_display(&self, offset: usize) -> usize {
+        if self.masked {
+            masked_display_offset(&self.content, offset)
+        } else {
+            offset + self.ghost_offset()
+        }
+    }
+
+    /// The content byte offset for layout index `index`.
+    fn to_content(&self, index: usize) -> usize {
+        if self.masked {
+            masked_content_offset(&self.content, index)
+        } else {
+            index
+                .saturating_sub(self.ghost_offset())
+                .min(self.content.len())
         }
     }
 
@@ -350,14 +382,14 @@ impl AddressInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.masked {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
         }
     }
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.masked {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
@@ -394,9 +426,7 @@ impl AddressInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
-            .saturating_sub(self.ghost_offset())
-            .min(self.content.len())
+        self.to_content(line.closest_index_for_x(position.x - bounds.left()))
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -607,15 +637,14 @@ impl EntityInputHandler for AddressInput {
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
-        let offset = self.ghost_offset();
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
             point(
-                bounds.left() + last_layout.x_for_index(range.start + offset),
+                bounds.left() + last_layout.x_for_index(self.to_display(range.start)),
                 bounds.top(),
             ),
             point(
-                bounds.left() + last_layout.x_for_index(range.end + offset),
+                bounds.left() + last_layout.x_for_index(self.to_display(range.end)),
                 bounds.bottom(),
             ),
         ))
@@ -633,12 +662,31 @@ impl EntityInputHandler for AddressInput {
             return Some(0);
         }
         let last_layout = self.last_layout.as_ref()?;
-        let utf8_index = last_layout
-            .index_for_x(line_point.x)?
-            .saturating_sub(self.ghost_offset())
-            .min(self.content.len());
+        let utf8_index = self.to_content(last_layout.index_for_x(line_point.x)?);
         Some(self.offset_to_utf16(utf8_index))
     }
+}
+
+/// Drawn for each character of a masked field.
+const BULLET: char = '•';
+
+/// The layout index of content byte `offset` when every character is drawn as a bullet.
+fn masked_display_offset(content: &str, offset: usize) -> usize {
+    let offset = offset.min(content.len());
+    content
+        .char_indices()
+        .take_while(|(index, _)| *index < offset)
+        .count()
+        * BULLET.len_utf8()
+}
+
+/// The content byte offset of bullet layout index `index`, on a character boundary.
+fn masked_content_offset(content: &str, index: usize) -> usize {
+    let characters = index / BULLET.len_utf8();
+    content
+        .char_indices()
+        .nth(characters)
+        .map_or(content.len(), |(offset, _)| offset)
 }
 
 struct TextElement {
@@ -695,15 +743,20 @@ impl Element for TextElement {
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
         let content = input.content.clone();
-        let offset = input.ghost_offset();
-        let selected_range = input.selected_range.start + offset..input.selected_range.end + offset;
-        let cursor = input.cursor_offset() + offset;
+        let selected_range = input.to_display(input.selected_range.start)
+            ..input.to_display(input.selected_range.end);
+        let cursor = input.to_display(input.cursor_offset());
         let style = window.text_style();
         let p = theme::palette(cx);
 
         let ghost = input.ghost.clone().filter(|_| !content.is_empty());
         let (display_text, text_color) = if content.is_empty() {
             (input.placeholder.clone(), rgb(p.muted).into())
+        } else if input.masked {
+            (
+                BULLET.to_string().repeat(content.chars().count()).into(),
+                style.color,
+            )
         } else if let Some((prefix, suffix)) = &ghost {
             (format!("{prefix}{content}{suffix}").into(), style.color)
         } else {
@@ -740,6 +793,8 @@ impl Element for TextElement {
             .filter(|run| run.len > 0)
             .collect()
         } else if let Some(marked_range) = input.marked_range.as_ref() {
+            let marked_range =
+                input.to_display(marked_range.start)..input.to_display(marked_range.end);
             vec![
                 TextRun {
                     len: marked_range.start,
@@ -961,7 +1016,29 @@ pub fn zoom_badge(p: theme::Palette, zoom: SharedString, flash: f32) -> gpui::Di
 
 #[cfg(test)]
 mod tests {
-    use super::{next_word, previous_word};
+    use super::{BULLET, masked_content_offset, masked_display_offset, next_word, previous_word};
+
+    #[test]
+    fn masked_offsets_map_each_character_to_one_bullet() {
+        let bullet = BULLET.len_utf8();
+        let text = "aé✓😀b";
+        let boundaries: Vec<usize> = text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain([text.len()])
+            .collect();
+        for (characters, &offset) in boundaries.iter().enumerate() {
+            let display = masked_display_offset(text, offset);
+            assert_eq!(display, characters * bullet, "{offset}");
+            assert_eq!(masked_content_offset(text, display), offset);
+            // Inside a bullet rounds down to its character.
+            assert_eq!(masked_content_offset(text, display + 1), offset);
+        }
+        assert_eq!(masked_display_offset(text, 999), 5 * bullet);
+        assert_eq!(masked_content_offset(text, 999), text.len());
+        assert_eq!(masked_display_offset("", 0), 0);
+        assert_eq!(masked_content_offset("", 7), 0);
+    }
 
     #[test]
     fn word_motion_stops_at_words_not_punctuation() {
