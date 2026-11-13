@@ -146,9 +146,10 @@ fn text(text: Text, limit: usize) -> String {
     let Some(text) = (unsafe { text.as_ref() }) else {
         return String::new();
     };
-    // One character is at most two UTF-16 units. The extra unit lets the model see that the
-    // text was longer and mark the cut.
-    let units = 2 * limit + 1;
+    // One character is at most two UTF-16 units. The extra character lets the model see that
+    // the text was longer and mark the cut. One extra unit was not enough: the cut then moved
+    // back to the start of a surrogate pair and left exactly `limit` characters.
+    let units = 2 * limit + 2;
     if text.length() <= units {
         return text.to_string();
     }
@@ -236,4 +237,34 @@ pub fn commit(page: usize, url: &str) {
     let origin = url_origin(url);
     let dismissed = PAGES.with_borrow_mut(|pages| Some(pages.get_mut(&page)?.commit(&origin)));
     drop(dismissed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cut(value: &str, limit: usize) -> String {
+        let string = NSString::from_str(value);
+        text(Retained::as_ptr(&string).cast_mut(), limit)
+    }
+
+    #[test]
+    fn the_native_cut_keeps_surrogate_pairs_whole_and_shows_that_text_was_cut() {
+        assert_eq!(text(std::ptr::null_mut(), 4), "");
+        assert_eq!(cut("", 4), "");
+        assert_eq!(cut("short", 4), "short");
+        assert_eq!(cut(&"x".repeat(100), 4).len(), 10);
+        // Each emoji is two UTF-16 units. The cut must not leave half of one, and the model
+        // must still get more than `limit` characters, so that it marks the cut.
+        for start in ["", "a"] {
+            let long = format!("{start}{}", "😀".repeat(100));
+            let native = cut(&long, 4);
+            assert!(long.starts_with(&native), "{native:?}");
+            assert!(native.chars().count() > 4, "{native:?}");
+            assert!(super::super::clip(&native, 4, false).ends_with('…'));
+        }
+        // Text of exactly the limit has no mark.
+        let exact = "😀".repeat(4);
+        assert_eq!(super::super::clip(&cut(&exact, 4), 4, false), exact);
+    }
 }
