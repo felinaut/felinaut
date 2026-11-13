@@ -118,11 +118,11 @@ pub fn failure(domain: &str, code: i64, url: &str, description: &str) -> Option<
 /// The error page for a forgotten site. It offers no certificate: Try Again lifts the block, and
 /// the site's current certificate needs a fresh decision.
 pub fn forgotten(url: &str) -> LoadFailure {
-    let note = "You forgot the exception for this site's invalid certificate.";
+    // WebKit reported nothing: Felinaut refused the load, so there is no WebKit error code.
     LoadFailure {
         url: url.to_owned(),
         kind: Kind::Forgotten,
-        detail: format!("{note} (NSURLErrorDomain -1202)"),
+        detail: "Felinaut refused this load before connecting.".into(),
         certificate: None,
     }
 }
@@ -325,6 +325,9 @@ mod tests {
         assert_eq!(failure.kind, Kind::Forgotten);
         assert_eq!(failure.url, "https://expired.badssl.com/a");
         assert_eq!(failure.certificate, None);
+        // No error domain or code that WebKit never sent.
+        assert!(!failure.detail.contains("Domain"), "{}", failure.detail);
+        assert!(!failure.detail.contains("-1202"), "{}", failure.detail);
     }
 
     #[test]
