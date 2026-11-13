@@ -11,6 +11,36 @@ pub struct Frame {
     pub height: f64,
 }
 
+/// Edges of a screen that windows should stay out of, such as the camera housing of a
+/// notched MacBook: AppKit's `safeAreaInsets`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Insets {
+    pub top: f64,
+    pub left: f64,
+    pub bottom: f64,
+    pub right: f64,
+}
+
+impl Frame {
+    /// The frame less `insets`, never narrower or lower than nothing. The origin is at the
+    /// bottom left, so the top inset only takes height.
+    pub fn inset(self, insets: Insets) -> Frame {
+        let edge = |inset: f64| if inset.is_finite() { inset.max(0.) } else { 0. };
+        let (top, left, bottom, right) = (
+            edge(insets.top),
+            edge(insets.left),
+            edge(insets.bottom),
+            edge(insets.right),
+        );
+        Frame {
+            x: self.x + left,
+            y: self.y + bottom,
+            width: (self.width - left - right).max(0.),
+            height: (self.height - top - bottom).max(0.),
+        }
+    }
+}
+
 /// What ⌃⌘F does to a window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Toggle {
@@ -33,8 +63,10 @@ pub struct Request {
     pub fill: bool,
     /// The window's frame now.
     pub frame: Frame,
-    /// The area of the window's screen to fill, or `None` without a screen.
+    /// The window's screen, or `None` without a screen.
     pub screen: Option<Frame>,
+    /// The screen's safe area: the window fills the screen less these.
+    pub safe_area: Insets,
     pub animate: bool,
 }
 
@@ -70,7 +102,7 @@ impl Fills {
                     animate: request.animate,
                 });
                 Toggle::Fill {
-                    frame,
+                    frame: frame.inset(request.safe_area),
                     animate: request.animate,
                 }
             }
@@ -103,7 +135,7 @@ impl Fills {
 
 #[cfg(target_os = "macos")]
 mod native {
-    use super::{Fills, Frame, Request, Toggle};
+    use super::{Fills, Frame, Insets, Request, Toggle};
     use objc2::{MainThreadMarker, rc::Retained};
     use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions as Options, NSWindow};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -119,12 +151,24 @@ mod native {
         let Some(ns_window) = ns_window(window) else {
             return window.toggle_fullscreen();
         };
+        let screen = ns_window.screen();
         let request = Request {
             window: ns_window.windowNumber(),
             native: window.is_fullscreen(),
             fill,
             frame: frame(ns_window.frame()),
-            screen: ns_window.screen().map(|screen| frame(screen.frame())),
+            screen: screen.as_ref().map(|screen| frame(screen.frame())),
+            // macOS 12 and later, the deployment target. With the menu bar hidden, the top
+            // inset keeps the toolbar and traffic lights below a MacBook's camera housing.
+            safe_area: screen.map_or_else(Insets::default, |screen| {
+                let insets = screen.safeAreaInsets();
+                Insets {
+                    top: insets.top,
+                    left: insets.left,
+                    bottom: insets.bottom,
+                    right: insets.right,
+                }
+            }),
             animate,
         };
         let (frame, animate) = match FILLS.with_borrow_mut(|fills| fills.toggle(request)) {
@@ -216,7 +260,7 @@ pub fn is_filled(_: &gpui::Window) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fills, Frame, Request, Toggle};
+    use super::{Fills, Frame, Insets, Request, Toggle};
 
     const SCREEN: Frame = Frame {
         x: 0.,
@@ -241,8 +285,79 @@ mod tests {
             fill: true,
             frame,
             screen: Some(SCREEN),
+            safe_area: Insets::default(),
             animate: true,
         }
+    }
+
+    #[test]
+    fn fill_stays_below_the_camera_housing() {
+        let mut fills = Fills::default();
+        let notched = Request {
+            safe_area: Insets {
+                top: 32.,
+                ..Insets::default()
+            },
+            ..press(1, window(40.))
+        };
+        assert_eq!(
+            fills.toggle(notched),
+            Toggle::Fill {
+                frame: Frame {
+                    height: 950.,
+                    ..SCREEN
+                },
+                animate: true
+            }
+        );
+        // Restoring ignores the insets: the window gets back exactly the frame it had.
+        assert_eq!(
+            fills.toggle(press(1, SCREEN)),
+            Toggle::Restore {
+                frame: window(40.),
+                animate: true
+            }
+        );
+    }
+
+    #[test]
+    fn insets_move_the_origin_and_never_go_negative() {
+        let screen = Frame {
+            x: -1512.,
+            y: 200.,
+            width: 1512.,
+            height: 982.,
+        };
+        let insets = Insets {
+            top: 32.,
+            left: 10.,
+            bottom: 5.,
+            right: 20.,
+        };
+        assert_eq!(
+            screen.inset(insets),
+            Frame {
+                x: -1502.,
+                y: 205.,
+                width: 1482.,
+                height: 945.,
+            }
+        );
+        assert_eq!(screen.inset(Insets::default()), screen);
+        // Nonsense from the system can't turn the window inside out or move it off the screen.
+        let wild = Insets {
+            top: f64::NAN,
+            left: -40.,
+            bottom: f64::INFINITY,
+            right: 4000.,
+        };
+        assert_eq!(
+            screen.inset(wild),
+            Frame {
+                width: 0.,
+                ..screen
+            }
+        );
     }
 
     #[test]
