@@ -47,6 +47,8 @@ const SIDEBAR_SLIDE: Duration = Duration::from_millis(200);
 /// shortcut: 28 pt title bars (older macOS) still clip 4 pt; measure it at runtime if testers
 /// report it.
 const TRAFFIC_LIGHT_Y: f32 = 18.;
+/// The permission bar must show a whole origin at this width; see `permission_ui`.
+const WINDOW_MIN_WIDTH: f32 = 1000.;
 /// The sidebar header and toolbar height, centring them on the traffic lights.
 const CHROME_ROW: f32 = 2. * (TRAFFIC_LIGHT_Y + 7.);
 /// The pointer within this many px of the window's left edge peeks a hidden sidebar…
@@ -4327,7 +4329,7 @@ fn main() {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(1000.), px(700.))),
+                    window_min_size: Some(size(px(WINDOW_MIN_WIDTH), px(700.))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Felinaut".into()),
                         appears_transparent: true,

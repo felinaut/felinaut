@@ -279,7 +279,7 @@ Limitations: there is no pause or resume, no "ask where to save", no per-site fo
 
 ## Camera and microphone
 
-A site gets the camera or the microphone only after you allow it. When a page asks, a bar appears between the toolbar and the page. It names the site that asks (scheme, host and port; HTTPS is implied and a long name keeps its end) and what it wants:
+A site gets the camera or the microphone only after you allow it. When a page asks, a bar appears between the toolbar and the page. The first line names the site that asks (scheme, host and port; HTTPS is implied and a name of more than 48 characters keeps its end). That line is never cut, also in the narrowest window with the widest sidebar, because the end of the name tells you who owns the site. The second line says what the site wants and has the choices:
 
 - **Not Now** refuses this request. **Never Allow** refuses it and each later request of the site. **Allow Once** allows this request. **Always Allow** allows it and each later request of the site for the same device.
 - Keyboard: the bar never takes the keys on its own, so a key press that was meant for the page cannot answer. Press `⌘⇧P` (**View → Answer Permission Request**) or click the bar to move the keys there. Then `Tab` or `→` and `⇧Tab` or `←` select a choice, `↩` confirms it, `Esc` is **Not Now**. No choice is selected at first, and `←` at **Not Now** stays there. An allow choice does not count in the first half second after the bar appears or after the last key press: a `↩` that comes too early clears the selection. A click that was meant for the page cannot allow anything either.

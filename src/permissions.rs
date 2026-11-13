@@ -137,10 +137,14 @@ pub fn askable(visible: bool, top: Option<String>, frame: Option<String>) -> Opt
     top.filter(|top| visible && frame.as_ref() == Some(top))
 }
 
-/// An origin for the prompt and the toolbar. HTTPS is implied. A long host keeps its end,
-/// because the end names the owner of the site.
+/// The most characters of an origin that the prompt shows. The bar has room for them all at
+/// the minimum window width with the widest sidebar; a test in `permission_ui` checks that.
+pub const ORIGIN_MAX: usize = 48;
+
+/// An origin for the prompt. HTTPS is implied. A long host keeps its end, because the end
+/// names the owner of the site.
 pub fn display_origin(origin: &str) -> String {
-    const MAX: usize = 48;
+    const MAX: usize = ORIGIN_MAX;
     let text = origin.strip_prefix("https://").unwrap_or(origin);
     let length = text.chars().count();
     if length <= MAX {

@@ -37,6 +37,10 @@ const CONTEXT: &str = "FelinautPermission";
 /// the bar starts the time again, so a fast run of keys cannot allow either.
 const ALLOW_DELAY: Duration = Duration::from_millis(500);
 
+const BAR_HEIGHT: f32 = 64.;
+const BAR_PADDING: f32 = 16.;
+const ORIGIN_TEXT: f32 = 13.;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Choice {
     NotNow,
@@ -273,7 +277,7 @@ impl Browser {
                 div()
                     .id(("permission-choice", index))
                     .h(px(28.))
-                    .px_3()
+                    .px_2()
                     .flex_shrink_0()
                     .rounded_md()
                     .border_1()
@@ -320,33 +324,52 @@ impl Browser {
                         this.focus_permission_prompt(&FocusPermissionPrompt, window, cx);
                     }),
                 )
-                .h(px(52.))
+                .h(px(BAR_HEIGHT))
                 .flex_shrink_0()
-                .px_4()
+                .px(px(BAR_PADDING))
                 .flex()
-                .items_center()
-                .gap_2()
+                .flex_col()
+                .justify_center()
+                .gap_1()
                 .bg(rgb(p.surface))
                 .border_b_1()
                 .border_color(rgb(p.border))
+                // The origin has a row of its own and never shrinks, so its end, which names
+                // the owner of the site, is always on display. Only the key hint is cut.
                 .child(
                     div()
-                        .flex_1()
-                        .min_w_0()
                         .flex()
-                        .flex_col()
+                        .items_center()
+                        .gap_2()
                         .child(
-                            line()
-                                .text_size(px(13.))
+                            div()
+                                .flex_shrink_0()
+                                .whitespace_nowrap()
+                                .text_size(px(ORIGIN_TEXT))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(permissions::display_origin(&prompt.request.origin)),
                         )
-                        .child(line().text_size(px(11.)).text_color(rgb(p.muted)).child(format!(
-                            "wants to use your {}  ·  ⌘⇧P for keys: ⇥ choose  ·  ↩ confirm  ·  Esc not now",
-                            permissions::describe(prompt.request.kinds)
-                        ))),
+                        .child(
+                            line()
+                                .flex_1()
+                                .min_w_0()
+                                .text_right()
+                                .text_size(px(11.))
+                                .text_color(rgb(p.muted))
+                                .child("⌘⇧P for keys: ⇥ choose  ·  ↩ confirm  ·  Esc not now"),
+                        ),
                 )
-                .children(buttons),
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(line().flex_1().min_w_0().text_size(px(11.)).child(format!(
+                            "wants your {}",
+                            permissions::describe(prompt.request.kinds)
+                        )))
+                        .children(buttons),
+                ),
         )
     }
 
@@ -482,7 +505,7 @@ impl Browser {
 
 #[cfg(test)]
 mod tests {
-    use super::{ALLOW_DELAY, CHOICES, Choice, Decision, Selection, step};
+    use super::*;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -519,6 +542,21 @@ mod tests {
             selected = Some(step(selected, false));
             assert_eq!(selected, Some(0));
         }
+    }
+
+    #[test]
+    fn the_longest_origin_fits_in_the_narrowest_bar() {
+        // The widest glyph of an origin is "m": 11.75 pt in the system font at 13 pt
+        // semibold (measured with AppKit). A host is lower case, digits, "-", "." and ":".
+        const WIDEST_GLYPH: f32 = 11.75 / 13.;
+        let narrowest = crate::WINDOW_MIN_WIDTH - crate::theme::SIDEBAR_MAX - 2. * BAR_PADDING;
+        let widest = permissions::ORIGIN_MAX as f32 * WIDEST_GLYPH * ORIGIN_TEXT;
+        assert!(widest <= narrowest, "{widest} > {narrowest}");
+        // `display_origin` never gives more than `ORIGIN_MAX` characters.
+        let long = format!("https://{}.example:8443", "m".repeat(300));
+        let shown = permissions::display_origin(&long);
+        assert_eq!(shown.chars().count(), permissions::ORIGIN_MAX);
+        assert!(shown.ends_with(".example:8443"));
     }
 
     #[test]
