@@ -4,11 +4,14 @@
 //! tabs. So the panel is a strip of browser chrome above the page: the page moves down and
 //! cannot draw in the strip. Each tab has its own panel, drawn only while that tab is on show.
 
-use std::rc::Rc;
+use std::{
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use gpui::{
     App, Context, Div, Entity, FocusHandle, Focusable, FontWeight, KeyBinding, Stateful,
-    Subscription, Window, actions, div, prelude::*, px, rgb,
+    Subscription, Task, Timer, Window, actions, div, prelude::*, px, rgb,
 };
 
 use crate::{
@@ -20,6 +23,16 @@ use crate::{
 };
 
 actions!(dialogs, [Accept, Cancel]);
+
+/// How long OK takes no click and no `↩` after a panel shows. The page picks the moment its
+/// dialog opens, and the panel moves the page down: without the wait, a click or a `↩` meant
+/// for the page could answer the dialog. Cancel and `Esc` work at once.
+const ACCEPT_DELAY: Duration = Duration::from_millis(500);
+
+/// Whether OK works at `now` for a panel that showed at `shown_at`.
+fn accepts(shown_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(shown_at) >= ACCEPT_DELAY
+}
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -38,6 +51,10 @@ pub struct Panel {
     suppress: bool,
     /// The answer is sent. The panel draws nothing until the browser's poll removes it.
     answered: bool,
+    /// When the panel showed; OK works `ACCEPT_DELAY` later.
+    shown_at: Instant,
+    /// Draws OK again when it starts to work.
+    _ready: Task<()>,
     _input_events: Option<[Subscription; 2]>,
 }
 
@@ -63,6 +80,10 @@ impl Panel {
                 }),
             ]
         });
+        let ready = cx.spawn(async move |panel, cx| {
+            Timer::after(ACCEPT_DELAY).await;
+            let _ = panel.update(cx, |_, cx| cx.notify());
+        });
         Self {
             page,
             shown,
@@ -70,6 +91,8 @@ impl Panel {
             input,
             suppress: false,
             answered: false,
+            shown_at: Instant::now(),
+            _ready: ready,
             _input_events: input_events,
         }
     }
@@ -85,7 +108,8 @@ impl Panel {
     }
 
     fn answer(&mut self, accepted: bool, cx: &mut Context<Self>) {
-        if self.answered {
+        // Every way to OK comes here: the button, `↩` on the panel and `↩` in the field.
+        if self.answered || (accepted && !accepts(self.shown_at, Instant::now())) {
             return;
         }
         self.answered = true;
@@ -126,6 +150,7 @@ impl Render for Panel {
         let p = theme::palette(cx);
         let request = &self.shown.request;
         let suppress = self.suppress;
+        let ready = accepts(self.shown_at, Instant::now());
         div()
             .id("js-dialog")
             .key_context("JsDialog")
@@ -217,6 +242,7 @@ impl Render for Panel {
                     })
                     .child(
                         button("js-dialog-ok", "OK  ↩", true, p)
+                            .when(!ready, |button| button.opacity(0.5).cursor_default())
                             .on_click(cx.listener(|this, _, _, cx| this.answer(true, cx))),
                     ),
             )
@@ -295,7 +321,21 @@ pub fn focus(browser: &Browser, window: &mut Window, cx: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::takes_focus;
+    use super::{ACCEPT_DELAY, accepts, takes_focus};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn ok_works_only_after_the_panel_has_shown_for_a_while() {
+        let shown_at = Instant::now();
+        let after = |delay: Duration| accepts(shown_at, shown_at + delay);
+        // A click or `↩` meant for the page, at the moment the panel shows.
+        assert!(!after(Duration::ZERO));
+        assert!(!after(ACCEPT_DELAY - Duration::from_millis(1)));
+        assert!(after(ACCEPT_DELAY));
+        assert!(after(Duration::from_secs(60)));
+        // A clock reading from before the panel showed never counts as a wait.
+        assert!(!accepts(shown_at + ACCEPT_DELAY, shown_at));
+    }
 
     #[test]
     fn a_panel_takes_the_keys_only_from_the_page_or_from_another_panel() {
