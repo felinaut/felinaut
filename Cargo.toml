@@ -65,6 +65,11 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = [
     # Felinaut is its own download delegate, for progress and cancelling.
     "WKDownload",
     "WKDownloadDelegate",
+    "WKFindConfiguration",
+    "WKFindResult",
+    # Clearing the find selection from WebKit's client world, out of the page's reach.
+    "WKContentWorld",
+    "WKFrameInfo",
 ] }
 
 [[test]]

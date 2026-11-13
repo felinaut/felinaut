@@ -53,6 +53,56 @@ impl Render for TestWindow {
     }
 }
 
+/// Page scripts that notice, and would break, a find bar that edits the selection from the
+/// page's own JavaScript world.
+const FIND_OVERRIDES: &str = "<script>Selection.prototype.collapseToStart = Selection.prototype.removeAllRanges = function () { top.findTouched = true; };</script>";
+
+/// Reads `frame-or-element-id:text` of the selection in the page or its frames, or "".
+const SELECTION: &str = "(() => { for (const w of [window, ...Array.from(document.querySelectorAll('iframe'), f => f.contentWindow)]) { const s = w.getSelection(); if (s && s.rangeCount && !s.isCollapsed) return s.anchorNode.parentElement.id + ':' + s; } return ''; })()";
+
+/// Runs `page.find`, then returns whether it matched and what is selected.
+async fn find_step(page: &NativePage, text: &str, backwards: bool) -> (bool, String) {
+    page.find(text, backwards);
+    (wait_found(page).await, read(page, SELECTION).await)
+}
+
+async fn wait_found(page: &NativePage) -> bool {
+    let start = Instant::now();
+    loop {
+        Timer::after(Duration::from_millis(20)).await;
+        if let Some(found) = page
+            .drain_events()
+            .into_iter()
+            .find_map(|event| match event {
+                Event::Found(found) => Some(found),
+                _ => None,
+            })
+        {
+            return found;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "no find result");
+    }
+}
+
+async fn read(page: &NativePage, script: &str) -> String {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    page.evaluate(script, move |value| {
+        let _ = sender.send(value);
+    })
+    .unwrap();
+    let start = Instant::now();
+    loop {
+        Timer::after(Duration::from_millis(20)).await;
+        if let Ok(value) = receiver.try_recv() {
+            return value.trim_matches('"').to_string();
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "no readback of {script:?}"
+        );
+    }
+}
+
 fn main() {
     if std::env::var_os("FELINAUT_NATIVE_TEST")
         .or_else(|| std::env::var_os("FELIFOX_NATIVE_TEST"))
@@ -93,6 +143,28 @@ fn main() {
                 let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"../../fixture.bin\"\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture");
                 continue;
             }
+            // Find fixtures: the page replaces the Selection methods that the find bar relies on,
+            // and a same-origin frame holds words that appear nowhere else.
+            let fixture = if request.starts_with("GET /find ") {
+                Some(format!(
+                    "<p id=m1>tap</p><p id=m2>tab</p><p id=m3>table</p><iframe src='/frame'></iframe>{FIND_OVERRIDES}"
+                ))
+            } else if request.starts_with("GET /frame ") {
+                Some(format!(
+                    "<p id=f1>zebra</p><p id=f2>zebu</p><p id=f3>zebus</p>{FIND_OVERRIDES}"
+                ))
+            } else {
+                None
+            };
+            if let Some(body) = fixture {
+                let body = format!("<!doctype html><meta charset=utf-8><title>Find</title>{body}");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                continue;
+            }
             let second = request.starts_with("GET /second ");
             let script = if second {
                 "document.title = localStorage.getItem('felifox-smoke') === 'yes' ? 'JS SECOND' : 'STORAGE FAILED';"
@@ -116,6 +188,7 @@ fn main() {
         let first_url = format!("{base}/first");
         let second_url = format!("{base}/second");
         let download_url = format!("{base}/download");
+        let find_url = format!("{base}/find");
         let folder = folder.clone();
         let download_requests = download_requests.clone();
         let handle = cx.open_window(
@@ -147,6 +220,7 @@ fn main() {
                         let mut foreground_open = false;
                         let mut failure = None;
                         let mut downloads = Vec::new();
+                        let mut found = Vec::new();
                         loop {
                             Timer::after(Duration::from_millis(50)).await;
                             downloads.extend(downloads::native::drain());
@@ -164,14 +238,16 @@ fn main() {
                                     Event::Hover(None) => hover_cleared = true,
                                     Event::OpenInBackground(url) if url.ends_with("/link-destination") => background_opens += 1,
                                     Event::Open(url) if url.ends_with("/link-destination") => foreground_open = true,
+                                    Event::Found(value) => found.push(value),
                                     _ => {},
                                 }
                             }
                             assert!(start.elapsed() < Duration::from_secs(20), "native test timed out at stage {stage}; title={title:?}");
-                            if stage <= 4 && !finished { continue; }
+                            if (stage <= 4 || stage == 8) && !finished { continue; }
                             if stage == 5 && (title != "LINK EVENTS OK" || failure.is_none()) { continue; }
                             let downloaded = downloads.iter().any(|event| matches!(event, downloads::Event::Finished { .. }));
                             if stage == 6 && !(downloaded && download_requests.load(Ordering::SeqCst) >= 2) { continue; }
+                            if stage == 7 && found.len() < 3 { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
@@ -242,7 +318,42 @@ fn main() {
                                     assert_eq!(std::fs::read(saved).unwrap(), b"fixture");
                                     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "the hidden page saved nothing");
                                     std::fs::remove_dir_all(folder.parent().unwrap()).unwrap();
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, and a download that stays in the downloads folder while a hidden page's is refused");
+                                    second_page.find("test link", false);
+                                    second_page.find("TEST", true);
+                                    second_page.find("no such words", false);
+                                }
+                                7 => {
+                                    assert_eq!(found, [true, true, false], "find matches case-insensitively and reports misses");
+                                    second_page.navigate(&find_url).unwrap();
+                                }
+                                8 => {
+                                    // Typing letter by letter refines the current match instead of
+                                    // jumping past it; repeating the query (⌘G, ⇧⌘G) steps.
+                                    for (text, backwards, selected) in [
+                                        ("t", false, "m1:t"),
+                                        ("ta", false, "m1:ta"),
+                                        ("tab", false, "m2:tab"),
+                                        ("tab", false, "m3:tab"),
+                                        ("tab", true, "m2:tab"),
+                                        ("tabl", false, "m3:tabl"),
+                                        ("tab", false, "m3:tab"),
+                                        // The same inside a same-origin frame.
+                                        ("z", false, "f1:z"),
+                                        ("ze", false, "f1:ze"),
+                                        ("zebu", false, "f2:zebu"),
+                                        ("zebu", false, "f3:zebu"),
+                                        ("zebus", false, "f3:zebus"),
+                                    ] {
+                                        assert_eq!(find_step(&second_page, text, backwards).await, (true, selected.to_string()), "finding {text:?}, backwards: {backwards}");
+                                    }
+                                    // Emptying the query clears the match, here inside the frame.
+                                    second_page.deselect();
+                                    assert_eq!(read(&second_page, SELECTION).await, "", "the last match in the frame is deselected");
+                                    assert_eq!(find_step(&second_page, "tap", false).await, (true, "m1:tap".to_string()));
+                                    second_page.deselect();
+                                    assert_eq!(read(&second_page, SELECTION).await, "", "the last match in the page is deselected");
+                                    assert_eq!(read(&second_page, "String(!!top.findTouched)").await, "false", "the page never sees the find bar edit its selection");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and find in page: refining letter by letter, inside a frame, and clearing the match");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;

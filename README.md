@@ -183,6 +183,7 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | `⌘W`             | Close active tab                                                |
 | `⌘⇧T`            | Reopen the last closed tab (back in its split view if possible) |
 | `⌘L`             | Focus address and select all                                    |
+| `⌘F`             | Find in page; `↩` / `⌘G` next match, `⇧↩` / `⌘⇧G` previous, `Esc` closes |
 | `⌘R`             | Reload                                                          |
 | `⌘+` / `⌘-`      | Zoom in / out; the address bar shows the level, click it to reset |
 | `⌘[` / `⌘]`      | Back / forward                                                  |
@@ -195,6 +196,8 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | `⌃Tab` / `⌃⇧Tab` | Next / previous tab (also `⌘⇧]` / `⌘⇧[`)                        |
 | `⌘,`             | Open Settings                                                   |
 | `⌘Q`             | Quit                                                            |
+
+Find in page uses WebKit's own find: case-insensitive and wrapping, including same-origin frames. Typing refines the current match; emptying the field clears it. Limitations: there is no match count and no highlight of all matches, only "Not found". A match is a normal text selection, so the page can see it change (`selectionchange`), as in Safari. `⌘F`, `⌘G` and `⌘⇧G` always open Felinaut's find bar, even on sites with a find of their own.
 
 ### Title-first address bar and history suggestions
 

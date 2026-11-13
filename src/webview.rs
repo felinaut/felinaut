@@ -29,6 +29,8 @@ pub enum Event {
     Failed(LoadFailure),
     /// A load ended without finishing: cancelled, or failed after the page was shown.
     Stopped,
+    /// Whether the last `find` matched.
+    Found(bool),
 }
 
 /// One persistent native child view per tab; hiding it does not discard its history or document.
@@ -180,6 +182,56 @@ impl NativePage {
 
     pub fn set_zoom(&self, zoom: f64) -> Result<(), String> {
         self.webview.zoom(zoom).map_err(|error| error.to_string())
+    }
+
+    /// Selects and scrolls to the next match, and reports `Event::Found`. WebKit starts at the
+    /// current selection and skips it only when it already is a match, so a longer or shorter
+    /// query refines the current match, in frames too, and repeating a query steps to the next.
+    pub fn find(&self, text: &str, backwards: bool) {
+        use objc2::MainThreadOnly;
+        use objc2_web_kit::{WKFindConfiguration, WKFindResult};
+        use wry::WebViewExtMacOS;
+        let sender = self
+            .failure_key
+            .and_then(|key| FAILURES.with_borrow(|pages| pages.get(&key).cloned()));
+        let block = block2::RcBlock::new(move |result: std::ptr::NonNull<WKFindResult>| {
+            // SAFETY: WebKit passes a live result on the main thread.
+            let found = unsafe { result.as_ref().matchFound() };
+            if let Some(sender) = &sender {
+                let _ = sender.send(Event::Found(found));
+            }
+        });
+        let webview = self.webview.webview();
+        // SAFETY: a live WKWebView on the main thread; WebKit copies the block.
+        unsafe {
+            let configuration = WKFindConfiguration::new(webview.mtm());
+            configuration.setBackwards(backwards);
+            webview.findString_withConfiguration_completionHandler(
+                &objc2_foundation::NSString::from_str(text),
+                Some(&configuration),
+                &block,
+            );
+        }
+    }
+
+    /// Clears the selection that the last match left, in the page and its frames. The script
+    /// runs in WebKit's client world, where the page's own scripts can neither replace the
+    /// functions it calls nor see it run; the page can still observe `selectionchange`.
+    pub fn deselect(&self) {
+        use objc2::MainThreadOnly;
+        use objc2_web_kit::WKContentWorld;
+        use wry::WebViewExtMacOS;
+        let webview = self.webview.webview();
+        // SAFETY: a live WKWebView on the main thread; no frame means the main frame, and no
+        // completion handler means the result is dropped.
+        unsafe {
+            webview.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+                &objc2_foundation::NSString::from_str(DESELECT),
+                None,
+                &WKContentWorld::defaultClientWorld(webview.mtm()),
+                None,
+            );
+        }
     }
 
     pub fn navigate(&self, url: &str) -> Result<(), String> {
@@ -783,6 +835,12 @@ pub fn pointer(window: &gpui::Window) -> Option<gpui::Point<f32>> {
 pub fn pointer(_: &gpui::Window) -> Option<gpui::Point<f32>> {
     None
 }
+
+/// Empties the selection of a window and of its frames; cross-origin frames throw and are skipped.
+const DESELECT: &str = "(function deselect(w) { \
+    try { w.getSelection().removeAllRanges(); } catch (_) {} \
+    try { for (let i = 0; i < w.frames.length; i++) deselect(w.frames[i]); } catch (_) {} \
+})(window)";
 
 fn allowed_url(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {
