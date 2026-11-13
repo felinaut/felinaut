@@ -672,30 +672,18 @@ fn parse_icon_event(message: &str) -> Option<Event> {
 
 /// Gives Command+arrow keys to the focused page. AppKit offers each Command key to GPUI as a
 /// key equivalent first, and the text input context of GPUI consumes the arrows. Thus WebKit
-/// did not move the caret to the start or the end of a line. It also gives Escape to full
-/// screen. Call this once, on the main thread.
+/// did not move the caret to the start or the end of a line. Call this once, on the main thread.
 #[cfg(target_os = "macos")]
 pub fn forward_command_arrows() {
     use objc2::{ClassType, runtime::NSObjectProtocol};
-    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
+    use objc2_app_kit::{NSEvent, NSEventMask};
     let handler = block2::RcBlock::new(|event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
         // SAFETY: AppKit gives a live event on the main thread.
         let key = unsafe { event.as_ref() };
         let Some(mtm) = objc2::MainThreadMarker::new() else {
             return event.as_ptr();
         };
-        // Escape (53) leaves Felinaut's full screen; a page's, in WebKit's own window, is left
-        // to WebKit.
-        if key.keyCode() == 53
-            && let Some(window) = key.window(mtm)
-            && window.class().name().to_bytes() == b"GPUIWindow"
-            && exit_full_screen(&window)
-        {
-            return std::ptr::null_mut();
-        }
-        // Key codes 123 to 126 are the arrows.
-        if (123..=126).contains(&key.keyCode())
-            && key.modifierFlags().contains(NSEventModifierFlags::Command)
+        if forwards_to_page(key.keyCode(), key.modifierFlags())
             && let Some(responder) = key.window(mtm).and_then(|window| window.firstResponder())
             && responder.isKindOfClass(objc2_web_kit::WKWebView::class())
         {
@@ -709,6 +697,13 @@ pub fn forward_command_arrows() {
         NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler)
     };
     std::mem::forget(monitor);
+}
+
+/// Whether the key monitor hands a key straight to a focused page: only Command+arrows. Every
+/// other key, Escape included, goes the usual way to GPUI, the chrome and the page.
+fn forwards_to_page(key_code: u16, flags: objc2_app_kit::NSEventModifierFlags) -> bool {
+    // Key codes 123 to 126 are the arrows.
+    (123..=126).contains(&key_code) && flags.contains(objc2_app_kit::NSEventModifierFlags::Command)
 }
 
 /// Agent control is opt-in. The new setting takes precedence, including an explicit disable.
@@ -863,21 +858,6 @@ fn ns_window(window: &gpui::Window) -> Option<objc2::rc::Retained<objc2_app_kit:
     view.window()
 }
 
-/// Leaves either kind of full screen, for Escape; false if the window isn't full screen.
-fn exit_full_screen(window: &objc2_app_kit::NSWindow) -> bool {
-    if let Some((frame, animate)) = take_filled(window) {
-        resize(window, frame, animate);
-    } else if window
-        .styleMask()
-        .contains(objc2_app_kit::NSWindowStyleMask::FullScreen)
-    {
-        window.toggleFullScreen(None);
-    } else {
-        return false;
-    }
-    true
-}
-
 /// Sets the window's frame, hiding the menu bar and Dock only while it fills the screen.
 fn resize(window: &objc2_app_kit::NSWindow, frame: objc2_foundation::NSRect, animate: bool) {
     use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions as Options};
@@ -913,6 +893,28 @@ fn check_url(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn key_monitor_takes_only_command_arrows_and_never_escape() {
+        use super::forwards_to_page;
+        use objc2_app_kit::NSEventModifierFlags as Flags;
+        for code in 123..=126 {
+            assert!(forwards_to_page(code, Flags::Command));
+            assert!(forwards_to_page(code, Flags::Command | Flags::Shift));
+            assert!(!forwards_to_page(code, Flags::empty()));
+            assert!(!forwards_to_page(code, Flags::Option));
+        }
+        // Escape belongs to the suggestion list, the find bar and the page, also in full screen.
+        for flags in [
+            Flags::empty(),
+            Flags::Command,
+            Flags::Control | Flags::Command,
+        ] {
+            assert!(!forwards_to_page(53, flags));
+        }
+        assert!(!forwards_to_page(122, Flags::Command));
+        assert!(!forwards_to_page(127, Flags::Command));
+    }
+
     #[test]
     fn renamed_agent_flag_preserves_opt_in_and_honors_explicit_disable() {
         use std::ffi::OsStr;
