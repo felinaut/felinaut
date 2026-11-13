@@ -2197,7 +2197,10 @@ impl Browser {
         {
             // Reloading would load the page underneath the error page, not the one that failed.
             tab.error = match &tab.load_failure {
-                Some(failure) => page.navigate(&failure.url).err(),
+                Some(failure) => {
+                    webview::retry(failure);
+                    page.navigate(&failure.url).err()
+                }
                 None => page.reload().err(),
             };
             tab.loading |= tab.error.is_none();
@@ -2225,9 +2228,8 @@ impl Browser {
             if let Some(page) = &tab.page {
                 let _ = page.set_visible(false);
             }
-            let certificate = webview::blocked_certificate(&tab.url);
-            if let Some(failure) = certificate.and_then(|c| load_error::forgotten(&tab.url, c)) {
-                tab.show_failure(failure);
+            if webview::is_blocked(&tab.url) {
+                tab.show_failure(load_error::forgotten(&tab.url));
             }
         }
         cx.notify();

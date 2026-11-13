@@ -87,8 +87,8 @@ impl NativePage {
             .with_navigation_handler(move |url| {
                 // A forgotten site is refused before any request: WebKit would reuse the
                 // connection it trusted.
-                let blocked = EXCEPTIONS.with_borrow(|exceptions| exceptions.blocked(&url));
-                if let Some(failure) = blocked.and_then(|c| crate::load_error::forgotten(&url, c)) {
+                if EXCEPTIONS.with_borrow(|exceptions| exceptions.blocked(&url)) {
+                    let failure = crate::load_error::forgotten(&url);
                     let _ = blocked_sender.send(Event::Failed(failure));
                     return false;
                 }
@@ -469,8 +469,13 @@ pub fn allow_certificate(url: &str, certificate: Vec<u8>) {
     EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.allow(url, certificate));
 }
 
-pub fn blocked_certificate(url: &str) -> Option<Vec<u8>> {
+pub fn is_blocked(url: &str) -> bool {
     EXCEPTIONS.with_borrow(|exceptions| exceptions.blocked(url))
+}
+
+/// Try Again on an error page: lifts a forgotten site's block, trusting no certificate.
+pub fn retry(failure: &LoadFailure) {
+    EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.retry(failure));
 }
 
 pub fn forget_certificate_exceptions() {

@@ -12,6 +12,8 @@ pub enum Kind {
     Secure,
     Redirects,
     BlockedPort,
+    /// The user forgot this site's certificate exception, so nothing was requested.
+    Forgotten,
     Other,
 }
 
@@ -50,6 +52,10 @@ impl Kind {
             Kind::BlockedPort => (
                 "This port is blocked",
                 "WebKit never connects to ports used by other services, such as mail or file sharing, so web pages can't misuse them. Check the port number in the address.",
+            ),
+            Kind::Forgotten => (
+                "Can't open this page securely",
+                "You forgot the exception for this site's invalid certificate, so Felinaut didn't connect. Try Again connects again; a certificate that is still invalid asks you again.",
             ),
             Kind::Other => ("Can't open the page", "WebKit couldn't load the page."),
         }
@@ -109,56 +115,69 @@ pub fn failure(domain: &str, code: i64, url: &str, description: &str) -> Option<
     })
 }
 
-/// The error page for a forgotten site, whose "Visit this site anyway" accepts it again.
-pub fn forgotten(url: &str, certificate: Vec<u8>) -> Option<LoadFailure> {
+/// The error page for a forgotten site. It offers no certificate: Try Again lifts the block, and
+/// the site's current certificate needs a fresh decision.
+pub fn forgotten(url: &str) -> LoadFailure {
     let note = "You forgot the exception for this site's invalid certificate.";
-    let mut failure = failure("NSURLErrorDomain", -1202, url, note)?;
-    failure.certificate = Some(certificate);
-    Some(failure)
+    LoadFailure {
+        url: url.to_owned(),
+        kind: Kind::Forgotten,
+        detail: format!("{note} (NSURLErrorDomain -1202)"),
+        certificate: None,
+    }
 }
 
 /// Certificates the user accepted despite an error, by `https` host and port, until forgotten or
 /// quit. An exception covers that exact certificate only: a different bad certificate warns again.
-/// Forgetting keeps the record of accepted certificates: WebKit can reuse their connections.
 #[derive(Debug, Default)]
-pub struct Exceptions(
-    HashMap<(String, u16), HashSet<Vec<u8>>>,
-    HashSet<Vec<u8>>,
-    /// Forgotten sites and a certificate each: blocked until "Visit this site anyway" again.
-    HashMap<(String, u16), Vec<u8>>,
-);
+pub struct Exceptions {
+    allowed: HashMap<(String, u16), HashSet<Vec<u8>>>,
+    /// Every certificate accepted this session, even if since forgotten: WebKit can reuse
+    /// their connections, so pages served with them stay marked.
+    accepted: HashSet<Vec<u8>>,
+    /// Forgotten sites, refused before any request until the user tries one again.
+    forgotten: HashSet<(String, u16)>,
+}
 
 impl Exceptions {
     pub fn allow(&mut self, url: &str, certificate: Vec<u8>) {
         if let Some(site) = site(url).filter(|_| can_override(url)) {
-            self.1.insert(certificate.clone());
-            self.2.remove(&site);
-            self.0.entry(site).or_default().insert(certificate);
+            self.accepted.insert(certificate.clone());
+            self.forgotten.remove(&site);
+            self.allowed.entry(site).or_default().insert(certificate);
         }
     }
 
     pub fn allows(&self, host: &str, port: u16, certificate: &[u8]) -> bool {
-        self.0
+        self.allowed
             .get(&(host.to_ascii_lowercase(), port))
             .is_some_and(|certificates| certificates.contains(certificate))
     }
 
     /// Whether the user accepted `certificate` this session, even if since forgotten.
     pub fn accepted(&self, certificate: &[u8]) -> bool {
-        self.1.contains(certificate)
+        self.accepted.contains(certificate)
     }
 
-    /// A forgotten site's certificate: its loads are refused before WebKit could reuse the
-    /// connection it trusted.
-    pub fn blocked(&self, url: &str) -> Option<Vec<u8>> {
-        self.2.get(&site(url)?).cloned()
+    /// Whether `url` is on a forgotten site: its loads are refused before WebKit could reuse
+    /// the connection it trusted.
+    pub fn blocked(&self, url: &str) -> bool {
+        site(url).is_some_and(|site| self.forgotten.contains(&site))
     }
 
+    /// Drops every exception and blocks the sites that had one.
     pub fn forget(&mut self) {
-        for (site, certificates) in self.0.drain() {
-            if let Some(certificate) = certificates.into_iter().next() {
-                self.2.insert(site, certificate);
-            }
+        self.forgotten
+            .extend(self.allowed.drain().map(|(site, _)| site));
+    }
+
+    /// Try Again on a forgotten site's page lifts its block without trusting any certificate:
+    /// a new connection asks about the certificate the site serves now.
+    pub fn retry(&mut self, failure: &LoadFailure) {
+        if failure.kind == Kind::Forgotten
+            && let Some(site) = site(&failure.url)
+        {
+            self.forgotten.remove(&site);
         }
     }
 }
@@ -268,39 +287,70 @@ mod tests {
         assert!(!exceptions.allows("expired.badssl.com", 8443, &[1, 2, 3]));
         assert!(!exceptions.allows("self-signed.badssl.com", 443, &[1, 2, 3]));
 
-        exceptions.allow("https://self-signed.badssl.com/", vec![4]);
-        assert_eq!(exceptions.blocked("https://expired.badssl.com/"), None);
-        exceptions.forget();
-        assert_eq!(
-            exceptions.blocked("https://expired.badssl.com/x"),
-            Some(vec![1, 2, 3])
-        );
-        assert_eq!(
-            exceptions.blocked("https://self-signed.badssl.com/"),
-            Some(vec![4])
-        );
-        assert_eq!(exceptions.blocked("https://other.example/"), None);
-        assert_eq!(exceptions.blocked("http://expired.badssl.com/"), None);
-        // Visiting anyway again unblocks that site only.
-        exceptions.allow("https://expired.badssl.com/", vec![1, 2, 3]);
-        assert_eq!(exceptions.blocked("https://expired.badssl.com/"), None);
-        assert!(
-            exceptions
-                .blocked("https://self-signed.badssl.com/")
-                .is_some()
-        );
-        assert!(failure_for_forgotten_site_offers_the_certificate());
-        exceptions.forget();
-        assert!(!exceptions.allows("expired.badssl.com", 443, &[1, 2, 3]));
-        assert!(!exceptions.allows("self-signed.badssl.com", 443, &[4]));
-        assert!(exceptions.accepted(&[1, 2, 3]) && exceptions.accepted(&[4]));
         assert!(!exceptions.accepted(&[9]));
-        exceptions.forget();
     }
 
-    fn failure_for_forgotten_site_offers_the_certificate() -> bool {
-        let failure = forgotten("https://expired.badssl.com/", vec![7]).unwrap();
-        failure.kind == Kind::Secure && failure.certificate == Some(vec![7])
+    #[test]
+    fn forgetting_blocks_each_https_site_that_had_an_exception() {
+        let mut exceptions = Exceptions::default();
+        // An empty Forget changes nothing.
+        exceptions.forget();
+        assert!(!exceptions.blocked("https://expired.badssl.com/"));
+        exceptions.allow("https://expired.badssl.com/", vec![1, 2, 3]);
+        exceptions.allow("https://expired.badssl.com/", vec![5]);
+        exceptions.allow("https://self-signed.badssl.com/", vec![4]);
+        assert!(!exceptions.blocked("https://expired.badssl.com/"));
+        exceptions.forget();
+        assert!(exceptions.blocked("https://EXPIRED.badssl.com/x?y"));
+        assert!(exceptions.blocked("https://self-signed.badssl.com/"));
+        assert!(!exceptions.blocked("https://expired.badssl.com:8443/"));
+        assert!(!exceptions.blocked("https://other.example/"));
+        assert!(!exceptions.blocked("http://expired.badssl.com/"));
+        assert!(!exceptions.blocked("not a url"));
+        // No exception is left, but pages served with those certificates stay marked.
+        for certificate in [&[1, 2, 3][..], &[5], &[4]] {
+            assert!(!exceptions.allows("expired.badssl.com", 443, certificate));
+            assert!(!exceptions.allows("self-signed.badssl.com", 443, certificate));
+            assert!(exceptions.accepted(certificate));
+        }
+        // Forgetting again keeps the blocks.
+        exceptions.forget();
+        assert!(exceptions.blocked("https://expired.badssl.com/"));
+        assert!(exceptions.blocked("https://self-signed.badssl.com/"));
+    }
+
+    #[test]
+    fn a_forgotten_site_page_never_offers_the_old_certificate() {
+        let failure = forgotten("https://expired.badssl.com/a");
+        assert_eq!(failure.kind, Kind::Forgotten);
+        assert_eq!(failure.url, "https://expired.badssl.com/a");
+        assert_eq!(failure.certificate, None);
+    }
+
+    #[test]
+    fn trying_a_forgotten_site_again_lifts_its_block_without_trusting_it() {
+        let mut exceptions = Exceptions::default();
+        exceptions.allow("https://expired.badssl.com/", vec![1, 2, 3]);
+        exceptions.allow("https://self-signed.badssl.com/", vec![4]);
+        exceptions.forget();
+        // Try Again on another kind of error page lifts nothing.
+        let other = failure(
+            "NSURLErrorDomain",
+            -1202,
+            "https://expired.badssl.com/",
+            "x",
+        );
+        exceptions.retry(&other.unwrap());
+        assert!(exceptions.blocked("https://expired.badssl.com/"));
+        exceptions.retry(&forgotten("https://expired.badssl.com/b"));
+        assert!(!exceptions.blocked("https://expired.badssl.com/"));
+        assert!(!exceptions.allows("expired.badssl.com", 443, &[1, 2, 3]));
+        assert!(exceptions.blocked("https://self-signed.badssl.com/"));
+        // A fresh decision about the site's current certificate also lifts the block.
+        exceptions.allow("https://self-signed.badssl.com/", vec![6]);
+        assert!(!exceptions.blocked("https://self-signed.badssl.com/"));
+        assert!(exceptions.allows("self-signed.badssl.com", 443, &[6]));
+        assert!(!exceptions.allows("self-signed.badssl.com", 443, &[4]));
     }
 
     #[test]
