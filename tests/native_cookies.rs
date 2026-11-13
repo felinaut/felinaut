@@ -508,6 +508,21 @@ async fn check(page: Rc<NativePage>) {
     cookie_store::delete(keys, reply).unwrap();
     let left = answer(cookies, start, "deleting the fixture's cookies").await;
     assert!(fixture(&left).is_empty(), "{:?}", fixture(&left));
+
+    // A delete that finds nothing to delete, or has no keys at all, still answers with
+    // what is stored, as the window's wait expects.
+    let never_set = Key {
+        domain: "127.0.0.1".into(),
+        path: "/".into(),
+        name: "felinaut_never_set".into(),
+    };
+    for keys in [HashSet::from([never_set]), HashSet::new()] {
+        let (reply, cookies) = mpsc::channel();
+        cookie_store::delete(keys, reply).unwrap();
+        let stored = answer(cookies, start, "a delete that matches nothing").await;
+        assert_eq!(stored.len(), left.len(), "nothing else was deleted");
+        assert!(fixture(&stored).is_empty());
+    }
 }
 
 fn child(phase: String, port: u16) -> bool {
