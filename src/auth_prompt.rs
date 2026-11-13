@@ -210,11 +210,10 @@ impl Render for AuthPrompt {
                 "This site asks for a user name and a password:".into(),
             ))
             .child(
+                // A long origin takes more lines. The end of a host name tells who owns it,
+                // so the line must not cut it off.
                 div()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
                     .child(self.challenge.origin()),
             )
             .when(!self.challenge.realm.is_empty(), |form| {
