@@ -9,6 +9,7 @@ mod download_panel;
 mod downloads;
 mod engine;
 mod engine_build;
+
 mod history;
 mod icons;
 mod input;
@@ -258,6 +259,7 @@ fn restore_tabs(mut saved: Vec<session::SavedTab>) -> (Vec<Tab>, usize) {
     let mut active = None;
     for (id, entry) in (1..).zip(saved) {
         let mut tab = Tab::pinned(id, entry.url, entry.title);
+        tab.backend = entry.backend.unwrap_or_else(|| "webkit".into());
         if !entry.pinned {
             tab.pinned = None;
             if entry.split
@@ -316,6 +318,7 @@ actions!(
 
 /// What ⌘⇧T needs to bring a closed tab back where it was.
 struct ClosedTab {
+    backend: String,
     url: String,
     title: String,
     index: usize,
@@ -332,8 +335,18 @@ struct ActivateTab(usize);
 struct Zoom(i8);
 const LAST_TAB: usize = usize::MAX;
 
+struct PageReplacement {
+    plan: page::selection::SwitchPlan,
+    page: Page,
+    original: Option<Page>,
+    scope: Option<page::RequestScope>,
+}
+
 struct Tab {
     id: u64,
+    backend: String,
+    replacement: Option<PageReplacement>,
+    switch_error: Option<String>,
     title: String,
     url: String,
     home: bool,
@@ -371,6 +384,9 @@ impl Tab {
     fn new(id: u64) -> Self {
         Self {
             id,
+            backend: page::default_engine().id().into(),
+            replacement: None,
+            switch_error: None,
             title: "New Tab".into(),
             url: HOME.into(),
             home: true,
@@ -387,9 +403,90 @@ impl Tab {
             live: None,
         }
     }
+    fn change_audio(&mut self, audio: TabAudio) -> Result<(), String> {
+        let info = match &self.page {
+            Some(page) => page.backend_info(),
+            None => page::info_for(page::selection::Engine::parse(&self.backend)?),
+        };
+        if !info.capabilities.audio_control {
+            return Err(format!("{} does not support tab audio controls", info.id));
+        }
+        if let Some(page) = &self.page {
+            page.apply_audio(audio)?;
+        }
+        self.audio = audio;
+        Ok(())
+    }
+
+    fn hide_for_close(&self) {
+        if let Some(page) = &self.page {
+            let _ = page.set_visible(false);
+        }
+        if let Some(replacement) = &self.replacement {
+            let _ = replacement.page.set_visible(false);
+        }
+    }
+
+    fn reset_pin(&mut self, url: String) {
+        self.hide_for_close();
+        let backend = self.backend.clone();
+        *self = Tab::pinned(self.id, url, std::mem::take(&mut self.title));
+        self.backend = backend;
+    }
+
+    fn poll_replacement(&mut self) -> bool {
+        let Some(replacement) = self.replacement.as_ref() else {
+            return false;
+        };
+        let ready = replacement.page.creation_ready();
+        if matches!(ready, Ok(false)) {
+            return false;
+        }
+        let replacement = self.replacement.take().expect("pending replacement");
+        let unchanged = match (&self.page, &replacement.original) {
+            (Some(current), Some(original)) => Rc::ptr_eq(current, original),
+            (None, None) => true,
+            _ => false,
+        } && self
+            .page
+            .as_ref()
+            .and_then(|page| page.document())
+            .is_none_or(|(url, _)| url == replacement.plan.url())
+            && replacement
+                .scope
+                .as_ref()
+                .is_none_or(|scope| scope.is_current())
+            && self.url == replacement.plan.url()
+            && !self.home;
+        let ready = ready.and_then(|_| {
+            if unchanged {
+                Ok(())
+            } else {
+                Err("Tab changed while the new engine was starting; original page kept".into())
+            }
+        });
+        let url = replacement.plan.url().to_owned();
+        if let Err(error) = replacement.plan.complete(&mut self.backend, ready) {
+            self.switch_error = Some(error);
+            return true;
+        }
+        if let Some(old) = self.page.take() {
+            let _ = old.set_visible(false);
+        }
+        if !replacement.page.backend_info().capabilities.audio_control {
+            self.audio = TabAudio::default();
+        }
+        self.page = Some(replacement.page);
+        self.load_failure = None;
+        self.start_load(url);
+        true
+    }
+
     /// An earlier failure stays until the new page commits or fails, so the page under the
     /// error page never flashes.
     fn start_load(&mut self, url: String) {
+        self.replacement.take();
+        self.switch_error = None;
         self.title = url::Url::parse(&url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned))
@@ -630,6 +727,7 @@ impl Browser {
             suggestions::close(cx);
             let _ = weak.update(cx, |this, _| {
                 for tab in &mut this.tabs {
+                    tab.replacement.take();
                     tab.page.take();
                 }
                 this.fetch = None;
@@ -647,7 +745,16 @@ impl Browser {
                     eprintln!("Could not save downloads: {error}");
                 }
             });
-            true
+            #[cfg(feature = "engine-cef")]
+            {
+                page::cef::runtime::begin_shutdown();
+                cx.quit();
+                false
+            }
+            #[cfg(not(feature = "engine-cef"))]
+            {
+                true
+            }
         });
         let focus = cx.focus_handle();
         window.focus(&focus);
@@ -756,6 +863,7 @@ impl Browser {
                 pinned: tab.pinned.is_some(),
                 split: previous_kept && index > 0 && self.partner(index) == Some(index - 1),
                 active: index == self.active,
+                backend: (tab.backend != "webkit").then(|| tab.backend.clone()),
             });
             previous_kept = true;
         }
@@ -1166,7 +1274,9 @@ impl Browser {
         if tab.page.is_some() || tab.home {
             return;
         }
-        match page::create(window, &tab.url) {
+        let result = page::selection::Engine::parse(&tab.backend)
+            .and_then(|engine| page::create_for(window, &tab.url, engine, false));
+        match result {
             Ok(page) => {
                 tab.page = Some(page);
                 tab.loading = true;
@@ -1174,6 +1284,130 @@ impl Browser {
             Err(error) => tab.error = Some(error),
         }
     }
+    fn begin_engine_switch(
+        &mut self,
+        index: usize,
+        engine: page::selection::Engine,
+        confirmed: bool,
+        window: &mut Window,
+    ) -> Result<(), String> {
+        page::available(engine)?;
+        let tab = &mut self.tabs[index];
+        if tab.backend == engine.id() {
+            tab.replacement.take();
+            tab.switch_error = None;
+            return Ok(());
+        }
+        if tab.home {
+            tab.replacement.take();
+            if let Some(old) = tab.page.take() {
+                let _ = old.set_visible(false);
+            }
+            tab.backend = engine.id().into();
+            tab.switch_error = None;
+            tab.error = None;
+            return Ok(());
+        }
+        if !confirmed {
+            return Err("Changing engines reloads this URL with a fresh GET. Unsaved forms, page state and engine history will be lost; cookies are not transferred. Confirm to continue.".into());
+        }
+        let plan = page::selection::validate_switch(
+            &tab.backend,
+            engine,
+            &tab.url,
+            cfg!(any(
+                feature = "engine-webkit-system",
+                feature = "engine-webkit-upstream"
+            )),
+            cfg!(feature = "engine-cef"),
+            true,
+        )?;
+        let Some(plan) = plan else {
+            return Ok(());
+        };
+        let replacement = page::create_for(window, plan.url(), engine, false)?;
+        replacement.set_visible(false)?;
+        tab.switch_error = None;
+        tab.replacement = Some(PageReplacement {
+            plan,
+            page: replacement,
+            original: tab.page.clone(),
+            scope: tab.page.as_ref().and_then(|page| page.request_scope()),
+        });
+        Ok(())
+    }
+
+    fn choose_engine(
+        &mut self,
+        id: u64,
+        engine: page::selection::Engine,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return;
+        };
+        if self.tabs[index].home || self.tabs[index].backend == engine.id() {
+            if let Err(error) = self.begin_engine_switch(index, engine, false, window) {
+                self.tabs[index].switch_error = Some(error);
+            }
+            cx.notify();
+            return;
+        }
+        let original = self.tabs[index].page.clone();
+        let scope = original.as_ref().and_then(|page| page.request_scope());
+        let raw = self.tabs[index].backend.clone();
+        let url = self.tabs[index].url.clone();
+        let answer = window.prompt(gpui::PromptLevel::Warning,
+            &format!("Reopen this tab using {}?", engine.label()),
+            Some("The URL loads again with a fresh GET. Unsaved forms, page state and back/forward history will be lost. Cookies and logins are separate for each engine. Unsupported settings, including CEF tab audio controls, reset to default. The original page stays if the new engine cannot start."),
+            &["Cancel", "Reopen Tab"], cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(1) {
+                return;
+            }
+            let _ = this.update_in(cx, |this, window, cx| {
+                let Some(index) = this.tabs.iter().position(|tab| tab.id == id) else {
+                    return;
+                };
+                let tab = &this.tabs[index];
+                let same_page = match (&tab.page, &original) {
+                    (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !same_page
+                    || tab.backend != raw
+                    || tab.url != url
+                    || scope.as_ref().is_some_and(|scope| !scope.is_current())
+                {
+                    this.tabs[index].switch_error = Some(
+                        "Tab changed while confirmation was open; choose the engine again".into(),
+                    );
+                } else if let Err(error) = this.begin_engine_switch(index, engine, true, window) {
+                    this.tabs[index].switch_error = Some(error);
+                }
+                this.hide_others();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn engine_status(&self) -> serde_json::Value {
+        use serde_json::json;
+        let tab = &self.tabs[self.active];
+        json!({
+            "selected": tab.backend,
+            "pending": tab.replacement.as_ref().map(|replacement| replacement.plan.engine().id()),
+            "error": tab.switch_error,
+            "available": ([page::selection::Engine::WebKit, page::selection::Engine::Cef].into_iter().map(|engine| {
+                let ready = page::available(engine);
+                json!({"id":engine.id(), "ready":ready.is_ok(), "error":ready.err()})
+            }).collect::<Vec<_>>())
+        })
+    }
+
     /// Runs one command from the control socket against the active tab.
     fn handle_agent(
         &mut self,
@@ -1184,11 +1418,35 @@ impl Browser {
         use serde_json::{Value, json};
         let command = &request.command;
         let result = match command["cmd"].as_str().unwrap_or_default() {
-            "backend" => Ok(self.tabs[self.active]
-                .page
-                .as_ref()
-                .map_or_else(page::backend_info, |page| page.backend_info())
-                .json()),
+            "backend" => page::selection::Engine::parse(&self.tabs[self.active].backend).map(|engine| self.tabs[self.active]
+                .page.as_ref().map_or_else(|| page::info_for(engine), |page| page.backend_info()).json()),
+            "engine" => {
+                if let Some(raw) = command.get("engine") {
+                    let result = raw.as_str().ok_or_else(|| "Invalid engine".to_owned())
+                        .and_then(page::selection::Engine::parse)
+                        .and_then(|engine| self.begin_engine_switch(self.active, engine, command["confirm"].as_bool() == Some(true), window));
+                    match result {
+                        Ok(()) => { self.hide_others(); cx.notify(); Ok(self.engine_status()) }
+                        Err(error) => Err(error),
+                    }
+                } else { Ok(self.engine_status()) }
+            }
+            "new-tab" => {
+                let engine = match command.get("engine") {
+                    Some(raw) => raw.as_str().ok_or_else(|| "Invalid engine".to_owned()).and_then(page::selection::Engine::parse),
+                    None => Ok(page::default_engine()),
+                };
+                match engine.and_then(|engine| page::available(engine).map(|()| engine)) {
+                    Ok(engine) => {
+                        self.new_tab(&NewTab, window, cx);
+                        self.tabs[self.active].backend = engine.id().into();
+                        Ok(json!(self.active))
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            "close-tab" => { self.close_tab(&CloseTab, window, cx); Ok(Value::Null) }
+            "quit" => { cx.quit(); Ok(Value::Null) },
             "tabs" => Ok(self
                 .tabs
                 .iter()
@@ -1200,6 +1458,10 @@ impl Browser {
                         "url": tab.url,
                         "active": index == self.active,
                         "loading": tab.loading,
+                        "engine": tab.backend,
+                        "switching": tab.replacement.as_ref().map(|replacement| replacement.plan.engine().id()),
+                        "error": tab.error,
+                        "switch_error": tab.switch_error,
                     })
                 })
                 .collect()),
@@ -1574,6 +1836,9 @@ impl Browser {
             .update(cx, |input, cx| input.set_text(text, cx));
     }
     fn poll_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "engine-cef")]
+        page::cef::runtime::poll();
+
         let requests: Vec<_> = self
             .agent
             .iter()
@@ -1635,8 +1900,8 @@ impl Browser {
                         address_changed |= index == self.active;
                     }
                     Event::Icon(png) => icons.push((tab.url.clone(), png)),
-                    Event::Open(url) => open.push((url, true)),
-                    Event::OpenInBackground(url) => open.push((url, false)),
+                    Event::Open(url) => open.push((url, true, tab.backend.clone())),
+                    Event::OpenInBackground(url) => open.push((url, false, tab.backend.clone())),
                     Event::Hover(url) => tab.hovered_link = url,
                     Event::Focused => {
                         page_focused |= index == self.active || Some(index) == visible_partner;
@@ -1656,6 +1921,14 @@ impl Browser {
                 }
             }
         }
+        // Observe the original's native URL/events before committing a ready replacement.
+        // Same-document navigation does not invalidate its request scope.
+        let replacements_changed = self
+            .tabs
+            .iter_mut()
+            .fold(false, |changed, tab| tab.poll_replacement() || changed);
+        changed |= replacements_changed;
+        address_changed |= replacements_changed;
         // Clicking into the other half of a split view makes it the active tab; a click on a
         // page never reaches GPUI, so it also has to close an open tab menu here.
         if let Some(index) = focused_tab {
@@ -1671,8 +1944,8 @@ impl Browser {
             window.focus(&self.focus);
             self.sync_address(cx);
         }
-        for (url, activate) in open {
-            self.open_link_tab(&url, activate, window, cx);
+        for (url, activate, backend) in open {
+            self.open_link_tab_for(&url, activate, &backend, window, cx);
         }
         for (url, png) in icons {
             self.store_icon(&url, png, cx);
@@ -1710,18 +1983,22 @@ impl Browser {
                 return;
             }
         };
-        if url == HOME {
+        if page::selection::is_local_home(&url) {
             self.home(&Home, window, cx);
             return;
         }
         let tab = &mut self.tabs[self.active];
+        tab.replacement.take();
+        tab.switch_error = None;
         tab.hovered_link = None;
         let result = if let Some(page) = &tab.page {
             page.navigate(&url)
         } else {
-            page::create(window, &url).map(|page| {
-                tab.page = Some(page);
-            })
+            page::selection::Engine::parse(&tab.backend)
+                .and_then(|engine| page::create_for(window, &url, engine, false))
+                .map(|page| {
+                    tab.page = Some(page);
+                })
         };
         match result {
             Ok(()) => tab.start_load(url),
@@ -1737,9 +2014,23 @@ impl Browser {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match page::create(window, url) {
+        let backend = self.tabs[self.active].backend.clone();
+        self.open_link_tab_for(url, activate, &backend, window, cx);
+    }
+    fn open_link_tab_for(
+        &mut self,
+        url: &str,
+        activate: bool,
+        backend: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match page::selection::Engine::parse(backend)
+            .and_then(|engine| page::create_for(window, url, engine, false))
+        {
             Ok(page) => {
                 let mut tab = Tab::new(self.next_id);
+                tab.backend = backend.into();
                 self.next_id += 1;
                 tab.start_load(url.into());
                 tab.page = Some(page.clone());
@@ -1760,8 +2051,7 @@ impl Browser {
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id)
             && tab.audio != audio
         {
-            tab.audio = audio;
-            tab.apply_audio();
+            tab.error = tab.change_audio(audio).err();
             cx.notify();
         }
     }
@@ -1997,6 +2287,41 @@ impl Browser {
             })
             .child(menu_separator(p))
             .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .text_color(rgb(p.muted))
+                    .child("Tab engine · switching reloads"),
+            )
+            .children(
+                [
+                    page::selection::Engine::WebKit,
+                    page::selection::Engine::Cef,
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(number, engine)| {
+                    let available = page::available(engine).is_ok();
+                    let selected = tab.backend == engine.id();
+                    let label = format!(
+                        "{}{}{}",
+                        if selected { "✓ " } else { "" },
+                        engine.label(),
+                        if available { "" } else { " · unavailable" }
+                    );
+                    menu_item(("menu-engine", number), label, None, p)
+                        .opacity(if available { 1. } else { 0.4 })
+                        .when(available, |item| {
+                            item.on_click(cx.listener(move |this, _, window, cx| {
+                                this.close_menu(window, cx);
+                                this.choose_engine(id, engine, window, cx);
+                            }))
+                        })
+                }),
+            )
+            .child(menu_separator(p))
+            .child(
                 menu_item("menu-close", "Close Tab", Some("⌘W"), p).on_click(cx.listener(
                     move |this, _, window, cx| {
                         this.close_menu(window, cx);
@@ -2082,7 +2407,9 @@ impl Browser {
         let Some(closed) = self.closed.pop() else {
             return;
         };
-        let page = match page::create(window, &closed.url) {
+        let page = match page::selection::Engine::parse(&closed.backend)
+            .and_then(|engine| page::create_for(window, &closed.url, engine, false))
+        {
             Ok(page) => page,
             Err(error) => {
                 self.tabs[self.active].error = Some(error);
@@ -2094,6 +2421,7 @@ impl Browser {
         self.next_id += 1;
         let id = tab.id;
         tab.url = closed.url;
+        tab.backend = closed.backend;
         tab.title = closed.title;
         tab.home = false;
         tab.loading = true;
@@ -2118,6 +2446,7 @@ impl Browser {
         }
     }
     fn close_tab_at(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.tabs[index].hide_for_close();
         self.hint = None;
         self.hovered_tab = None;
         if index == self.active {
@@ -2144,6 +2473,7 @@ impl Browser {
                 title: tab.title.clone(),
                 index,
                 partner: tab.split,
+                backend: tab.backend.clone(),
             });
         }
         self.unsplit(index);
@@ -2233,6 +2563,8 @@ impl Browser {
     }
     fn home(&mut self, _: &Home, window: &mut Window, cx: &mut Context<Self>) {
         let tab = &mut self.tabs[self.active];
+        tab.replacement.take();
+        tab.switch_error = None;
         if let Some(page) = &tab.page {
             let _ = page.set_visible(false);
             let _ = page.focus_parent();
@@ -2245,7 +2577,12 @@ impl Browser {
         cx.notify();
     }
 
-    fn button(&self, id: &'static str, label: &'static str, p: Palette) -> Stateful<Div> {
+    fn button(
+        &self,
+        id: &'static str,
+        label: impl Into<SharedString>,
+        p: Palette,
+    ) -> Stateful<Div> {
         div()
             .id(id)
             .h(px(34.))
@@ -2258,7 +2595,7 @@ impl Browser {
             .text_color(rgb(p.muted))
             .cursor_pointer()
             .hover(move |s| s.bg(rgb(p.elevated)).text_color(rgb(p.text)))
-            .child(label)
+            .child(label.into())
     }
     fn volume_button(&self, p: Palette, cx: &mut Context<Self>) -> Stateful<Div> {
         let tab = &self.tabs[self.active];
@@ -2598,11 +2935,7 @@ impl Browser {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let tab = &mut self.tabs[index];
-        if let Some(page) = tab.page.take() {
-            let _ = page.set_visible(false);
-        }
-        *tab = Tab::pinned(tab.id, url, std::mem::take(&mut tab.title));
+        self.tabs[index].reset_pin(url);
         if index == self.active {
             if self.tabs.len() == 1 {
                 self.tabs.push(Tab::new(self.next_id));
@@ -2732,6 +3065,19 @@ impl Browser {
                     .text_sm()
                     .child(tab.display_title()),
             )
+            .when(cfg!(feature = "engine-cef"), |row| {
+                row.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(9.))
+                        .text_color(rgb(p.muted))
+                        .child(match tab.backend.as_str() {
+                            "webkit" => "WK",
+                            "cef" => "CEF",
+                            _ => "?",
+                        }),
+                )
+            })
             .when(tab.sound.audible() || tab.audio.muted, |row| {
                 let muted = tab.audio.muted;
                 row.child(
@@ -3993,6 +4339,20 @@ impl Render for Browser {
             window.request_animation_frame();
         }
         self.address.update(cx, |input, _| input.set_zoom(zoom));
+        let engine_label = page::selection::Engine::parse(&tab.backend)
+            .map_or("Unavailable engine", |engine| engine.label());
+        let engine_button_label = if tab.replacement.is_some() {
+            "Switching…".to_owned()
+        } else {
+            format!("{engine_label} ▾")
+        };
+        let engine_status = if tab.replacement.is_some() {
+            "Starting replacement engine · original page kept".into()
+        } else if tab.loading && !tab.home {
+            format!("Loading · {engine_label}")
+        } else {
+            format!("{engine_label} · JavaScript enabled")
+        };
         let status = drop_status
             .or(self.hint.map(str::to_owned))
             .or(self.live_hover.clone())
@@ -4000,12 +4360,9 @@ impl Render for Browser {
             .unwrap_or_else(|| {
                 tab.hovered_link
                     .as_deref()
+                    .or(tab.switch_error.as_deref())
                     .or(tab.error.as_deref())
-                    .unwrap_or(if tab.loading && !tab.home {
-                        "Loading · WebKit"
-                    } else {
-                        "WebKit · JavaScript enabled"
-                    })
+                    .unwrap_or(&engine_status)
                     .to_owned()
             });
         div()
@@ -4106,6 +4463,17 @@ impl Render for Browser {
                             } else {
                                 self.address.clone().into_any_element()
                             }))
+                            .child(
+                                self.button("engine-picker", engine_button_label, p)
+                                    .text_size(px(12.))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if !this.sidebar_shown(cx) {
+                                            this.toggle_sidebar(&ToggleSidebar, window, cx);
+                                        }
+                                        let id = this.tabs[this.active].id;
+                                        this.open_menu(id, point(px(12.), px(100.)), window, cx);
+                                    })),
+                            )
                             .child(download_panel::button(&self.downloads, p).on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.show_downloads(&ShowDownloads, window, cx)
@@ -4224,7 +4592,13 @@ fn main() {
     }
     if let Err(error) = engine_build::validate(std::env::consts::OS, &engine_build::compiled_ids())
         .and_then(|()| comparison::initialize())
-        .and_then(|()| comparison::policy().verify_runtime(&page::backend_info()))
+        .and_then(|()| {
+            #[cfg(feature = "engine-cef")]
+            {
+                page::cef::runtime::initialize()?;
+            }
+            comparison::policy().verify_runtime(&page::backend_info())
+        })
     {
         eprintln!("Felinaut backend launch refused: {error}");
         std::process::exit(1);
@@ -4370,7 +4744,15 @@ fn main() {
         open_links(window, cx, std::mem::take(&mut handoff.pending));
         cx.activate(true);
     });
+    #[cfg(feature = "engine-cef")]
+    if !page::cef::runtime::shutdown_completed() {
+        eprintln!("Felinaut exited before CEF shutdown completed");
+        std::process::exit(1);
+    }
 }
+
+#[cfg(test)]
+mod tab_engine_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4507,6 +4889,7 @@ mod tests {
             pinned,
             split,
             active,
+            backend: None,
         }
     }
 

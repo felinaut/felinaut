@@ -1,10 +1,24 @@
 # macOS optional engines: CEF and Gecko feasibility
 
-**Research checked: 12 November 2026; native visual evidence updated 13 November 2026. Status: standalone native CEF/GPUI functional, static-fixture visual and scoped helper policy/syscall/exit checks pass; an initial shared PageBackend adapter passes native navigation/presentation/evaluation checks inside the harness only. Minimal same-window WKWebView/CEF coexistence also passes; production backend/security integration and per-tab selection remain pending.**
+**Current status, 13 November 2026:** optional CEF is integrated into the **actual root Felinaut application** on the `multiplatform` working tree, with WebKit / Chromium (CEF) selection per tab in one GPUI window. The native macOS arm64 root smoke/capture passed; this is no longer harness-only. **Default shipping remains system-WebKit-only.** The developer build is not a notarized or distributable signed package. Gecko remains unavailable.
 
-Scope: build-time optional engines, eventually selectable at runtime **per tab in one GPUI window**, starting with native macOS arm64. This report adds no dependencies, Cargo features, adapter, launcher, preference, or selector. Build-request gates and the existing Cocoa choices are documented separately in [engine builds](engine-builds.md); neither enables an alternate adapter. Read alongside [the backend contract](engine-backends.md), [porting plan](porting-plan.md), [GPUI controls](gpui-controls.md), and [macOS status](macos-backend-status.md).
+This document combines the current checkpoint with **historical research from 12 November and intermediate standalone checkpoints from 13 November 2026**. Sections explicitly marked historical describe the code, pins and proposed work at that time, not today's availability. Use the [per-tab test guide and actual root UI](macos-per-tab-engines.md) for current commands and limits, [engine builds](engine-builds.md) for inclusion/runtime gates, and [macOS status](macos-backend-status.md) for the evidence timeline. Read alongside [the backend contract](engine-backends.md), [porting plan](porting-plan.md) and [GPUI controls](gpui-controls.md).
 
-## Decision
+## Current root integration checkpoint
+
+`python3 scripts/run_macos_engines.py --smoke --capture --smoke-timeout 120` passed in real Felinaut on native macOS 27 arm64/Xcode 27. Actual identities were **WebKit `22625.1.29.11.27`**, **CEF `156.0.26` / Chromium `156.0.8078.88`**, using the existing pinned `cef` / `cef-dll-sys` **156.4.0+156.0.26** pair and internal host/protocol crates, without another new external dependency. Mixed tabs, two CEF pages sharing an in-memory context distinct from WebKit, independent native async close, confirmed/rejected switches, fresh replacement documents and capture passed; all CEF browsers closed before runtime shutdown and **root exit 0**. This does not independently audit every helper exit.
+
+The toolbar engine button and tab right-click menu offer WebKit / Chromium (CEF). On New Tab, choosing an engine needs no reload. A loaded-tab switch requires explicit native confirmation for a fresh GET: forms/document state/native history are lost, with no POST replay or cookie migration. The original stays until replacement `creation_ready`; creation failure keeps it. CEF cookies/logins are lost on quit; normal WebKit and its legacy `Felifox` storage path remain unchanged.
+
+The optional `engine-cef` build requires a prepared native arm64 SDK and developer bundle and currently also activates Cocoa platform-integration dependencies. CEF-only selection passes all-target Clippy and unit tests; native evidence here is specifically the mixed app. SDK acquisition remains explicit via `python3 tools/cef-probe/prepare_runtime.py --download`; the launcher never auto-fetches it. The no-argument launcher prints a plan only. `--run` always builds fresh, uses a private fresh HOME and leaves an interactive app open; `--smoke` uses only the local fixture, then quits normally.
+
+Interactive mode uses the real Keychain; automation is explicitly disabled, while comprehensive production secret-storage validation remains pending. Only marked private fresh-HOME smoke permits a mock test keychain, with DOM-only input and no arbitrary sites. Manual mouse/keyboard input to the native page is allowed, but full IME/accessibility is unvalidated. CEF downloads, permissions, audio control, zoom, trusted automation and page snapshots are explicitly unsupported. Bounded private-IPC eval respects CSP and can error; no CSP bypass is enabled. Production security, recovery, durable profiles and distribution readiness are not established by this smoke. The [actual root UI screenshot](screenshots/macos-per-tab-engines.png) is separate from the older probe captures.
+
+System/upstream Cocoa WebKit still require separate host processes; do not advertise them as mixed tabs in one process. **CEF + upstream Cocoa coexistence is untested**; the validated combination here is system WKWebView + CEF.
+
+## Historical research decision (12 November 2026)
+
+The following recommendations describe the original investigation, before the standalone probes and root integration above.
 
 - **Keep system WKWebView as the working/default backend.** The existing upstream Cocoa WebKit comparison launches separate processes because both Cocoa builds define the same WebKit/Objective-C classes. It is neither CEF nor mixed-engine tabs. Do not try to load both Cocoa WebKit builds into one process.
 - **CEF is a realistic Chromium/Blink/V8 embedding candidate on macOS arm64.** Official C/C++ APIs, arm64 binary distributions, sandbox initialization, AppKit child views, and maintained Rust bindings exist. They are sufficient to specify a concrete prototype, not to claim integration already works.
@@ -12,25 +26,27 @@ Scope: build-time optional engines, eventually selectable at runtime **per tab i
 - **Gecko remains unavailable as a Felinaut backend.** No maintained macOS desktop embedding SDK/binding with CEF-like lifecycle, native-view and security contracts was established by this investigation. GeckoView is Android; desktop Firefox and Firefox automation are not an embeddable AppKit control. This is a bounded research conclusion, not proof that a custom Gecko fork is impossible.
 - **Do not source-build Chromium/CEF or Firefox on this machine for this task.** The initial free-space constraint (approximately **16 GiB** at the initial lookup) rules out a full source-build attempt in this investigation. The original research used metadata/source pages only; the later standalone probe explicitly acquired a matching prebuilt CEF 156.0.26 SDK and compiled its host/helper. No full Chromium/Firefox source build or browser installation was performed.
 
-## Native lifecycle checkpoint
+## Historical standalone native lifecycle checkpoint
 
 The [SDK-free GPUI lifecycle probe](../tools/cef-probe/README.md) now passes on this macOS 27 arm64 host. It creates a new subclass of the already registered `GPUIApplication` before singleton acquisition, preserves GPUI's inherited state/delegate, verifies nested/exception event scope, rejects an existing singleton, and holds quit until explicit asynchronous release. AppKit's KVO subclass requires ancestry checks rather than exact class equality. No GPUI patch, object-class replacement or blanket swizzling was needed for this probe.
 
 A later opt-in runtime checkpoint uses the published `cef`/`cef-dll-sys` **156.4.0+156.0.26** pair and matching prebuilt CEF **156.0.26+g8ea0c73+chromium-156.0.8078.88**, not the newer research-only 156.0.28 pin below. Native checks now pass real protocol conformance, framework initialization, reference-compatible pumping, native child creation, loopback HTTP/JavaScript, AppKit text/trusted pointer interaction, viewport resize and CEF shutdown before GPUI termination. The disposable fixture uses Chromium's mock-Keychain test switch; this is not production secret storage.
 
-**The scoped helper audit and minimal same-window WKWebView/CEF coexistence now pass.** Announced helper identities and exits are independently verified; selected renderer/GPU/utility read policies deny a generated canary, and both renderers' native canary opens return `EPERM`. Two final fresh runs reconciled all five launched helpers with exit evidence. The unused system-notification backend is disabled through Chromium's supported `SystemNotifications` feature gate because its native notification broker is intentionally unsandboxed. No unsandboxed-helper exception is accepted. This is not complete sandbox/broker coverage; see the [audit scope and native evidence](../tools/cef-probe/README.md#scoped-sandbox-and-helper-exit-audit). After unlocking the desktop, two complete window-only capture runs passed. The [reviewed CEF/GPUI screenshot](screenshots/macos-cef-runtime-probe.png) shows the actual document, native text and trusted-click confirmation after resize; it verifies this static fixture's presentation, not full browser behavior or accessibility. Earlier locked-session capture failures remain recorded in the probe README. The [probe README](../tools/cef-probe/README.md#real-cef-runtime-probe) records reproducible commands, safety boundaries and remaining gates. The original research sections below remain historical source evidence; the browser's CEF feature remains blocked.
+**The scoped helper audit and minimal same-window WKWebView/CEF coexistence now pass.** Announced helper identities and exits are independently verified; selected renderer/GPU/utility read policies deny a generated canary, and both renderers' native canary opens return `EPERM`. Two final fresh runs reconciled all five launched helpers with exit evidence. The unused system-notification backend is disabled through Chromium's supported `SystemNotifications` feature gate because its native notification broker is intentionally unsandboxed. No unsandboxed-helper exception is accepted. This is not complete sandbox/broker coverage; see the [audit scope and native evidence](../tools/cef-probe/README.md#scoped-sandbox-and-helper-exit-audit). After unlocking the desktop, two complete window-only capture runs passed. The [reviewed CEF/GPUI screenshot](screenshots/macos-cef-runtime-probe.png) shows the actual document, native text and trusted-click confirmation after resize; it verifies this static fixture's presentation, not full browser behavior or accessibility. Earlier locked-session capture failures remain recorded in the probe README. The [probe README](../tools/cef-probe/README.md#real-cef-runtime-probe) records reproducible commands, safety boundaries and remaining gates. The original research sections below remain historical source evidence; the browser's CEF feature was still blocked at this standalone checkpoint, before the root integration above.
 
-## Same-window coexistence checkpoint
+## Historical standalone same-window coexistence checkpoint
 
 The opt-in standalone `coexistence` feature now pairs Wry **0.57.1** system WKWebView with the pinned CEF runtime in **one GPUI window**. Native checks pass both document loads, same-origin cookie/localStorage separation, scoped native input WebKit → CEF → WebKit, retained CEF input, two 600-CSS-pixel resized viewports and WebKit detach before CEF shutdown. The CEF canary/policy/exit audit remains required and passes. The [actual reviewed screenshot](screenshots/macos-webkit-cef-coexistence.png) and [reproducible runner command/limitations](../tools/cef-probe/README.md#same-window-system-webkit--cef-probe) record this macOS 27 arm64 result. Normal hardware keyboard routing, IME, accessibility and production browser features are not established by the fixed fixture.
 
-This resolves the minimal same-host coexistence feasibility question, not the main browser's adapter or per-tab picker. `engine-cef` remains blocked; system/upstream Cocoa WebKit still need separate hosts because their own framework identity conflict is unrelated to CEF.
+This resolved the minimal same-host coexistence feasibility question, not yet the main browser's adapter or per-tab picker. `engine-cef` was blocked at this stage; the root checkpoint above supersedes that gate. System/upstream Cocoa WebKit still need separate hosts because their own framework identity conflict is unrelated to CEF.
 
-## Shared-contract adapter checkpoint
+## Historical standalone shared-contract adapter checkpoint
 
-The [initial CEF PageBackend and renderer-result checkpoint](../tools/cef-probe/README.md#shared-pagebackend-checkpoint) now runs the root browser's shared API source against real CEF in the standalone host. Navigation/history/reload, logical presentation/focus, document scopes, JSON values/errors/limits and reload/page-drop cancellation pass, as does the WebKit+CEF coexistence regression. Evaluation is native-only, context-scoped and bounded, but captured indirect eval respects site CSP; CSP-blocked evaluation remains a parity gap. Root runtime/factory integration, production multi-page/profile/security work and per-tab selection are still missing. The research/API mapping below is historical evidence, not an assertion that these production gates are complete.
+The [initial CEF PageBackend and renderer-result checkpoint](../tools/cef-probe/README.md#shared-pagebackend-checkpoint) now runs the root browser's shared API source against real CEF in the standalone host. Navigation/history/reload, logical presentation/focus, document scopes, JSON values/errors/limits and reload/page-drop cancellation pass, as does the WebKit+CEF coexistence regression. Evaluation is native-only, context-scoped and bounded, but captured indirect eval respects site CSP; CSP-blocked evaluation remains a parity gap. Root runtime/factory integration, multi-page ownership and per-tab selection were still missing at this standalone stage; the current root checkpoint above now implements them experimentally. Production profile/Keychain/security work remains incomplete. The research/API mapping below is historical evidence, not an assertion that every production gate is complete.
 
-## 1. Evidence boundary and exact pins
+## 1. Historical research: evidence boundary and exact pins
+
+This section records the original metadata/source-only investigation. The later built/runtime-validated pair is 156.4.0+156.0.26, described above, not the research-only 156.0.28 candidate below.
 
 Local source baseline: `ac9f00c23590d5497a2118ba2b5aaae5c213114e`, plus the existing uncommitted working implementation. In particular, existing comparison code and updated architecture documents are uncommitted; the commit alone does not describe that implementation.
 
@@ -73,7 +89,9 @@ The CEF [download index][cef-index] listed these exact stable arm64 archives (me
 
 Standard archive index SHA-1: `30919cc28e5cae6b82f7817e6829d4ac863454ae`; sandbox compatibility metadata: `3b66cadf26145637`. These are **reported metadata**, not locally verified hashes or a signature/trust guarantee. No extracted-size measurement was possible without acquisition. A future acquisition must authenticate provenance, verify the archive, record a strong digest, inspect architecture/deployment load commands, and budget archive + extraction + Rust/C++ outputs + app copies. Do not download symbols, tools/client archives, both architectures, or a full source tree by default.
 
-## 2. Existing code: where engine selection would actually go
+## 2. Historical research: where engine selection would go
+
+This is the pre-integration code inventory, not the current root factory or feature status.
 
 Inspected [`src/page.rs`](../src/page.rs), [`src/page/macos.rs`](../src/page/macos.rs), relevant [`src/webview.rs`](../src/webview.rs) and [`src/main.rs`](../src/main.rs), and the architecture sections of README.
 
@@ -82,7 +100,7 @@ Inspected [`src/page.rs`](../src/page.rs), [`src/page/macos.rs`](../src/page/mac
 - GPUI supplies window-relative logical bounds through a canvas. Native notifications are queued for the browser's approximately 100 ms UI drain. That drain is **not a suitable CEF message-pump scheduler**.
 - The shared contract explicitly still needs generation-scoped callback invalidation, cancellation/decisions, and backend/profile selection. Existing downloads/native automation include WebKit-specific integration; a different `PageBackend` does not make them portable automatically.
 
-### Proposed selection policy, not existing code or flags
+### Selection policy proposed at the research checkpoint
 
 Build-time inclusion and runtime selection are different layers:
 
@@ -95,7 +113,7 @@ Build-time inclusion and runtime selection are different layers:
 
 The [build catalog](engine-builds.md) now accepts explicit candidate requests such as `engine-cef` and `engine-gecko` only to reject them with adapter-not-implemented errors. They do not link or enable these runtimes. No working CEF/Gecko feature invocation is advertised here.
 
-## 3. CEF: concrete API and binding choice
+## 3. Historical research: CEF API and binding choice
 
 ### Official API versus Rust integration
 
@@ -107,7 +125,7 @@ The inspected `cef-rs` source pin uses CEF's versioned API (`api_hash(sys::CEF_A
 
 **Acquisition warning:** `cef-dll-sys`'s build script can download and extract CEF under `OUT_DIR`; `CEF_PATH` is not a universal “offline” switch. In this pin a nonexistent/invalid configured directory can also trigger a versioned download. A future approved build must prevalidate its expected archive metadata/layout and use an actual network-denied build environment if no downloads are allowed. Cargo `--offline` alone does not stop arbitrary build-script HTTP. `dox` is a documentation-build facility, not a runnable engine configuration.
 
-### Exact entry points for the next implementation
+### Entry points identified for the then-proposed implementation
 
 Names below are verified in the pinned CEF headers / Rust source. This is an API map, **not a compilable or executed Felinaut adapter**.
 
@@ -155,7 +173,7 @@ These declarations describe upstream functions; they are not new declarations to
 
 The Rust loader/sandbox conveniences currently contain `unwrap`/assert paths. Preflight missing files, invalid architecture and layout and return actionable initialization errors; do not advertise graceful missing-runtime behavior merely because `.load()` returns a boolean. No panic may unwind across native callbacks.
 
-## 4. AppKit + GPUI integration: the first real blocker
+## 4. Historical research: AppKit + GPUI integration blockers
 
 ### Exactly one application singleton
 
@@ -208,7 +226,9 @@ CEF's official Cocoa sample overrides `terminate:` because the default terminate
 
 Do not call `CefQuitMessageLoop` to stop a loop that was not started with `CefRunMessageLoop`; stop the host through its agreed lifecycle. No CEF API calls after `CefShutdown`. Pending scheduled pumps and renderer replies must be invalidated before state is freed. Test canceled unload, force-quit limitations, crashes, closing the last CEF tab while WKWebView remains, and quitting with both backends alive.
 
-## 5. Sandbox, bundle, dependencies and deployment
+## 5. Research: sandbox, bundle, dependencies and deployment
+
+The API/security requirements below remain relevant. Source-known prerequisites and proposed recipes are historical research, not claims that signing, deployment or every security gate has since been validated.
 
 ### Current macOS sandbox recipe, not a legacy static-link recipe
 
@@ -301,7 +321,9 @@ Mozilla's [macOS build guide][gecko-build] requires **at least 30 GB free disk**
 
 Gecko's MPL-2.0 is file-level copyleft: distributing covered binaries/libraries requires appropriate source availability/notices, including modifications to covered files. New independent host files need not all become MPL solely by being part of a larger work. Audit bundled third-party licenses and Mozilla trademark/branding rules separately; MPL is not permission to brand a fork Firefox. A custom build must preserve Fission, content sandboxing, principal checks, NSS/TLS behavior and ongoing security updates rather than disabling them to obtain a render. Mozilla's [MPL FAQ][mpl-faq] is guidance, not a substitute for legal review.
 
-## 7. Recommended next prototype and acceptance gates
+## 7. Historical prototype plan and acceptance gates
+
+This was the original plan, not the next unimplemented slice today. The standalone lifecycle/adapter probes and root mixed-tab smoke above now supply bounded implementation evidence; production security, Keychain, recovery, accessibility and distribution gates remain.
 
 **Next executable slice: an opt-in, disposable-profile, loopback-only macOS arm64 GPUI + WKWebView + CEF native-child-view harness, sandbox enabled. Not a settings picker and not Gecko.** Prerequisites in order:
 
@@ -315,9 +337,11 @@ Gecko's MPL-2.0 is file-level copyleft: distributing covered binaries/libraries 
 8. Add **behavioral unit tests** for availability/default selection, invalid/unknown IDs, persistence round trips/older files, missing runtime, creation failure, generation replacement, canceled/late script results, profile separation, decisions, downloads outliving navigation and teardown. Native tests must actually opt in, be loopback-only and independent of personal logins.
 9. Validate real AppKit input/IME/accessibility, popup layering, multiple scales and idle/active CPU/memory across the process tree. Capture real clean-profile screenshots/video for the future UI PR using the browser-control skill; a mockup or this research document is not UI evidence. Re-run relevant project formatter, Clippy, unit/packaging tests and opt-in native regressions after code changes. Native macOS 27 results alone do not validate macOS 13 or Intel/universal deployment.
 
-### What can and cannot be enabled now
+### Availability at the original research checkpoint
 
-| Capability                                                                  | Today                                                                                              |
+This table is historical; use the current root checkpoint and test guide above for today's CEF availability.
+
+| Capability                                                                  | At the original research checkpoint                                                                |
 | --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | Normal system WKWebView browsing                                            | Implemented existing backend; not retested in this research                                        |
 | Trusted upstream Cocoa WebKit comparison                                    | Existing separate-process developer tool; documented smoke evidence, not rerun by this research    |
@@ -327,13 +351,15 @@ Gecko's MPL-2.0 is file-level copyleft: distributing covered binaries/libraries 
 | Native macOS Gecko tab                                                      | **Not available**; maintained desktop embedding path not established                               |
 | Current sandbox/signing/security-update validation of CEF/Gecko in Felinaut | **Not executed**                                                                                   |
 
-## 8. Validation of this report
+## 8. Historical validation of the original research report
+
+The checked/not-executed lists below apply only to the original documentation-only research task, not the subsequent native probes or current root-app smoke.
 
 **Checked:** local source/contracts and published GPUI 0.2.2 registry source; read-only Git status/HEAD; native OS/architecture/Xcode/SDK/Rust/tool availability/free space; primary-source CEF headers/examples/sandbox/build defaults; official arm64 archive metadata; maintained Rust repository/pin/generated APIs and registry metadata; current Mozilla source, GeckoView/remote protocols/build docs and licensing guidance.
 
 **Not executed:** SDK/runtime archive downloads, clones, installers, dependency additions/resolution, engine builds, `cef-rs` examples, native CEF/Gecko app launch, sandbox denial tests, signing/notarization, mixed-engine pages, screenshots, benchmarks, compatibility tests or per-tab selection. Existing documents' native-WebKit passes are historical evidence belonging to those runs, not tests executed for this report.
 
-Only this Markdown file is authored by the research task. No Rust/Python/package behavior changed, so Cargo/Clippy/unit/native suites were deliberately not run; they would neither verify researched upstream APIs nor prove a nonexistent backend. Documentation whitespace/local-link checks are the relevant local validation. Upstream APIs were source-inspected, not compiler-checked here.
+Only this Markdown file was authored by the original research task. No Rust/Python/package behavior changed in that task, so Cargo/Clippy/unit/native suites were deliberately not run; they would neither verify researched upstream APIs nor prove the then-unimplemented backend. Documentation whitespace/local-link checks are the relevant local validation. Upstream APIs were source-inspected, not compiler-checked here.
 
 ## Primary-source references
 

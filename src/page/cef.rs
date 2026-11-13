@@ -23,7 +23,16 @@ use crate::{
 
 #[path = "cef/evaluation.rs"]
 pub mod evaluation;
+#[cfg(feature = "engine-cef")]
+pub use cef_protocol as protocol;
+#[cfg(not(feature = "engine-cef"))]
+#[path = "cef/protocol.rs"]
+pub mod protocol;
 use evaluation::Evaluation;
+
+#[cfg(feature = "engine-cef")]
+#[path = "cef/runtime.rs"]
+pub mod runtime;
 
 const EVENT_LIMIT: usize = 256;
 const TEXT_LIMIT: usize = 16 * 1024;

@@ -21,10 +21,8 @@ use cef::{
     ImplProcessMessage, ProcessId, ProcessMessage, ThreadId, ValueType,
 };
 
-use crate::{
-    evaluation_protocol::{self as protocol, Field, FieldSpec, Id, Message, Status},
-    page::{RequestScope, ScriptCallback, ScriptCompletion, ScriptError, ScriptRequests},
-};
+use super::protocol::{self, Field, FieldSpec, Id, Message, Status};
+use crate::page::{RequestScope, ScriptCallback, ScriptCompletion, ScriptError, ScriptRequests};
 
 const PENDING_LIMIT: usize = 64;
 const TIMEOUT: Duration = Duration::from_secs(10);

@@ -1,4 +1,6 @@
 fn main() {
+    // The shared adapter has a root-browser runtime gate that this harness never enables.
+    println!("cargo:rustc-check-cfg=cfg(feature, values(\"engine-cef\"))");
     assert_eq!(
         std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
         Ok("macos"),

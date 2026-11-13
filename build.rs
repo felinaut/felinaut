@@ -59,6 +59,11 @@ fn main() -> Result<(), String> {
         &std::env::var("CARGO_CFG_TARGET_OS").map_err(|error| error.to_string())?,
         &engine_build::compiled_ids(),
     )?;
+    if cfg!(feature = "engine-cef")
+        && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("aarch64")
+    {
+        return Err("The optional CEF runtime currently requires native macOS arm64; other architectures are not validated".into());
+    }
     println!("cargo:rerun-if-env-changed=FELINAUT_RELEASE_VERSION");
     println!(
         "cargo:rustc-env=FELINAUT_BUILD_VERSION={}",

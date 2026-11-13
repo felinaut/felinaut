@@ -32,9 +32,9 @@ pub const BACKENDS: &[Backend] = &[
         id: "cef",
         feature: "engine-cef",
         family: "chromium",
-        adapter_implemented: false,
+        adapter_implemented: true,
         requires_isolated_launcher: false,
-        limitation: "CEF adapter not implemented; standalone same-window coexistence passed, but browser page factory, lifecycle, profiles and security integration are not ready",
+        limitation: "Experimental macOS arm64 Chromium/CEF; prepared developer bundle required; isolated in-memory sessions, restricted permissions and incomplete optional capabilities",
     },
     Backend {
         id: "gecko",
@@ -116,7 +116,7 @@ pub fn require_backend(selected: &[&str], id: &str) -> Result<&'static Backend, 
 
 pub fn validate(target_os: &str, selected: &[&str]) -> Result<(), String> {
     if selected.is_empty() {
-        return Err("Select at least one implemented engine: engine-webkit-system or engine-webkit-upstream".into());
+        return Err("Select at least one implemented engine: engine-webkit-system, engine-webkit-upstream or engine-cef".into());
     }
     for (index, id) in selected.iter().enumerate() {
         if selected[..index].contains(id) {

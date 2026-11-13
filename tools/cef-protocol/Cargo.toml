@@ -1,0 +1,12 @@
+[package]
+name = "felinaut-cef-protocol"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+description = "Native-only bounded browser-renderer evaluation protocol"
+
+[workspace]
+
+[lib]
+path = "../../src/page/cef/protocol.rs"

@@ -60,9 +60,16 @@ fn dir() -> Option<PathBuf> {
     Some(PathBuf::from(home).join("Library/Application Support/Felifox"))
 }
 
-/// Starts the listener thread when `FELINAUT_AGENT=1`.
+fn agent_flag(current: Option<&std::ffi::OsStr>, legacy: Option<&std::ffi::OsStr>) -> bool {
+    current.or(legacy).is_some_and(|value| value == "1")
+}
+
+/// Starts the listener thread when `FELINAUT_AGENT=1` (legacy: `FELIFOX_AGENT=1`).
 pub fn start() -> Option<Queue> {
-    if !crate::webview::agent_enabled() {
+    if !agent_flag(
+        std::env::var_os("FELINAUT_AGENT").as_deref(),
+        std::env::var_os("FELIFOX_AGENT").as_deref(),
+    ) {
         return None;
     }
     match listen() {
@@ -157,6 +164,18 @@ fn call(arguments: Value) -> String {
     format!("__felifox.apply(null,{arguments})")
 }
 
+fn evaluation_script(backend: &str, script: String) -> String {
+    if backend != "cef" {
+        return script;
+    }
+    // CEF has no initialization script. Install only the DOM helpers, lazily, so snapshot
+    // references survive subsequent calls. Evaluation still follows the backend's CSP policy.
+    format!(
+        "(() => {{\nif (typeof window.__felifox !== 'function') {{\n{}\n}}\nreturn ({script}\n);\n}})()",
+        include_str!("agent.js")
+    )
+}
+
 /// The page gives the JSON text of the string that `__felifox` returned, or nothing.
 fn decode(result: &str) -> String {
     serde_json::from_str(result).unwrap_or_else(|_| {
@@ -193,11 +212,12 @@ pub fn run(page: &dyn PageBackend, request: Request, queue: &Sender<Request>) {
     }
     let text = |key: &str| command[key].as_str().unwrap_or_default().to_owned();
     let native = command["native"] == true;
+    let backend = page.backend_info().id;
     // Gives the answer of the page to the client.
     let evaluate = |script: String| {
         let reply = reply.clone();
         page.evaluate(
-            &script,
+            &evaluation_script(backend, script),
             Box::new(move |result| {
                 let answer = match result {
                     Ok(result) => decode(&result),
@@ -222,7 +242,7 @@ pub fn run(page: &dyn PageBackend, request: Request, queue: &Sender<Request>) {
             .ok_or("Native input canceled: continuation deadline exceeds clock capacity.")?;
         let (reply, queue) = (reply.clone(), queue.clone());
         page.evaluate(
-            &script,
+            &evaluation_script(backend, script),
             Box::new(move |result| {
                 let result = match result {
                     Ok(result) => result,
@@ -315,6 +335,7 @@ mod tests {
 
     #[derive(Default)]
     struct FakePage {
+        cef: bool,
         requests: ScriptRequests,
         without_scope: Cell<bool>,
         dispatch_error: Cell<bool>,
@@ -333,7 +354,7 @@ mod tests {
     impl PageBackend for FakePage {
         fn backend_info(&self) -> BackendInfo {
             BackendInfo {
-                id: "test-backend",
+                id: if self.cef { "cef" } else { "test-backend" },
                 engine_family: "test-family",
                 runtime_version: None,
                 runtime_identity: RuntimeIdentity::default(),
@@ -441,6 +462,189 @@ mod tests {
     fn assert_error(answer: &Receiver<String>, error: &str) {
         let answer: Value = serde_json::from_str(&answer.try_recv().unwrap()).unwrap();
         assert_eq!(answer, json!({"ok": false, "error": error}));
+    }
+
+    #[test]
+    fn agent_opt_in_preserves_legacy_fallback_and_explicit_disable() {
+        use std::ffi::OsStr;
+
+        for (current, legacy, expected) in [
+            (None, None, false),
+            (None, Some("1"), true),
+            (Some("1"), None, true),
+            (Some("1"), Some("0"), true),
+            (Some("0"), Some("1"), false),
+            (Some(""), Some("1"), false),
+            (Some("true"), Some("1"), false),
+            (Some(" 1"), None, false),
+            (None, Some("0"), false),
+        ] {
+            assert_eq!(
+                agent_flag(current.map(OsStr::new), legacy.map(OsStr::new)),
+                expected,
+                "current={current:?}, legacy={legacy:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn script_commands_encode_arguments_and_preserve_response_envelopes_for_both_backends() {
+        let text = "quotes \" and \\ slashes\nUnicode: 🐈";
+        for cef in [false, true] {
+            for (command, script, value) in [
+                (
+                    json!({"cmd": "snapshot"}),
+                    call(json!(["snapshot"])),
+                    json!({"url": "about:blank", "title": "Fixture", "elements": []}),
+                ),
+                (
+                    json!({"cmd": "click", "ref": "@e0"}),
+                    call(json!(["click", "@e0"])),
+                    Value::Null,
+                ),
+                (
+                    json!({"cmd": "type", "ref": "@e1", "text": text}),
+                    call(json!(["type", "@e1", text])),
+                    Value::Null,
+                ),
+                (
+                    json!({"cmd": "press", "key": "Enter"}),
+                    call(json!(["press", "Enter"])),
+                    Value::Null,
+                ),
+                (
+                    json!({"cmd": "eval", "code": "({answer: 42}) // comment"}),
+                    "__felifox('eval',()=>(({answer: 42}) // comment\n))".into(),
+                    json!({"answer": 42}),
+                ),
+            ] {
+                let page = FakePage {
+                    cef,
+                    ..FakePage::default()
+                };
+                let (queue, pending) = mpsc::channel();
+                let answer = start_command(&page, command, &queue);
+                let expected = if cef {
+                    format!(
+                        "(() => {{\nif (typeof window.__felifox !== 'function') {{\n{}\n}}\nreturn ({script}\n);\n}})()",
+                        include_str!("agent.js")
+                    )
+                } else {
+                    script
+                };
+                assert_eq!(*page.scripts.borrow(), vec![expected]);
+                assert!(answer.try_recv().is_err());
+                let result = response(Ok(value));
+                page.complete(Ok(serde_json::to_string(&result).unwrap()));
+                assert_eq!(answer.try_recv().unwrap(), result);
+                assert!(answer.try_recv().is_err());
+                assert!(pending.try_recv().is_err());
+                assert!(page.input.borrow().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn cef_script_failures_stay_explicit_and_do_not_enqueue_native_input() {
+        let commands = [
+            json!({"cmd": "snapshot"}),
+            json!({"cmd": "eval", "code": "42"}),
+            json!({"cmd": "click", "ref": "@e0"}),
+            json!({"cmd": "type", "ref": "@e1", "text": "hello"}),
+            native_commands()[0].clone(),
+            native_commands()[1].clone(),
+        ];
+        for command in commands {
+            for result in [
+                Err(ScriptError::Backend(
+                    "Evaluation blocked by Content Security Policy".into(),
+                )),
+                Err(ScriptError::DocumentChanged),
+                Err(ScriptError::TimedOut),
+                Ok(String::new()),
+                Ok("null".into()),
+                Ok(
+                    serde_json::to_string(&response(Err("Unknown or stale reference @e0".into())))
+                        .unwrap(),
+                ),
+            ] {
+                let page = FakePage {
+                    cef: true,
+                    ..FakePage::default()
+                };
+                let (queue, pending) = mpsc::channel();
+                let answer = start_command(&page, command.clone(), &queue);
+                let expected = match &result {
+                    Ok(result) => decode(result),
+                    Err(error) => response(Err(error.to_string())),
+                };
+                page.complete(result);
+                assert_eq!(answer.try_recv().unwrap(), expected);
+                assert!(answer.try_recv().is_err());
+                assert!(pending.try_recv().is_err());
+                assert!(page.input.borrow().is_empty());
+            }
+            let page = FakePage {
+                cef: true,
+                ..FakePage::default()
+            };
+            page.dispatch_error.set(true);
+            let (queue, pending) = mpsc::channel();
+            let answer = start_command(&page, command, &queue);
+            assert_error(&answer, "script dispatch failed");
+            assert!(page.callback.borrow().is_none());
+            assert!(pending.try_recv().is_err());
+            assert!(page.input.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn cef_native_preflights_preserve_document_scopes_and_deadlines() {
+        for command in native_commands() {
+            for invalidate in [false, true] {
+                let page = FakePage {
+                    cef: true,
+                    ..FakePage::default()
+                };
+                let (queue, pending) = mpsc::channel();
+                let before_preflight = Instant::now();
+                let answer = start_command(&page, command.clone(), &queue);
+                let after_preflight = Instant::now();
+                let preflight = if command["cmd"] == "click" {
+                    "point"
+                } else {
+                    "focus"
+                };
+                assert_eq!(
+                    *page.scripts.borrow(),
+                    vec![evaluation_script("cef", call(json!([preflight, "@e1"])))]
+                );
+                page.complete(Ok(script_success()));
+                let continuation = pending.try_recv().unwrap();
+                let deadline = continuation.expires_at.unwrap();
+                assert!(deadline >= before_preflight + CONTINUATION_BUDGET);
+                assert!(deadline <= after_preflight + CONTINUATION_BUDGET);
+                assert!(
+                    continuation
+                        .scope
+                        .as_ref()
+                        .unwrap()
+                        .matches(&page.requests.scope())
+                );
+                if invalidate {
+                    page.reload().unwrap();
+                }
+                run(&page, continuation, &queue);
+                if invalidate {
+                    assert_error(&answer, STALE_CONTINUATION);
+                    assert!(page.input.borrow().is_empty());
+                } else {
+                    assert_eq!(answer.try_recv().unwrap(), response(Ok(Value::Null)));
+                    assert_eq!(page.input.borrow().len(), 1);
+                }
+                assert!(pending.try_recv().is_err());
+            }
+        }
     }
 
     #[test]

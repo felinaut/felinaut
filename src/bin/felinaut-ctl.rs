@@ -16,6 +16,12 @@ Usage: felinaut-ctl <command>      (start Felinaut with FELINAUT_AGENT=1)
   backend                 Show the active backend, engine family, runtime version and capabilities
   tabs                    List the tabs
   tab <index>             Select a tab
+  engine                  Show the active tab's selected engine, pending change and error
+  engine webkit|cef [--confirm]
+                          Change the tab's engine; --confirm allows reloading a loaded page
+  new-tab [webkit|cef]    Open a tab, optionally using the specified engine
+  close-tab               Close the active tab
+  quit                    Quit the controlled browser gracefully
   navigate <url|search>   Load a page in the active tab
   snapshot                List the visible elements that accept input, with references
   click <@ref>            Click an element
@@ -40,7 +46,22 @@ Usage: felinaut-ctl <command>      (start Felinaut with FELINAUT_AGENT=1)
 fn command(args: &[String]) -> Option<Value> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     Some(match args[..] {
-        ["backend"] | ["tabs"] | ["snapshot"] => json!({"cmd": args[0]}),
+        ["backend"]
+        | ["tabs"]
+        | ["snapshot"]
+        | ["engine"]
+        | ["new-tab"]
+        | ["close-tab"]
+        | ["quit"] => json!({"cmd": args[0]}),
+        ["engine", engine @ ("webkit" | "cef")] => {
+            json!({"cmd": "engine", "engine": engine, "confirm": false})
+        }
+        ["engine", engine @ ("webkit" | "cef"), "--confirm"] => {
+            json!({"cmd": "engine", "engine": engine, "confirm": true})
+        }
+        ["new-tab", engine @ ("webkit" | "cef")] => {
+            json!({"cmd": "new-tab", "engine": engine})
+        }
         ["tab", index] => json!({"cmd": "tab", "index": index.parse::<u64>().ok()?}),
         ["live"] => json!({"cmd": "live"}),
         ["live", "add", key] => json!({"cmd": "live", "add": key}),
@@ -73,6 +94,27 @@ fn command(args: &[String]) -> Option<Value> {
         }),
         _ => return None,
     })
+}
+
+fn cli_command(args: &[String]) -> Option<Value> {
+    let native_flags = args.iter().filter(|arg| *arg == "--native").count();
+    let args: Vec<String> = args
+        .iter()
+        .filter(|arg| *arg != "--native")
+        .cloned()
+        .collect();
+    if native_flags > 1
+        || (native_flags == 1
+            && !matches!(
+                args.first().map(String::as_str),
+                Some("click" | "type" | "press")
+            ))
+    {
+        return None;
+    }
+    let mut command = command(&args)?;
+    command["native"] = (native_flags == 1).into();
+    Some(command)
 }
 
 fn send(mut command: Value) -> Result<Value, String> {
@@ -120,15 +162,12 @@ fn print_snapshot(page: &Value) {
 }
 
 fn main() {
-    let mut args: Vec<String> = env::args().skip(1).collect();
-    let native = args.iter().any(|arg| arg == "--native");
-    args.retain(|arg| arg != "--native");
-    let Some(mut command) = command(&args) else {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let Some(command) = cli_command(&args) else {
         eprintln!("{USAGE}");
         exit(2);
     };
     let name = command["cmd"].clone();
-    command["native"] = native.into();
     match send(command) {
         Ok(value) if name == "snapshot" => print_snapshot(&value),
         Ok(Value::Null) => {}
@@ -203,6 +242,85 @@ mod tests {
         ] {
             assert_eq!(parse(&args), None, "unexpectedly accepted {args:?}");
         }
+    }
+
+    #[test]
+    fn engine_commands_encode_explicit_reload_confirmation() {
+        assert_eq!(parse(&["engine"]), Some(json!({"cmd": "engine"})));
+        for engine in ["webkit", "cef"] {
+            assert_eq!(
+                parse(&["engine", engine]),
+                Some(json!({"cmd": "engine", "engine": engine, "confirm": false}))
+            );
+            assert_eq!(
+                parse(&["engine", engine, "--confirm"]),
+                Some(json!({"cmd": "engine", "engine": engine, "confirm": true}))
+            );
+            assert_eq!(
+                parse(&["new-tab", engine]),
+                Some(json!({"cmd": "new-tab", "engine": engine}))
+            );
+        }
+        for name in ["new-tab", "close-tab", "quit"] {
+            assert_eq!(parse(&[name]), Some(json!({"cmd": name})));
+        }
+    }
+
+    #[test]
+    fn engine_and_lifecycle_commands_reject_invalid_ids_flags_and_extra_arguments() {
+        for args in [
+            vec!["engine", ""],
+            vec!["engine", "CEF"],
+            vec!["engine", "gecko"],
+            vec!["engine", "webkit-system"],
+            vec!["engine", "--confirm"],
+            vec!["engine", "--confirm", "cef"],
+            vec!["engine", "cef", "true"],
+            vec!["engine", "cef", "--confirm", "--confirm"],
+            vec!["engine", "webkit", "--confirm", "extra"],
+            vec!["new-tab", ""],
+            vec!["new-tab", "gecko"],
+            vec!["new-tab", "WebKit"],
+            vec!["new-tab", "0"],
+            vec!["new-tab", "cef", "--confirm"],
+            vec!["new-tab", "webkit", "cef"],
+            vec!["close-tab", "0"],
+            vec!["close-tab", "--confirm"],
+            vec!["quit", "--confirm"],
+            vec!["quit", "extra"],
+        ] {
+            assert_eq!(parse(&args), None, "unexpectedly accepted {args:?}");
+        }
+    }
+
+    #[test]
+    fn native_flag_cannot_hide_extra_arguments_on_engine_or_lifecycle_commands() {
+        let cli = |args: &[&str]| {
+            cli_command(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
+        };
+        for args in [
+            vec!["engine", "--native"],
+            vec!["engine", "cef", "--confirm", "--native"],
+            vec!["new-tab", "--native"],
+            vec!["new-tab", "webkit", "--native"],
+            vec!["close-tab", "--native"],
+            vec!["quit", "--native"],
+            vec!["click", "@e1", "--native", "--native"],
+        ] {
+            assert_eq!(cli(&args), None, "unexpectedly accepted {args:?}");
+        }
+        assert_eq!(
+            cli(&["engine", "cef", "--confirm"]),
+            Some(json!({"cmd": "engine", "engine": "cef", "confirm": true, "native": false}))
+        );
+        assert_eq!(
+            cli(&["type", "@e1", "hello", "--native"]),
+            Some(json!({"cmd": "type", "ref": "@e1", "text": "hello", "native": true}))
+        );
+        assert_eq!(
+            cli(&["--native", "click", "@e1"]),
+            Some(json!({"cmd": "click", "ref": "@e1", "native": true}))
+        );
     }
 
     #[test]

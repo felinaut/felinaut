@@ -107,6 +107,11 @@ impl BackendInfo {
 /// Script requests use explicit completion errors and document scopes. Native notification
 /// attribution, snapshots and profile selection still need their own lifetime contracts.
 pub trait PageBackend {
+    /// Asynchronous adapters report readiness before a host replaces an existing page.
+    /// Failure must leave the original page intact; readiness is not load completion.
+    fn creation_ready(&self) -> Result<bool, String> {
+        Ok(true)
+    }
     fn backend_info(&self) -> BackendInfo;
     fn navigate(&self, url: &str) -> Result<(), String>;
     fn back(&self) -> Result<(), String>;

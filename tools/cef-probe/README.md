@@ -1,6 +1,6 @@
 # Native CEF/GPUI lifecycle probe
 
-Developer-only macOS arm64 investigation, separate from the browser's Cargo graph. The default build is SDK-free; the explicit `runtime` feature now loads a pinned CEF distribution and exercises a trusted loopback document inside an AppKit child view hosted by GPUI. **This is not the browser adapter or arbitrary-site support.** `engine-cef` in the browser remains explicitly unsupported. Native functional checks and the window-only visual check pass on the host below. The recorded capture contains the actual GPUI chrome and CEF document, not a mockup.
+Developer-only macOS arm64 investigation, separate from the browser's Cargo graph. The default build is SDK-free; the explicit `runtime` feature now loads a pinned CEF distribution and exercises a trusted loopback document inside an AppKit child view hosted by GPUI. **This is not the browser adapter or arbitrary-site support.** The browser's optional `engine-cef` now enables a separate [experimental per-tab integration](../../docs/macos-per-tab-engines.md); that actual-browser test/build uses the reusable multi-page host and browser helper, not this single-container probe. Native functional checks and the window-only visual check pass on the host below. The recorded capture contains the actual GPUI chrome and CEF document, not a mockup.
 
 ## Build and test
 
@@ -124,7 +124,7 @@ The final fresh `--run --build --coexistence --capture` equivalent passed with r
 
 Validation passed: tool/default/coexistence formatting and Clippy with warnings denied; **43 coexistence-enabled host tests** (26 sequence, 7 WebKit adapter, 7 runtime-policy, 3 lifecycle), **8 helper tests**, **157 Python tests** (32 preparation, 21 bundle, 41 observer, 63 runner), the SDK-free native lifecycle/pump/negative-singleton checks, the original single-engine native runner and the coexistence native/capture runs. No test result from this Mac establishes another OS or macOS version.
 
-Remaining: production CEF page/event/capability adapter, generation/cancellation and permission handling, normal chrome/content keyboard routing, IME/accessibility, media/downloads, renderer crash/recovery, durable profiles/real Keychain, production packaging/security updates and per-tab engine selection/reload policy. The browser's `engine-cef` gate remains blocked. The system/upstream Cocoa WebKit process-exclusivity constraint is unchanged: this probe pairs **system WebKit with Chromium/CEF**, not two Cocoa WebKit builds.
+At this historical checkpoint, the browser adapter and per-tab picker were still missing. They now have an [actual-root experimental implementation and native mixed-engine evidence](../../docs/macos-per-tab-engines.md). Full input/IME/accessibility, media/downloads, renderer crash/recovery, durable profiles/real Keychain and distribution/security-update readiness remain follow-up gates. The system/upstream Cocoa WebKit process-exclusivity constraint is unchanged: this probe pairs **system WebKit with Chromium/CEF**, not two Cocoa WebKit builds.
 
 ## Shared PageBackend checkpoint
 
@@ -134,7 +134,7 @@ On 13 November 2026 the real single-engine run passed navigation to a second fix
 
 ![Actual running CEF shared-contract harness after native input and resize, before navigation checks.](../../docs/screenshots/macos-cef-page-contract.png)
 
-This is an initial adapter exercised in a standalone runtime, **not root-browser integration or an enabled picker**. The renderer-result checkpoint below now exercises `evaluate` through the shared contract. Optional capabilities remain false and fail explicitly. The harness still owns one native CEF container, uses disposable profiles/mock Keychain and restricts requests to its fixture origin. Production multi-page ownership, profiles, permissions, errors/recovery, complete input/IME/accessibility and packaging remain gates. No browser-root CEF dependency or feature-gate relaxation is included.
+This historical checkpoint exercised an initial adapter in the standalone runtime. The [newer root-browser integration](../../docs/macos-per-tab-engines.md) now provides per-tab selection; the standalone checks here remain separate evidence. The renderer-result checkpoint below now exercises `evaluate` through the shared contract. Optional capabilities remain false and fail explicitly. The harness still owns one native CEF container, uses disposable profiles/mock Keychain and restricts requests to its fixture origin. Production multi-page ownership, profiles, permissions, errors/recovery, complete input/IME/accessibility and packaging remain gates. No browser-root CEF dependency or feature-gate relaxation is included.
 
 ## Renderer evaluation transport
 

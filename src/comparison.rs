@@ -55,6 +55,16 @@ impl Policy {
     }
 
     fn verify_build(&self, selected: &[&str]) -> Result<(), String> {
+        if self.enabled() && selected.contains(&"cef") {
+            return Err("Cocoa runtime comparison requires a build without CEF; system/upstream WebKit comparison remains a separate-process experiment".into());
+        }
+        if self.mode.is_none()
+            && !selected.contains(&"system-webkit")
+            && !selected.contains(&"upstream-webkit")
+            && selected.contains(&"cef")
+        {
+            return crate::engine_build::require_backend(selected, "cef").map(|_| ());
+        }
         let id = match self.mode {
             None | Some(Mode::System) => "system-webkit",
             Some(Mode::Upstream) => "upstream-webkit",
@@ -63,6 +73,13 @@ impl Policy {
     }
 
     pub fn verify_runtime(&self, info: &BackendInfo) -> Result<(), String> {
+        if self.mode.is_none()
+            && info.id == "cef"
+            && info.engine_family == "chromium"
+            && crate::engine_build::compiled_ids() == ["cef"]
+        {
+            return Ok(());
+        }
         // An unidentified image must not downgrade an external runtime into normal
         // browsing with a persistent profile. Missing provenance fails before UI/profile load.
         let mode = self.mode.unwrap_or(Mode::System);
@@ -362,6 +379,26 @@ mod tests {
         wrong.engine_family = "webkit";
         wrong.id = "different-backend";
         assert!(policy.verify_runtime(&wrong).is_err());
+    }
+
+    #[test]
+    fn cef_only_normal_startup_is_distinct_from_cocoa_runtime_comparison() {
+        assert!(Policy::default().verify_build(&["cef"]).is_ok());
+        assert!(
+            Policy::default()
+                .verify_build(&["system-webkit", "cef"])
+                .is_ok()
+        );
+        for policy in [
+            Policy::parse(Some("system"), None).unwrap(),
+            Policy::parse(Some("upstream"), Some(UUID)).unwrap(),
+        ] {
+            assert!(
+                policy
+                    .verify_build(&["system-webkit", "upstream-webkit", "cef"])
+                    .is_err()
+            );
+        }
     }
 
     #[test]

@@ -11,8 +11,16 @@ default = ["engine-webkit-system"]
 engine-webkit-system = ["_cocoa-webkit"]
 engine-webkit-upstream = ["_cocoa-webkit"]
 _cocoa-webkit = ["dep:wry", "dep:objc2-web-kit"]
-# Explicit requests fail in build.rs until real adapters pass their native gates.
-engine-cef = []
+# CEF is opt-in; the Cocoa dependency still supplies macOS platform integration.
+engine-cef = [
+    "_cocoa-webkit",
+    "dep:cef",
+    "dep:cef-dll-sys",
+    "dep:cef-host",
+    "dep:cef-protocol",
+    "dep:raw-window-handle",
+]
+# Other requests fail in build.rs until their native adapters exist.
 engine-gecko = []
 engine-servo = []
 engine-ladybird = []
@@ -27,6 +35,16 @@ unicode-segmentation = "1.12"
 serde_json = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+cef = { version = "=156.4.0", optional = true, default-features = false, features = [
+    "sandbox",
+    "resources",
+] }
+cef-dll-sys = { version = "=156.4.0", optional = true, features = ["sandbox"] }
+cef-host = { package = "felinaut-cef-host", path = "tools/cef-host", optional = true, features = [
+    "runtime",
+] }
+cef-protocol = { package = "felinaut-cef-protocol", path = "tools/cef-protocol", optional = true }
+raw-window-handle = { version = "0.6.2", optional = true }
 wry = { version = "=0.57.1", optional = true, default-features = false, features = [
     "os-webview",
 ] }

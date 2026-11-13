@@ -17,6 +17,9 @@ mod downloads;
 #[path = "../src/engine_build.rs"]
 mod engine_build;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/history.rs"]
+mod history;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/icons.rs"]
 mod icons;
 #[allow(dead_code, unused_imports)]
@@ -25,6 +28,9 @@ mod load_error;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/page.rs"]
 mod page;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/session.rs"]
+mod session;
 #[allow(dead_code)]
 #[path = "../src/webview.rs"]
 mod webview;
