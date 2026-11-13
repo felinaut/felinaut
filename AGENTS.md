@@ -10,6 +10,7 @@ Felinaut is a small macOS browser: Rust edition 2024, GPUI 0.2.2 chrome, and Wry
 - `src/session.rs`, `src/history.rs`, `src/theme.rs`: persisted state and preferences.
 - `src/downloads.rs`, `src/downloads/native.rs`, `src/download_panel.rs`: download list model and file naming, the WebKit download delegate, and the list popover.
 - `src/dialogs.rs`, `src/dialogs/native.rs`, `src/dialog_panel.rs`: JavaScript dialog queue, the WebKit dialog methods, and the panel above the page.
+- `src/http_auth.rs`, `src/auth_prompt.rs`: HTTP Basic/Digest questions, their WebKit completion handlers, and the sign-in prompt.
 - `src/agent.rs`, `tools/`: local browser automation and distribution tools.
 - `scripts/package_macos.py`: app bundle, signing, and interactive DMG packaging.
 

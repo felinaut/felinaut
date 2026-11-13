@@ -62,8 +62,7 @@ impl Panel {
     fn new(page: Rc<NativePage>, shown: Shown, cx: &mut Context<Self>) -> Self {
         let input = (shown.request.kind == Kind::Prompt).then(|| {
             cx.new(|cx| {
-                let mut input = AddressInput::new(cx);
-                input.set_placeholder("");
+                let mut input = AddressInput::field("", false, cx);
                 input.set_text(shown.request.default_text.clone(), cx);
                 input.select_all_text(cx);
                 input

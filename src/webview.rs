@@ -44,6 +44,8 @@ impl Drop for NativePage {
     fn drop(&mut self) {
         if let Some(key) = self.failure_key {
             FAILURES.with_borrow_mut(|pages| pages.remove(&key));
+            // Cancels the sign-in questions of this page while its WKWebView is still alive.
+            crate::http_auth::close_page(key);
             crate::downloads::native::detach(key);
             crate::dialogs::native::detach(key);
         }
@@ -62,6 +64,7 @@ impl NativePage {
         // The address of the WKWebView, known only after the build.
         let page_key = std::rc::Rc::new(std::cell::Cell::new(0));
         let committed = page_key.clone();
+        let navigated = page_key.clone();
         let mut builder = WebViewBuilder::new();
         if agent_enabled() {
             builder =
@@ -87,7 +90,11 @@ impl NativePage {
             })
             .with_visible(false)
             .with_focused(false)
-            .with_navigation_handler(|url| allowed_url(&url))
+            .with_navigation_handler(move |url| {
+                // After a Cancel of the sign-in prompt, a new navigation may ask again.
+                crate::http_auth::navigation_started(navigated.get());
+                allowed_url(&url)
+            })
             .with_new_window_req_handler(move |url, _| {
                 if allowed_url(&url) {
                     let _ = sender.send(Event::Open(url));
@@ -107,6 +114,9 @@ impl NativePage {
                         // end here, before a script of the new document can ask for one.
                         // A reset in `drain_events` came later and cancelled such a dialog.
                         crate::dialogs::native::commit(committed.get(), &url);
+                        // A sign-in question from before belongs to the old document or to
+                        // a load that was replaced.
+                        crate::http_auth::close_page(committed.get());
                         Event::Started(url)
                     }
                     PageLoadEvent::Finished => Event::Finished(url),
@@ -168,6 +178,11 @@ impl NativePage {
             last_url: RefCell::new(String::new()),
             failure_key: None,
         })
+    }
+
+    /// The name of this page for `http_auth`. A hidden page has none.
+    pub fn key(&self) -> Option<usize> {
+        self.failure_key
     }
 
     #[cfg(test)]
@@ -586,13 +601,35 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     unsafe extern "C-unwind" fn challenge(
         _: *mut AnyObject,
         _: Sel,
-        _: *mut AnyObject,
+        webview: *mut AnyObject,
         challenge: *mut AnyObject,
         handler: *mut Handler,
     ) {
         // SAFETY: WebKit passes a live challenge and completion handler on the main thread,
         // and expects the handler to be called exactly once.
         let handler = unsafe { &*handler };
+        // A Basic or Digest challenge of a visible page for its own origin waits for the user.
+        // An image, a frame or a fetch from another origin gets the default below. `http_auth`
+        // copies the handler and calls it later, one time.
+        let key = webview as usize;
+        let visible = FAILURES.with_borrow(|pages| pages.contains_key(&key));
+        // The address that the page loads, or else shows. Only this origin may ask the user.
+        // SAFETY: a property read on the live WKWebView that WebKit passes, on the main thread.
+        let url: Option<Retained<objc2_foundation::NSURL>> = unsafe { msg_send![webview, URL] };
+        let url = url
+            .and_then(|url| url.absoluteString())
+            .map(|url| url.to_string());
+        if let Some(challenge) = unsafe { challenge.as_ref() }
+            && crate::http_auth::intercept(
+                visible,
+                key,
+                url.as_deref().unwrap_or_default(),
+                challenge,
+                handler,
+            )
+        {
+            return;
+        }
         match unsafe { challenge.as_ref() }.and_then(accepted_credential) {
             // NSURLSessionAuthChallengeUseCredential
             Some(credential) => handler.call((0, Retained::as_ptr(&credential).cast_mut())),
@@ -637,6 +674,10 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
 
 /// Runs inside a WebKit callback, so it only queues an event for the UI.
 fn report_failure(key: usize, error: Option<&objc2_foundation::NSError>, provisional: bool) {
+    if provisional {
+        // The load ended, so nothing waits for an answer to its sign-in question.
+        crate::http_auth::close_page(key);
+    }
     let failure = error.filter(|_| provisional).and_then(|error| {
         let info = error.userInfo();
         let url = info
