@@ -218,6 +218,9 @@ impl Browser {
             return;
         };
         let (grant, decision) = choice.outcome();
+        if choice == Choice::NotNow {
+            self.permissions.dismiss(&request.origin);
+        }
         if let Some(decision) = decision {
             self.permissions
                 .remember(&request.origin, request.kinds, decision);

@@ -23,6 +23,9 @@ const MAX_ENTRIES: usize = 2000;
 /// The longest host name DNS permits.
 const MAX_HOST: usize = 253;
 const SAVE_INTERVAL: Duration = Duration::from_secs(1);
+/// After this many "Not Now" answers a site gets no more prompts until the user resets it or
+/// Felinaut starts again. A page that asks again after each refusal cannot nag.
+const MAX_DISMISSALS: u8 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
@@ -157,6 +160,8 @@ pub fn display_origin(origin: &str) -> String {
 #[derive(Default)]
 pub struct Permissions {
     entries: BTreeMap<(String, Kind), Decision>,
+    /// The "Not Now" answers per origin in this session. Never saved.
+    dismissals: BTreeMap<String, u8>,
     /// `None` without a home, or when the file was unreadable so it is never overwritten.
     path: Option<PathBuf>,
     dirty: bool,
@@ -188,7 +193,8 @@ impl Permissions {
         }
     }
 
-    /// One stored denial denies. A grant needs a stored permission for each kind.
+    /// One stored denial denies. A grant needs a stored permission for each kind. An origin
+    /// with `MAX_DISMISSALS` "Not Now" answers is denied instead of asked.
     pub fn answer(&self, origin: &str, kinds: &[Kind]) -> Answer {
         let stored = |kind: &Kind| self.entries.get(&(origin.to_owned(), *kind)).copied();
         if kinds
@@ -202,9 +208,24 @@ impl Permissions {
                 .all(|kind| stored(kind) == Some(Decision::Allow))
         {
             Answer::Grant
+        } else if self.muted(origin) {
+            Answer::Deny
         } else {
             Answer::Ask
         }
+    }
+
+    /// Counts a "Not Now" answer for the origin.
+    // ponytail: counted per origin, not per page, so a page cannot reset the count with a
+    // reload. Only `revoke` or a restart ends it.
+    pub fn dismiss(&mut self, origin: &str) {
+        let count = self.dismissals.entry(origin.to_owned()).or_default();
+        *count = count.saturating_add(1);
+    }
+
+    /// Whether the origin used up its prompts for this session.
+    fn muted(&self, origin: &str) -> bool {
+        self.dismissals.get(origin).copied().unwrap_or(0) >= MAX_DISMISSALS
     }
 
     pub fn remember(&mut self, origin: &str, kinds: &[Kind], decision: Decision) {
@@ -214,16 +235,17 @@ impl Permissions {
         self.dirty |= !kinds.is_empty();
     }
 
-    /// Forgets each decision for the origin, so it gets a prompt again.
+    /// Forgets each decision and each "Not Now" for the origin, so it gets a prompt again.
     pub fn revoke(&mut self, origin: &str) -> bool {
         let before = self.entries.len();
         self.entries.retain(|(known, _), _| known != origin);
         let removed = self.entries.len() != before;
         self.dirty |= removed;
-        removed
+        self.dismissals.remove(origin).is_some() || removed
     }
 
-    /// The stored decisions for an origin in words, such as "Camera allowed".
+    /// The stored decisions for an origin in words, such as "Camera allowed". An origin that
+    /// used up its prompts has "requests refused for now".
     pub fn summary(&self, origin: &str) -> Option<String> {
         let with = |decision| -> Vec<Kind> {
             [Kind::Camera, Kind::Microphone]
@@ -237,6 +259,10 @@ impl Permissions {
                 let kinds = with(decision);
                 (!kinds.is_empty()).then(|| format!("{} {word}", describe(&kinds)))
             })
+            .chain(
+                self.muted(origin)
+                    .then(|| "requests refused for now".to_owned()),
+            )
             .collect();
         let text = parts.join(", ");
         let mut letters = text.chars();
@@ -430,6 +456,68 @@ mod tests {
         permissions.path = Some("/nonexistent/permissions.tsv".into());
         let (_, contents) = permissions.take_snapshot().unwrap();
         assert!(!contents.contains(SITE) && contents.contains(other));
+    }
+
+    #[test]
+    fn a_site_gets_no_prompt_after_repeated_dismissals() {
+        let other = "https://other.example";
+        let mut permissions = Permissions {
+            path: Some("/nonexistent/permissions.tsv".into()),
+            ..Permissions::default()
+        };
+        permissions.remember(SITE, &[Kind::Microphone], Decision::Allow);
+        assert!(permissions.take_snapshot().is_some());
+        for _ in 0..MAX_DISMISSALS - 1 {
+            permissions.dismiss(SITE);
+            assert_eq!(permissions.answer(SITE, &[Kind::Camera]), Answer::Ask);
+        }
+        assert_eq!(
+            permissions.summary(SITE).as_deref(),
+            Some("Microphone allowed")
+        );
+        permissions.dismiss(SITE);
+        // The site is denied without a prompt, for each kind that has no stored permission.
+        assert_eq!(permissions.answer(SITE, &[Kind::Camera]), Answer::Deny);
+        assert_eq!(permissions.answer(SITE, BOTH), Answer::Deny);
+        assert_eq!(permissions.answer(SITE, &[Kind::Microphone]), Answer::Grant);
+        assert_eq!(
+            permissions.summary(SITE).as_deref(),
+            Some("Microphone allowed, requests refused for now")
+        );
+        // Another site still gets its prompt, and one more dismissal does not overflow.
+        assert_eq!(permissions.answer(other, BOTH), Answer::Ask);
+        for _ in 0..300 {
+            permissions.dismiss(SITE);
+        }
+        assert_eq!(permissions.answer(SITE, &[Kind::Camera]), Answer::Deny);
+        // The count is never saved.
+        assert_eq!(permissions.take_snapshot(), None);
+
+        // `route` gives the denial also to a page on display.
+        let tabs = [tab(1, "https://meet.example/", true)];
+        let routed = route(
+            vec![request(7, 1, SITE, &[Kind::Camera])],
+            &tabs,
+            &permissions,
+        );
+        assert_eq!(routed.answers, [(7, false)]);
+        assert_eq!(routed.prompt, None);
+
+        // A reset ends it.
+        assert!(permissions.revoke(SITE));
+        assert_eq!(permissions.answer(SITE, &[Kind::Camera]), Answer::Ask);
+        assert_eq!(permissions.summary(SITE), None);
+        // Dismissals alone are also something to reset.
+        for _ in 0..MAX_DISMISSALS {
+            permissions.dismiss(other);
+        }
+        assert_eq!(
+            permissions.summary(other).as_deref(),
+            Some("Requests refused for now")
+        );
+        assert!(permissions.revoke(other));
+        assert!(!permissions.revoke(other));
+        assert_eq!(permissions.answer(other, BOTH), Answer::Ask);
     }
 
     #[test]
