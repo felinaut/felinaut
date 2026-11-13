@@ -1571,7 +1571,7 @@ impl Browser {
                 continue;
             };
             let shown = index == self.active || Some(index) == visible_partner;
-            changed |= auth_prompt::sync(&page, shown && !tab.home, cx);
+            changed |= auth_prompt::sync(&page, shown && !tab.home, &self.focus, window, cx);
             for event in page.drain_events() {
                 changed = true;
                 match event {

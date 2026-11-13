@@ -52,6 +52,9 @@ use webview::{Event, NativePage};
 
 struct TestWindow {
     page: Rc<NativePage>,
+    /// The focus of the browser itself, and a stand-in for the address bar.
+    browser: FocusHandle,
+    address: FocusHandle,
     _second_tab: NativePage,
     _failed_tab: Rc<NativePage>,
     _hidden: NativePage,
@@ -59,12 +62,16 @@ struct TestWindow {
 }
 impl Render for TestWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let root = div()
+            .size_full()
+            .track_focus(&self.browser)
+            .child(div().track_focus(&self.address));
         // As in the browser: the sign-in prompt takes the place of the page.
         if let Some(prompt) = auth_prompt::view(&self.page, cx) {
-            return div().size_full().child(prompt);
+            return root.child(prompt);
         }
         let page = self.page.clone();
-        div().size_full().child(
+        root.child(
             canvas(
                 move |bounds, _, _| {
                     page.set_bounds(bounds).expect("native bounds");
@@ -78,10 +85,15 @@ impl Render for TestWindow {
 }
 
 /// Shows the prompt for the page's open question, then presses the keys as a user does.
-async fn sign_in_keys(page: &NativePage, keys: &[&str], cx: &mut AsyncWindowContext) {
+async fn sign_in_keys(
+    page: &NativePage,
+    browser: &FocusHandle,
+    keys: &[&str],
+    cx: &mut AsyncWindowContext,
+) {
     cx.update(|window, cx| {
         assert!(
-            auth_prompt::sync(page, true, cx),
+            auth_prompt::sync(page, true, browser, window, cx),
             "a new question changes the tab"
         );
         assert!(auth_prompt::view(page, cx).is_some());
@@ -103,14 +115,15 @@ async fn sign_in_keys(page: &NativePage, keys: &[&str], cx: &mut AsyncWindowCont
     }
 }
 
-/// The question was answered: the prompt goes away and the page comes back.
-fn prompt_closed(page: &NativePage, cx: &mut AsyncWindowContext) {
+/// The question was answered: the prompt goes away and the page comes back with the keys.
+fn prompt_closed(page: &NativePage, browser: &FocusHandle, cx: &mut AsyncWindowContext) {
     cx.update(|window, cx| {
         assert!(
-            auth_prompt::sync(page, true, cx),
+            auth_prompt::sync(page, true, browser, window, cx),
             "an answered question changes the tab"
         );
         assert!(auth_prompt::view(page, cx).is_none());
+        assert!(page.has_keys_for_test(), "the page takes the keys back");
         window.refresh();
     })
     .unwrap();
@@ -282,6 +295,9 @@ fn main() {
                 page.focus().unwrap();
                 page.focus_parent().unwrap();
                 let second_page = page.clone();
+                let browser = cx.focus_handle();
+                let address = cx.focus_handle();
+                let (window_browser, window_address) = (browser.clone(), address.clone());
                 cx.new(|cx: &mut Context<TestWindow>| {
                     cx.spawn_in(window, async move |_, cx| {
                         let start = Instant::now();
@@ -417,30 +433,30 @@ fn main() {
                                     let (id, challenge) = http_auth::waiting(key).unwrap();
                                     assert_eq!(challenge, http_auth::Challenge::new("127.0.0.1", port, "Fixtureâ® realm", false, false));
                                     // Escape cancels: the page shows the server's 401 text.
-                                    sign_in_keys(&second_page, &["x", "escape"], cx).await;
+                                    sign_in_keys(&second_page, &browser, &["x", "escape"], cx).await;
                                     assert!(!http_auth::is_waiting(id));
                                     http_auth::answer(id, None);
                                 }
                                 9 => {
-                                    prompt_closed(&second_page, cx);
+                                    prompt_closed(&second_page, &browser, cx);
                                     second_page.navigate(&auth_url).unwrap();
                                 }
                                 // Typed text goes to the user name, Tab moves to the password, Enter signs in.
-                                10 => sign_in_keys(&second_page, &["u", "s", "e", "r", "tab", "n", "o", "enter"], cx).await,
+                                10 => sign_in_keys(&second_page, &browser, &["u", "s", "e", "r", "tab", "n", "o", "enter"], cx).await,
                                 11 => {
                                     let (_, challenge) = http_auth::waiting(key).unwrap();
                                     assert!(challenge.retry, "the server refused the first answer");
                                     // Tab from the password goes back to the user name.
-                                    sign_in_keys(&second_page, &["tab", "p", "a", "s", "s", "tab", "u", "s", "e", "r", "enter"], cx).await;
+                                    sign_in_keys(&second_page, &browser, &["tab", "p", "a", "s", "s", "tab", "u", "s", "e", "r", "enter"], cx).await;
                                 }
                                 12 => {
-                                    prompt_closed(&second_page, cx);
+                                    prompt_closed(&second_page, &browser, cx);
                                     second_page.navigate(&both_auth_url).unwrap();
                                 }
                                 13 => {
                                     let (id, challenge) = http_auth::waiting(key).unwrap();
                                     assert_eq!(challenge.realm, "Both");
-                                    sign_in_keys(&second_page, &["escape"], cx).await;
+                                    sign_in_keys(&second_page, &browser, &["escape"], cx).await;
                                     assert!(!http_auth::is_waiting(id));
                                 }
                                 14 => {
@@ -449,23 +465,33 @@ fn main() {
                                     // image time to show up.
                                     Timer::after(Duration::from_millis(300)).await;
                                     assert_eq!(http_auth::waiting(key), None, "Cancel must not ask again until the next navigation");
-                                    prompt_closed(&second_page, cx);
+                                    prompt_closed(&second_page, &browser, cx);
                                     // A new navigation asks again.
                                     second_page.navigate(&other_auth_url).unwrap();
                                 }
                                 15 => {
-                                    // The user leaves for another address with the prompt open.
+                                    // The page leaves for another address with the prompt open,
+                                    // while the user types in the address bar.
                                     cx.update(|window, cx| {
-                                        assert!(auth_prompt::sync(&second_page, true, cx));
+                                        assert!(auth_prompt::sync(&second_page, true, &browser, window, cx));
                                         assert!(auth_prompt::view(&second_page, cx).is_some());
+                                        window.focus(&address);
                                         window.refresh();
                                     }).unwrap();
                                     second_page.navigate(&first_url).unwrap();
                                 }
                                 16 => {
                                     // The new document cancelled the question and its prompt.
+                                    // The keys stay in the address bar.
                                     assert_eq!(http_auth::waiting(key), None);
-                                    prompt_closed(&second_page, cx);
+                                    cx.update(|window, cx| {
+                                        assert!(auth_prompt::sync(&second_page, true, &browser, window, cx));
+                                        assert!(auth_prompt::view(&second_page, cx).is_none());
+                                        assert!(address.is_focused(window));
+                                        assert!(!second_page.has_keys_for_test(), "a closed prompt must not take the keys from the address bar");
+                                        window.focus(&browser);
+                                        window.refresh();
+                                    }).unwrap();
                                     let page = cx.update(|window, _| NativePage::new(window, &other_auth_url)).unwrap();
                                     closing = Some(page.expect("create the tab to close"));
                                 }
@@ -488,7 +514,7 @@ fn main() {
                             stage += 1;
                         }
                     }).detach();
-                    TestWindow { page, _second_tab: second_tab, _failed_tab: failed_tab, _hidden: hidden, _hidden_auth: hidden_auth }
+                    TestWindow { page, browser: window_browser, address: window_address, _second_tab: second_tab, _failed_tab: failed_tab, _hidden: hidden, _hidden_auth: hidden_auth }
                 })
             },
         ).expect("native test window");

@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use gpui::{
-    App, Context, Div, Entity, Focusable, FontWeight, Global, KeyBinding, SharedString, Stateful,
-    Subscription, Window, actions, div, prelude::*, px, rgb,
+    App, Context, Div, Entity, FocusHandle, Focusable, FontWeight, Global, KeyBinding,
+    SharedString, Stateful, Subscription, Window, actions, div, prelude::*, px, rgb,
 };
 
 use crate::{
@@ -26,12 +26,25 @@ struct Open(HashMap<usize, (u64, Entity<AuthPrompt>)>);
 impl Global for Open {}
 
 /// Makes the prompts match the open questions. Call this from the browser's poll for each
-/// tab's page; `active` says whether the user looks at that tab. Returns true when what a tab
-/// shows changed.
-pub fn sync(page: &NativePage, active: bool, cx: &mut App) -> bool {
+/// tab's page; `active` says whether the user looks at that tab, and `browser` is the focus of
+/// the browser itself. Returns true when what a tab shows changed.
+pub fn sync(
+    page: &NativePage,
+    active: bool,
+    browser: &FocusHandle,
+    window: &Window,
+    cx: &mut App,
+) -> bool {
     let Some(key) = page.key() else {
         return false;
     };
+    // When its prompt closes, the page takes the keys back only from the prompt, the browser
+    // or nothing. A prompt can close while the user types in the address bar (the hidden page
+    // loads another address, or its load fails), and the text must stay there.
+    let keys_free = window.focused(cx).is_none_or(|focused| {
+        focused == *browser
+            || view(page, cx).is_some_and(|prompt| prompt.read(cx).has_keys(&focused, cx))
+    });
     if !cx.has_global::<Open>() {
         cx.set_global(Open::default());
         let context = Some("AuthPrompt");
@@ -46,7 +59,7 @@ pub fn sync(page: &NativePage, active: bool, cx: &mut App) -> bool {
     // and the password in them, go away with it.
     open.retain(|_, (id, _)| http_auth::is_waiting(*id));
     let mut changed = open.len() != count;
-    if shown && !open.contains_key(&key) && active {
+    if shown && !open.contains_key(&key) && active && keys_free {
         let _ = page.focus();
     }
     if !open.contains_key(&key)
@@ -127,6 +140,13 @@ impl AuthPrompt {
         self.password
             .update(cx, |input, cx| input.set_text(String::new(), cx));
         cx.notify();
+    }
+
+    /// Whether `focused` is one of the fields of this prompt.
+    fn has_keys(&self, focused: &FocusHandle, cx: &App) -> bool {
+        [&self.user, &self.password]
+            .iter()
+            .any(|field| field.focus_handle(cx) == *focused)
     }
 
     fn next_field(&mut self, _: &NextField, window: &mut Window, cx: &mut Context<Self>) {

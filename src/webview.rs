@@ -172,6 +172,20 @@ impl NativePage {
         self.failure_key
     }
 
+    /// Whether AppKit gives the keys to this page.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native sign-in test")]
+    pub fn has_keys_for_test(&self) -> bool {
+        use objc2::rc::Retained;
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        view.window()
+            .and_then(|window| window.firstResponder())
+            .is_some_and(|responder| {
+                std::ptr::addr_eq(Retained::as_ptr(&responder), Retained::as_ptr(&view))
+            })
+    }
+
     #[cfg(test)]
     #[allow(dead_code, reason = "Used by the opt-in native link interaction test")]
     pub fn evaluate_for_test(&self, script: &str) -> Result<(), String> {
