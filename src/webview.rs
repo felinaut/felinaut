@@ -6,7 +6,12 @@ use std::ffi::c_void;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use gpui::{Bounds, Pixels};
-use objc2::{msg_send, rc::Retained, runtime::AnyObject};
+use objc2::{
+    msg_send,
+    rc::Retained,
+    runtime::{AnyObject, Sel},
+    sel,
+};
 use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
 use crate::audio::{AudioReport, TabAudio, parse_report};
@@ -207,20 +212,10 @@ impl NativePage {
     pub fn toggle_devtools(&self) {
         use wry::WebViewExtMacOS;
         let view = self.webview.webview();
-        // SAFETY: WebKit's private `_inspector` and its methods, as Wry's `open_devtools` uses,
-        // on a live WKWebView on the main thread.
-        unsafe {
-            let available: bool = msg_send![&*view, respondsToSelector: objc2::sel!(_inspector)];
-            if !available {
-                return;
-            }
-            let inspector: Retained<AnyObject> = msg_send![&*view, _inspector];
-            let visible: bool = msg_send![&*inspector, isVisible];
-            if visible {
-                let () = msg_send![&*inspector, close];
-            } else {
-                let () = msg_send![&*inspector, show];
-            }
+        // SAFETY: a live WKWebView on the main thread.
+        if let Some(inspector) = unsafe { inspector_of(&view) } {
+            // SAFETY: the page's own `_WKInspector`, on the main thread.
+            unsafe { toggle_inspector(&inspector) };
         }
     }
 
@@ -780,6 +775,45 @@ fn container_y(y: f64, height: f64, parent_height: f64, flipped: bool) -> f64 {
     }
 }
 
+/// Whether `object` implements `selector`, so private WebKit API can be skipped if it is gone.
+fn responds(object: &AnyObject, selector: Sel) -> bool {
+    // SAFETY: `respondsToSelector:` is NSObject protocol API and has no side effects.
+    unsafe { msg_send![object, respondsToSelector: selector] }
+}
+
+/// A page's private `_WKInspector`, as Wry's `open_devtools` uses it. `None` if WebKit no
+/// longer has the selector, or returns nil (as it does once the page has closed).
+///
+/// SAFETY: `view` is a live WKWebView (or any object), used on the main thread.
+unsafe fn inspector_of(view: &AnyObject) -> Option<Retained<AnyObject>> {
+    if !responds(view, sel!(_inspector)) {
+        return None;
+    }
+    // SAFETY: the caller's guarantee; the selector exists and returns an object or nil.
+    unsafe { msg_send![view, _inspector] }
+}
+
+/// Shows a hidden inspector and closes a visible one. Selectors missing from a future WebKit
+/// are skipped instead of raising an Objective-C exception.
+///
+/// SAFETY: `inspector` is a `_WKInspector` (or any object), used on the main thread.
+unsafe fn toggle_inspector(inspector: &AnyObject) {
+    if !responds(inspector, sel!(isVisible)) {
+        return;
+    }
+    // SAFETY: the caller's guarantee; each selector is checked before it is sent.
+    unsafe {
+        let visible: bool = msg_send![inspector, isVisible];
+        if visible {
+            if responds(inspector, sel!(close)) {
+                let () = msg_send![inspector, close];
+            }
+        } else if responds(inspector, sel!(show)) {
+            let () = msg_send![inspector, show];
+        }
+    }
+}
+
 /// Closes the app's key window if it is a detached Web Inspector.
 pub fn close_key_window() {
     if let Some(mtm) = objc2::MainThreadMarker::new()
@@ -922,6 +956,58 @@ mod tests {
         assert!(!super::is_inspector_window(b"NSWindow"));
         assert!(!super::is_inspector_window(b"WKFullScreenWindow"));
         assert!(!super::is_inspector_window(b""));
+    }
+
+    objc2::define_class!(
+        /// A page whose inspector is gone: `_inspector` returns nil, as for a closed page.
+        #[unsafe(super(objc2::runtime::NSObject))]
+        #[name = "FelinautTestClosedPage"]
+        struct ClosedPage;
+
+        impl ClosedPage {
+            #[unsafe(method(_inspector))]
+            fn inspector(&self) -> *mut objc2::runtime::AnyObject {
+                std::ptr::null_mut()
+            }
+        }
+    );
+
+    objc2::define_class!(
+        /// An inspector that reports itself visible but has lost its `close`.
+        #[unsafe(super(objc2::runtime::NSObject))]
+        #[name = "FelinautTestPartialInspector"]
+        struct PartialInspector;
+
+        impl PartialInspector {
+            #[unsafe(method(isVisible))]
+            fn is_visible(&self) -> objc2::runtime::Bool {
+                objc2::runtime::Bool::YES
+            }
+        }
+    );
+
+    fn new_object<T: objc2::ClassType>() -> objc2::rc::Retained<objc2::runtime::AnyObject> {
+        // SAFETY: `new` on an NSObject subclass with no extra state.
+        unsafe { objc2::msg_send![T::class(), new] }
+    }
+
+    #[test]
+    fn a_nil_or_missing_inspector_is_none_instead_of_a_panic() {
+        // SAFETY: plain NSObject subclasses; none needs the main thread.
+        unsafe {
+            assert!(super::inspector_of(&new_object::<ClosedPage>()).is_none());
+            assert!(super::inspector_of(&new_object::<objc2::runtime::NSObject>()).is_none());
+        }
+    }
+
+    #[test]
+    fn toggling_skips_inspector_selectors_webkit_no_longer_has() {
+        // Without the guards these raise "unrecognized selector" and abort.
+        // SAFETY: plain NSObject subclasses; none needs the main thread.
+        unsafe {
+            super::toggle_inspector(&new_object::<objc2::runtime::NSObject>());
+            super::toggle_inspector(&new_object::<PartialInspector>());
+        }
     }
 
     #[test]
