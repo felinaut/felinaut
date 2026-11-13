@@ -40,6 +40,8 @@ block2 = "0.6"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "objc2-core-foundation",
+    # Proxy settings for WebKit and proxy passwords in the Keychain.
+    "NSArray",
     "NSData",
     "NSDictionary",
     "NSError",

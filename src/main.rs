@@ -13,6 +13,7 @@ mod input;
 mod language;
 mod live;
 mod load_error;
+mod proxy;
 mod session;
 mod settings;
 mod suggestions;
@@ -509,6 +510,20 @@ struct Browser {
 impl Browser {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let theme_observer = cx.observe_global::<ThemeSettings>(|_, cx| cx.notify());
+        // A proxy's password comes from the Keychain just after the first pages start loading;
+        // retry the visible page if it failed without it.
+        let mut proxy_credentials = cx.global::<proxy::Proxies>().credentials_applied;
+        cx.observe_global_in::<proxy::Proxies>(window, move |this, window, cx| {
+            let applied = cx.global::<proxy::Proxies>().credentials_applied;
+            if applied != proxy_credentials {
+                proxy_credentials = applied;
+                if this.tabs[this.active].load_failure.is_some() {
+                    this.reload(&Reload, window, cx);
+                }
+            }
+            cx.notify();
+        })
+        .detach();
         let address = cx.new(AddressInput::new);
         cx.spawn_in(window, async move |this, cx| {
             let mut previous = Instant::now();
@@ -1558,6 +1573,7 @@ impl Browser {
         }
         let mut changed = false;
         let mut address_changed = false;
+        let mut load_failed = false;
         let mut open = Vec::new();
         let mut icons = Vec::new();
         let mut finished = Vec::new();
@@ -1581,6 +1597,7 @@ impl Browser {
                     }
                     Event::Failed(failure) => {
                         tab.show_failure(failure);
+                        load_failed = true;
                         let _ = page.set_visible(false);
                         address_changed |= index == self.active;
                     }
@@ -1637,6 +1654,10 @@ impl Browser {
             self.close_menu(window, cx);
         }
         let address_focused = self.address.read(cx).focus_handle(cx).is_focused(window);
+        // A failed page may mean the proxy stopped answering; refresh its status.
+        if load_failed && cx.global::<proxy::Proxies>().list.active.is_some() {
+            proxy::recheck(cx);
+        }
         if address_changed && !address_focused {
             self.sync_address(cx);
         }
@@ -4171,6 +4192,8 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.set_global(ThemeSettings::load());
         cx.set_global(settings::LaunchLanguage(launch_language));
+        // Before the first page loads, so it never connects around a chosen proxy.
+        proxy::init(cx);
         input::init(cx);
         #[cfg(target_os = "macos")]
         webview::forward_command_arrows();
