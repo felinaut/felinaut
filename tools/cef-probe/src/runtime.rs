@@ -3,7 +3,12 @@
 mod policy;
 
 use cef::*;
-use felinaut_cef_probe::{self as native, pump};
+use felinaut_cef_probe::{
+    self as native,
+    cef_page::{CefPage, Notifications, Presentation},
+    page::{self},
+    pump,
+};
 use gpui::{
     Application, Bounds, Context, IntoElement, Render, Timer, WindowBounds, WindowOptions, canvas,
     div, prelude::*, px, rgb, size,
@@ -28,6 +33,8 @@ unsafe extern "C" {
     fn felinaut_cef_attach_container(parent: *mut c_void) -> *mut c_void;
     fn felinaut_cef_resize_container(x: f64, y: f64, width: f64, height: f64) -> bool;
     fn felinaut_cef_resize_window(width: f64, height: f64) -> bool;
+    fn felinaut_cef_set_visible(visible: bool) -> bool;
+    fn felinaut_cef_focus_parent() -> bool;
     fn felinaut_cef_click(x: f64, y: f64) -> bool;
     fn felinaut_cef_type_ascii(text: *const std::ffi::c_char) -> bool;
     fn felinaut_cef_release_container() -> bool;
@@ -121,17 +128,17 @@ wrap_browser_process_handler! {
     }
 }
 wrap_client! {
-    struct ProbeClient { events: SyncSender<Event>, target: url::Url }
+    struct ProbeClient { events: SyncSender<Event>, target: url::Url, notifications: Notifications }
     impl Client {
-        fn life_span_handler(&self) -> Option<LifeSpanHandler> { Some(ProbeLife::new(self.events.clone())) }
-        fn load_handler(&self) -> Option<LoadHandler> { Some(ProbeLoad::new(self.events.clone())) }
-        fn display_handler(&self) -> Option<DisplayHandler> { Some(ProbeDisplay::new(self.events.clone())) }
+        fn life_span_handler(&self) -> Option<LifeSpanHandler> { Some(ProbeLife::new(self.events.clone(), self.notifications.clone())) }
+        fn load_handler(&self) -> Option<LoadHandler> { Some(ProbeLoad::new(self.events.clone(), self.notifications.clone())) }
+        fn display_handler(&self) -> Option<DisplayHandler> { Some(ProbeDisplay::new(self.events.clone(), self.notifications.clone())) }
         fn request_handler(&self) -> Option<RequestHandler> { Some(ProbeRequest::new(self.events.clone(), self.target.clone())) }
         fn download_handler(&self) -> Option<DownloadHandler> { Some(ProbeDownload::new()) }
     }
 }
 wrap_life_span_handler! {
-    struct ProbeLife { events: SyncSender<Event> }
+    struct ProbeLife { events: SyncSender<Event>, notifications: Notifications }
     impl LifeSpanHandler {
         fn on_after_created(&self, value: Option<&mut Browser>) {
             if let Some(value) = value {
@@ -146,6 +153,7 @@ wrap_life_span_handler! {
             1
         }
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
+            self.notifications.closed();
             BROWSER.with_borrow_mut(|slot| { slot.take(); });
             emit(&self.events, Event::Closed);
         }
@@ -153,10 +161,18 @@ wrap_life_span_handler! {
     }
 }
 wrap_load_handler! {
-    struct ProbeLoad { events: SyncSender<Event> }
+    struct ProbeLoad { events: SyncSender<Event>, notifications: Notifications }
     impl LoadHandler {
+        fn on_load_start(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, _transition: TransitionType) {
+            if let Some(frame) = frame && frame.is_main() != 0 {
+                self.notifications.push(page::Event::Started(CefString::from(&frame.url()).to_string()));
+            }
+        }
         fn on_load_end(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, status: i32) {
-            if frame.is_some_and(|frame| frame.is_main() != 0) { emit(&self.events, Event::Loaded(status)); }
+            if let Some(frame) = frame && frame.is_main() != 0 {
+                self.notifications.push(page::Event::Finished(CefString::from(&frame.url()).to_string()));
+                emit(&self.events, Event::Loaded(status));
+            }
         }
         fn on_load_error(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, error: Errorcode, _text: Option<&CefString>, _url: Option<&CefString>) {
             if error != Errorcode::ABORTED && frame.is_some_and(|frame| frame.is_main() != 0) { emit(&self.events, Event::Failed("Main-frame load failed")); }
@@ -164,12 +180,20 @@ wrap_load_handler! {
     }
 }
 wrap_display_handler! {
-    struct ProbeDisplay { events: SyncSender<Event> }
+    struct ProbeDisplay { events: SyncSender<Event>, notifications: Notifications }
     impl DisplayHandler {
+        fn on_address_change(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, url: Option<&CefString>) {
+            if frame.is_some_and(|frame| frame.is_main() != 0) && let Some(url) = url {
+                self.notifications.push(page::Event::Url(url.to_string()));
+            }
+        }
         fn on_title_change(&self, _browser: Option<&mut Browser>, title: Option<&CefString>) {
             if let Some(title) = title {
                 let value = title.to_string();
-                if value.len() <= 1024 { emit(&self.events, Event::Title(value)); }
+                if value.len() <= 1024 {
+                    self.notifications.push(page::Event::Title(value.clone()));
+                    emit(&self.events, Event::Title(value));
+                }
                 else { emit(&self.events, Event::Failed("Oversized fixture title")); }
             }
         }
@@ -224,14 +248,47 @@ wrap_download_handler! {
 #[cfg(feature = "coexistence")]
 type WebKitOwner = StdRc<RefCell<Option<crate::coexistence_webkit::Page>>>;
 
+type CefOwner = StdRc<RefCell<Option<page::Page>>>;
+
+struct NativePresentation;
+impl Presentation for NativePresentation {
+    fn set_visible(&self, visible: bool) -> Result<(), String> {
+        // SAFETY: this presentation is UI-thread-owned; the runtime retains the container.
+        unsafe { felinaut_cef_set_visible(visible) }
+            .then_some(())
+            .ok_or("CEF visibility change failed".into())
+    }
+    fn focus_parent(&self) -> Result<(), String> {
+        // SAFETY: the runtime retains the live GPUI parent until asynchronous close.
+        unsafe { felinaut_cef_focus_parent() }
+            .then_some(())
+            .ok_or("CEF parent focus failed".into())
+    }
+    fn set_bounds(&self, bounds: Bounds<gpui::Pixels>) -> Result<(), String> {
+        // SAFETY: main-thread layout only; no message pumping or GPUI callback.
+        unsafe {
+            felinaut_cef_resize_container(
+                f64::from(bounds.origin.x),
+                f64::from(bounds.origin.y),
+                f64::from(bounds.size.width),
+                f64::from(bounds.size.height),
+            )
+        }
+        .then_some(())
+        .ok_or("CEF bounds change failed".into())
+    }
+}
+
 struct ProbeWindow {
     coexistence: bool,
+    cef: CefOwner,
     #[cfg(feature = "coexistence")]
     webkit: WebKitOwner,
 }
 impl Render for ProbeWindow {
     fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
         let coexistence = self.coexistence;
+        let cef = self.cef.clone();
         #[cfg(feature = "coexistence")]
         let webkit = self.webkit.clone();
         div()
@@ -271,7 +328,15 @@ impl Render for ProbeWindow {
                         }
                         // SAFETY: main-thread render/layout only updates the retained native
                         // container. It never pumps CEF or re-enters GPUI from a callback.
-                        let ok = unsafe { felinaut_cef_resize_container(x, y, cef_width, height) };
+                        let ok = if let Some(page) = cef.borrow().as_ref() {
+                            page.set_bounds(Bounds::new(
+                                gpui::point(px(x as f32), px(y as f32)),
+                                size(px(cef_width as f32), px(height as f32)),
+                            ))
+                            .is_ok()
+                        } else {
+                            unsafe { felinaut_cef_resize_container(x, y, cef_width, height) }
+                        };
                         if !ok {
                             CALLBACK_FAILURE.store(true, Ordering::Release);
                         }
@@ -409,6 +474,9 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
     println!(
         "CEF initialized with sandbox requested and OS notifications disabled; helper evidence is verified separately by the runner"
     );
+    let cef: CefOwner = StdRc::new(RefCell::new(None));
+    let window_cef = cef.clone();
+    let notifications = Notifications::default();
     let parent = StdRc::new(Cell::new(std::ptr::null_mut()));
     let container = parent.clone();
     #[cfg(feature = "coexistence")]
@@ -471,6 +539,7 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
                 });
                 cx.new(|_| ProbeWindow {
                     coexistence,
+                    cef: window_cef,
                     #[cfg(feature = "coexistence")]
                     webkit: window_webkit,
                 })
@@ -495,6 +564,9 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
             let mut detached = false;
             let mut stage = 0;
             let mut action_at = Instant::now();
+            let mut contract_stage = 0;
+            let mut contract_finished = false;
+
             let mut failure = None;
             #[cfg(feature = "coexistence")]
             let mut coex = crate::coexistence_policy::Probe::new();
@@ -514,11 +586,31 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
                         Event::Created => {
                             println!("CEF native child created");
                             close_gate.created();
+                            let target = target.clone();
+                            let info = page::BackendInfo {
+                                id: "cef",
+                                engine_family: "Chromium/Blink",
+                                runtime_version: None,
+                                runtime_identity: page::RuntimeIdentity::default(),
+                                capabilities: page::Capabilities::default(),
+                            };
+                            match CefPage::attach(
+                                browser().expect("OnAfterCreated browser"),
+                                info,
+                                notifications.clone(),
+                                StdRc::new(NativePresentation),
+                                move |url| policy::allows_navigation(url, &target),
+                            ) {
+                                Ok(page) => *cef.borrow_mut() = Some(StdRc::new(page)),
+                                Err(_) => failure = Some("CEF PageBackend attachment failed"),
+                            }
                         }
                         Event::Loaded(200) => {
                             println!("CEF main frame loaded (HTTP 200)");
                             loaded = true;
                         }
+                        // CEF reports status 0 for a history-restored document, not a new HTTP response.
+                        Event::Loaded(status) if policy::successful_load(status, matches!(contract_stage, 2 | 3)) => {}
                         Event::Loaded(_) => failure = Some("Fixture returned a non-200 status"),
                         Event::Title(value) => {
                             println!("CEF fixture title event ({} bytes)", value.len());
@@ -543,10 +635,27 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
                         Event::Closed => {
                             println!("CEF OnBeforeClose received");
                             closed = true;
+                            if let Some(page) = cef.borrow_mut().take() {
+                                if page.navigate(target.as_str()).is_ok()
+                                    || page.request_scope().is_some()
+                                {
+                                    failure = Some("Closed CEF PageBackend accepted work");
+                                }
+                                drop(page);
+                            }
                         }
                         Event::Failed(error) => {
                             eprintln!("CEF callback failed: {error}");
                             failure = Some(error);
+                        }
+                    }
+                }
+                if let Some(page) = cef.borrow().as_ref() {
+                    for event in page.drain_events() {
+                        match event {
+                            page::Event::Finished(_) => contract_finished = true,
+                            page::Event::Failed(_) => failure = Some("CEF PageBackend load failed"),
+                            _ => {}
                         }
                     }
                 }
@@ -587,7 +696,8 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
                             height: if coexistence { 650 } else { 600 },
                         },
                     );
-                    let mut client = ProbeClient::new(events.clone(), target.clone());
+                    let mut client =
+                        ProbeClient::new(events.clone(), target.clone(), notifications.clone());
                     let mut context = request_context_create_context(
                         Some(&RequestContextSettings::default()),
                         None,
@@ -729,8 +839,69 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
                         stage = 6;
                         action_at = Instant::now();
                     } else if stage == 6 && action_at.elapsed() > Duration::from_secs(2) {
-                        cx.update(|cx| cx.quit()).unwrap();
-                        stage = 7;
+                        let page = cef.borrow().as_ref().cloned().expect("attached PageBackend");
+                        let mut second = target.clone();
+                        second.set_query(Some("contract=second"));
+                        let result: Result<(), String> = (|| {
+                            match contract_stage {
+                                0 => {
+                                    if page.backend_info().id != "cef" || page.is_loading() || page.document().is_none() || page.can_go_back() || page.can_go_forward() {
+                                        return Err("Invalid initial CEF PageBackend state".into());
+                                    }
+                                    let scope = page.request_scope().ok_or("Missing CEF document scope")?;
+                                    if page.navigate("file:///tmp/not-allowed").is_ok() || !scope.is_current() {
+                                        return Err("Rejected navigation changed CEF document scope".into());
+                                    }
+                                    page.set_visible(false)?;
+                                    page.set_visible(true)?;
+                                    page.focus_parent()?;
+                                    page.focus()?;
+                                    page.navigate(second.as_str())?;
+                                    if scope.is_current() { return Err("Navigation did not invalidate CEF document".into()); }
+                                    contract_finished = false;
+                                    contract_stage = 1;
+                                }
+                                1 if contract_finished && !page.is_loading() => {
+                                    if page.document().map(|doc| doc.0) != Some(second.to_string()) || !page.can_go_back() || page.can_go_forward() {
+                                        return Err("CEF second navigation/history mismatch".into());
+                                    }
+                                    page.back()?;
+                                    contract_finished = false;
+                                    contract_stage = 2;
+                                }
+                                2 if contract_finished && !page.is_loading() => {
+                                    if page.document().map(|doc| doc.0) != Some(target.to_string()) || !page.can_go_forward() {
+                                        return Err("CEF back navigation/history mismatch".into());
+                                    }
+                                    page.forward()?;
+                                    contract_finished = false;
+                                    contract_stage = 3;
+                                }
+                                3 if contract_finished && !page.is_loading() => {
+                                    if page.document().map(|doc| doc.0) != Some(second.to_string()) { return Err("CEF forward navigation mismatch".into()); }
+                                    let contract_scope = page.request_scope();
+                                    page.reload()?;
+                                    if contract_scope.as_ref().is_none_or(|scope| scope.is_current()) { return Err("CEF reload did not cancel document scope".into()); }
+                                    contract_finished = false;
+                                    contract_stage = 4;
+                                }
+                                4 if contract_finished && !page.is_loading() => {
+                                    if page.document().map(|doc| doc.0) != Some(second.to_string()) { return Err("CEF reload document mismatch".into()); }
+                                    println!("PASS: CEF PageBackend navigation, history, reload, rejected URL, focus, visibility and document scopes");
+                                    contract_stage = 5;
+                                }
+                                _ => {}
+                            }
+                            Ok(())
+                        })();
+                        if let Err(error) = result {
+                            eprintln!("CEF contract check failed: {error}");
+                            failure = Some("CEF PageBackend conformance failed");
+                        }
+                        if contract_stage == 5 {
+                            cx.update(|cx| cx.quit()).unwrap();
+                            stage = 7;
+                        }
                     }
                 }
                 if failure.is_some() && !native::close_requested() {

@@ -45,6 +45,7 @@ MARKERS = (
     "READY: real CEF loopback document loaded and JavaScript executed",
     "PASS: native text input and trusted pointer click",
     "PASS: CEF viewport followed the GPUI/native container resize",
+    "PASS: CEF PageBackend navigation, history, reload, rejected URL, focus, visibility and document scopes",
     "PASS: CEF OnBeforeClose, callback release, pump cancellation and shutdown before GPUI termination",
     "PASS: original GPUI shutdown callback after CEF shutdown",
 )
@@ -319,7 +320,7 @@ def fixture_server(coexistence=False):
     if fixture.stat().st_size > 1024**2:
         raise ProbeError("Oversized loopback fixture")
     body = fixture.read_bytes()
-    routes = ("/cef", "/webkit") if coexistence else ("/",)
+    routes = ("/cef", "/webkit") if coexistence else ("/", "/?contract=second")
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, format, *args):

@@ -126,6 +126,16 @@ Validation passed: tool/default/coexistence formatting and Clippy with warnings 
 
 Remaining: production CEF page/event/capability adapter, generation/cancellation and permission handling, normal chrome/content keyboard routing, IME/accessibility, media/downloads, renderer crash/recovery, durable profiles/real Keychain, production packaging/security updates and per-tab engine selection/reload policy. The browser's `engine-cef` gate remains blocked. The system/upstream Cocoa WebKit process-exclusivity constraint is unchanged: this probe pairs **system WebKit with Chromium/CEF**, not two Cocoa WebKit builds.
 
+## Shared PageBackend checkpoint
+
+`src/page/cef.rs` at the repository root now implements the **same `PageBackend` API source as the browser**, compiled by this opt-in harness. Native CEF navigation/history/reload, committed URL/title events, loading state, logical bounds, visibility and focus run through an erased `Rc<dyn PageBackend>`. Native load-start callbacks invalidate script scopes before the UI drain; queues and text payloads are bounded, overflow fails closed, and close rejects further page operations. Native parents/browser handles remain retained by the runtime through asynchronous close, and the adapter is dropped before engine shutdown.
+
+On 13 November 2026 the real single-engine run passed navigation to a second fixture document, back, forward, same-URL reload, rejected privileged URL without document invalidation, hide/show, parent/page focus, and document-scope invalidation. History restoration reports CEF HTTP status 0, accepted only in the restoration phases; fresh network loads still require HTTP 200. Existing native input/resize/capture and helper policy/canary/exit checks also passed. The same-window WebKit/CEF regression passed again. Validation: **49 library tests, 41 binary tests, 157 Python tests**, all-target Clippy and the root browser's Clippy/unit tests.
+
+![Actual running CEF shared-contract harness after native input and resize, before navigation checks.](../../docs/screenshots/macos-cef-page-contract.png)
+
+This is an initial adapter exercised in a standalone runtime, **not root-browser integration or an enabled picker**. `evaluate` currently rejects dispatch explicitly; browser-side renderer-result transport is next. Optional capabilities remain false and fail explicitly. The harness still owns one native CEF container, uses disposable profiles/mock Keychain and restricts requests to its fixture origin. Production multi-page ownership, profiles, permissions, errors/recovery, complete input/IME/accessibility and packaging remain gates. No browser-root CEF dependency or feature-gate relaxation is included.
+
 ## Renderer evaluation transport
 
 The helper now implements a native-only, main-frame evaluation transport in `helper/src/evaluation.rs`, with the dependency-free wire contract in `src/evaluation_protocol.rs`. Bindings refer to retained engine contexts and actual native frame/browser identities, not URLs or page JSON. Source/results are limited to 1 MiB, errors to 4 KiB, and retained contexts to 64. Context release removes V8 references. No JavaScript global, query handler, filesystem or host-command API is installed.

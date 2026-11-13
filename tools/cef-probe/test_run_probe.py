@@ -746,6 +746,9 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(parsed.hostname, "127.0.0.1")
                 for method, path, status in (
                     ("GET", "/", 200),
+                    ("GET", "/?contract=second", 200),
+                    ("GET", "/?contract=third", 404),
+                    ("GET", "/?contract=second&extra=1", 404),
                     ("GET", "/favicon.ico", 204),
                     ("GET", "/unknown", 404),
                     ("GET", "/../secret", 404),

@@ -5,6 +5,10 @@ use std::{
 
 pub const MARKER: &[u8] = b"felinaut-cef-runtime-v1\n";
 
+pub fn successful_load(status: i32, restoring_history: bool) -> bool {
+    status == 200 || (status == 0 && restoring_history)
+}
+
 pub fn fixture_disabled_features(existing: &str) -> String {
     let mut features: Vec<_> = existing
         .split(',')
@@ -110,6 +114,17 @@ pub fn profile(requested: &Path, home: &Path, cocoa: &Path) -> Result<PathBuf, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restored_history_has_no_http_status_but_new_loads_require_200() {
+        for restoring in [false, true] {
+            assert!(successful_load(200, restoring));
+            assert_eq!(successful_load(0, restoring), restoring);
+            for status in [-1, 204, 302, 404, 500] {
+                assert!(!successful_load(status, restoring));
+            }
+        }
+    }
 
     #[test]
     fn disabling_unused_os_notifications_preserves_cef_feature_overrides() {

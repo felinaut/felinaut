@@ -47,7 +47,7 @@ The first build downloads dependencies from crates.io. The new-tab page contains
 
 Build-time engine inclusion is now explicit. The default is `engine-webkit-system`; use `--no-default-features` to replace it, or add `--features engine-webkit-upstream` for both Cocoa comparison choices. `./target/debug/felinaut --list-engines` reports this binary's build without opening a profile or window. The picker disables excluded choices.
 
-See [engine build configurations](docs/engine-builds.md), the [CEF/Gecko macOS evaluation](docs/macos-cef-gecko.md), and the [Servo/Ladybird/Ultralight evaluation](docs/macos-experimental-engines.md). These additional engines are **not integrated**: their `engine-*` requests fail with explicit adapter-not-implemented errors, never a silent WebKit fallback. Per-tab mixed-engine selection remains planned. A separate [opt-in CEF/GPUI probe](tools/cef-probe/README.md#real-cef-runtime-probe) now passes local document/input/resize/shutdown checks, a [window-only visual check](docs/screenshots/macos-cef-runtime-probe.png), and scoped helper policy/syscall/exit tests on macOS arm64. A [same-window system WebKit/CEF fixture](tools/cef-probe/README.md#same-window-system-webkit--cef-probe) also passes native coexistence checks. Production backend/security integration and per-tab selection remain pending. It is not a browser backend or an arbitrary-site test.
+See [engine build configurations](docs/engine-builds.md), the [CEF/Gecko macOS evaluation](docs/macos-cef-gecko.md), and the [Servo/Ladybird/Ultralight evaluation](docs/macos-experimental-engines.md). These additional engines are **not integrated**: their `engine-*` requests fail with explicit adapter-not-implemented errors, never a silent WebKit fallback. Per-tab mixed-engine selection remains planned. A separate [opt-in CEF/GPUI probe](tools/cef-probe/README.md#real-cef-runtime-probe) now passes local document/input/resize/shutdown checks, a [window-only visual check](docs/screenshots/macos-cef-runtime-probe.png), and scoped helper policy/syscall/exit tests on macOS arm64. A [same-window system WebKit/CEF fixture](tools/cef-probe/README.md#same-window-system-webkit--cef-probe) also passes native coexistence checks. An [initial CEF adapter](tools/cef-probe/README.md#shared-pagebackend-checkpoint) now passes real navigation/history/reload, presentation/focus and document-scope checks through the browser's shared `PageBackend` API, still inside that standalone harness. Script-result transport, production host/security integration and per-tab selection remain pending. It is not an enabled browser backend or an arbitrary-site test.
 
 ### Developer comparison: system and upstream Cocoa WebKit
 
@@ -196,23 +196,23 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 - **Per-tab volume** from 0 % to 600 %, with mute and sound presets (see below).
 - **Downloads** are saved to `~/Downloads` and listed under the toolbar's **↓** button, with progress, cancel, open and show in Finder (see below).
 
-| Shortcut         | Action                                                          |
-| ---------------- | --------------------------------------------------------------- |
-| `⌘T`             | New tab                                                         |
-| `⌘W`             | Close active tab                                                |
-| `⌘⇧T`            | Reopen the last closed tab (back in its split view if possible) |
-| `⌘L`             | Focus address and select all                                    |
-| `⌘R`             | Reload                                                          |
+| Shortcut         | Action                                                            |
+| ---------------- | ----------------------------------------------------------------- |
+| `⌘T`             | New tab                                                           |
+| `⌘W`             | Close active tab                                                  |
+| `⌘⇧T`            | Reopen the last closed tab (back in its split view if possible)   |
+| `⌘L`             | Focus address and select all                                      |
+| `⌘R`             | Reload                                                            |
 | `⌘+` / `⌘-`      | Zoom in / out; the address bar shows the level, click it to reset |
-| `⌘[` / `⌘]`      | Back / forward                                                  |
-| `⌘⇧H`            | Home                                                            |
-| `⌘⇧M`            | Mute / unmute active tab                                        |
-| `⌘⇧J`            | Show / hide the downloads list                                  |
-| `⌘S`             | Show / hide the tab sidebar (remembered)                        |
-| `⌘D`             | Pin / unpin active tab                                          |
-| `⌘1`–`⌘8` / `⌘9` | Go to tab 1–8 / last tab                                        |
-| `⌃Tab` / `⌃⇧Tab` | Next / previous tab (also `⌘⇧]` / `⌘⇧[`)                        |
-| `⌘Q`             | Quit                                                            |
+| `⌘[` / `⌘]`      | Back / forward                                                    |
+| `⌘⇧H`            | Home                                                              |
+| `⌘⇧M`            | Mute / unmute active tab                                          |
+| `⌘⇧J`            | Show / hide the downloads list                                    |
+| `⌘S`             | Show / hide the tab sidebar (remembered)                          |
+| `⌘D`             | Pin / unpin active tab                                            |
+| `⌘1`–`⌘8` / `⌘9` | Go to tab 1–8 / last tab                                          |
+| `⌃Tab` / `⌃⇧Tab` | Next / previous tab (also `⌘⇧]` / `⌘⇧[`)                          |
+| `⌘Q`             | Quit                                                              |
 
 ### Title-first address bar and history suggestions
 
@@ -243,16 +243,16 @@ FELINAUT_AGENT=1 cargo run                 # opens the control socket
 cargo run --bin felinaut-ctl -- snapshot   # or: target/debug/felinaut-ctl snapshot
 ```
 
-| Command                                             | Result                                                                            |
-| --------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `backend` | Report backend id, engine family, runtime version and optional capabilities; works on New Tab without loading a website |
-| `tabs`, `tab <index>`                               | List the tabs, or select one                                                      |
-| `navigate <url>`                                    | Load a page in the active tab                                                     |
-| `snapshot`                                          | List the visible elements that accept input, each with a reference such as `@e12` |
-| `click <@ref>`, `type <@ref> <text>`, `press <key>` | Operate the page                                                                  |
-| `eval <expression>`                                 | Evaluate one JavaScript expression                                                |
-| `screenshot [path]`                                 | Save WebKit's own PNG snapshot of the page                                        |
-| `downloads`, `downloads show`, `downloads cancel <id>` | List the downloads (name, state, bytes, path), open or close the list, or stop a running download |
+| Command                                                | Result                                                                                                                  |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `backend`                                              | Report backend id, engine family, runtime version and optional capabilities; works on New Tab without loading a website |
+| `tabs`, `tab <index>`                                  | List the tabs, or select one                                                                                            |
+| `navigate <url>`                                       | Load a page in the active tab                                                                                           |
+| `snapshot`                                             | List the visible elements that accept input, each with a reference such as `@e12`                                       |
+| `click <@ref>`, `type <@ref> <text>`, `press <key>`    | Operate the page                                                                                                        |
+| `eval <expression>`                                    | Evaluate one JavaScript expression                                                                                      |
+| `screenshot [path]`                                    | Save WebKit's own PNG snapshot of the page                                                                              |
+| `downloads`, `downloads show`, `downloads cancel <id>` | List the downloads (name, state, bytes, path), open or close the list, or stop a running download                       |
 
 `click`, `type` and `press` send synthetic JavaScript events by default. Some sites ignore these events (`isTrusted` is false). Add `--native` to send a real mouse or keyboard event to the WKWebView.
 

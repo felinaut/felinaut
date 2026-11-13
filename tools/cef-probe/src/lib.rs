@@ -1,6 +1,19 @@
-//! Opt-in application-lifecycle probe; no CEF engine is linked in this checkpoint.
+//! Opt-in CEF/GPUI native harness; the default configuration remains SDK-free.
 
 pub mod pump;
+
+#[cfg(feature = "runtime")]
+#[path = "../../../src/audio.rs"]
+pub mod audio;
+#[cfg(feature = "runtime")]
+#[path = "../../../src/page/cef.rs"]
+pub mod cef_page;
+#[cfg(feature = "runtime")]
+#[path = "../../../src/load_error.rs"]
+pub mod load_error;
+#[cfg(feature = "runtime")]
+#[path = "../../../src/page/api.rs"]
+pub mod page;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {

@@ -213,6 +213,17 @@ extern "C" bool felinaut_cef_resize_container(double x, double y, double width, 
     return true;
 }
 
+extern "C" bool felinaut_cef_set_visible(bool visible) {
+    if (!owns_application() || !container || ![container_parent window]) return false;
+    [container setHidden:!visible];
+    return [container isHidden] == !visible;
+}
+
+extern "C" bool felinaut_cef_focus_parent() {
+    if (!owns_application() || !container_parent || ![container_parent window]) return false;
+    return [[container_parent window] makeFirstResponder:container_parent];
+}
+
 extern "C" bool felinaut_cef_resize_window(double width, double height) {
     if (!owns_application() || !container || ![container_parent window] ||
         !std::isfinite(width) || !std::isfinite(height) || width < 100 || height < 100 ||
