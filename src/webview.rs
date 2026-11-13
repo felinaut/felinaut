@@ -67,8 +67,13 @@ impl NativePage {
             .with_initialization_script_for_main_only(include_str!("link_interactions.js"), false)
             .with_initialization_script_for_main_only(include_str!("audio_control.js"), false)
             .with_initialization_script_for_main_only(include_str!("page_icon.js"), true)
+            .with_initialization_script_for_main_only(include_str!("swipe_scroll.js"), true)
             .with_ipc_handler(move |request| {
                 let body = request.body();
+                if body == crate::swipe::PAGE_SCROLLED {
+                    page_scrolled();
+                    return;
+                }
                 let event = parse_link_event(body)
                     .or_else(|| parse_icon_event(body))
                     .or_else(|| {
@@ -688,6 +693,175 @@ pub fn forward_command_arrows() {
         NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler)
     };
     std::mem::forget(monitor);
+}
+
+/// What the swipe monitor needs between events. AppKit delivers events on the main thread only.
+#[cfg(target_os = "macos")]
+struct SwipeWatch {
+    /// The browser window; swipes over other windows, like Settings, are left alone.
+    window: objc2::rc::Weak<objc2_app_kit::NSWindow>,
+    sender: Sender<crate::swipe::Step>,
+    tracker: crate::swipe::Tracker,
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    static SWIPES: RefCell<Option<SwipeWatch>> = const { RefCell::new(None) };
+}
+
+thread_local! {
+    /// Wakes the UI task waiting in `Swipes::next`.
+    static SWIPE_WAKER: RefCell<Option<std::task::Waker>> = const { RefCell::new(None) };
+}
+
+/// Back and forward steps from trackpad swipes, in the order they were made.
+pub struct Swipes(Receiver<crate::swipe::Step>);
+
+impl Swipes {
+    /// The next step, once one is made; `None` when the monitor is gone. Waking the UI task
+    /// schedules it on the main run loop: it never runs inside the event monitor itself.
+    pub async fn next(&self) -> Option<crate::swipe::Step> {
+        std::future::poll_fn(|cx| match self.0.try_recv() {
+            Ok(step) => std::task::Poll::Ready(Some(step)),
+            Err(mpsc::TryRecvError::Disconnected) => std::task::Poll::Ready(None),
+            Err(mpsc::TryRecvError::Empty) => {
+                // The monitor sends on this same thread, so nothing arrives in between.
+                SWIPE_WAKER.set(Some(cx.waker().clone()));
+                std::task::Poll::Pending
+            }
+        })
+        .await
+    }
+}
+
+/// Watches the trackpad for swipes that go back or forward in `window`; see `swipe` for which
+/// ones. Events are only read, never consumed, except a three-finger swipe that made a step.
+/// Call this on the main thread; a second call moves the watch to the new window.
+#[cfg(target_os = "macos")]
+pub fn watch_swipes(window: &gpui::Window) -> Option<Swipes> {
+    use objc2_app_kit::{NSEvent, NSEventMask, NSView};
+    use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let RawWindowHandle::AppKit(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw()
+    else {
+        return None;
+    };
+    // SAFETY: GPUI hands out its live content view, and we are on the main thread.
+    let view: &NSView = unsafe { handle.ns_view.cast().as_ref() };
+    let ns_window = view.window()?;
+    let (sender, steps) = mpsc::channel();
+    let first = SWIPES.with_borrow_mut(|watch| {
+        watch
+            .replace(SwipeWatch {
+                window: objc2::rc::Weak::from_retained(&ns_window),
+                sender,
+                tracker: Default::default(),
+            })
+            .is_none()
+    });
+    if first {
+        let handler = block2::RcBlock::new(|event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit gives a live event on the main thread, and keeps it alive for the
+            // duration of this call; the handler only reads it.
+            let consumed = swipe_event(unsafe { event.as_ref() });
+            if consumed {
+                std::ptr::null_mut()
+            } else {
+                event.as_ptr()
+            }
+        });
+        // SAFETY: the handler upholds the monitor's contract: it returns the event it was
+        // given or null. The monitor stays for the life of the app.
+        let monitor = unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::ScrollWheel | NSEventMask::Swipe,
+                &handler,
+            )
+        };
+        std::mem::forget(monitor);
+    }
+    Some(Swipes(steps))
+}
+#[cfg(not(target_os = "macos"))]
+pub fn watch_swipes(_: &gpui::Window) -> Option<Swipes> {
+    None
+}
+
+/// Feeds one scroll or swipe event to the tracker; true when it should go no further.
+#[cfg(target_os = "macos")]
+fn swipe_event(event: &objc2_app_kit::NSEvent) -> bool {
+    use crate::swipe::{Phase, Sample, swipe_step};
+    use objc2_app_kit::{NSEvent, NSEventPhase, NSEventType, NSWindow};
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return false;
+    };
+    let sent = SWIPES.with_borrow_mut(|watch| {
+        let Some(watch) = watch.as_mut() else {
+            return false;
+        };
+        let Some(own) = watch.window.load() else {
+            return false;
+        };
+        // Trackpad events belong to the window under the pointer. Events posted without one,
+        // like synthetic ones, carry screen coordinates instead.
+        let ours = match event.window(mtm) {
+            Some(window) => window == own,
+            None => {
+                let screen = event.locationInWindow();
+                NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(screen, 0, mtm)
+                    == own.windowNumber()
+            }
+        };
+        if !ours {
+            return false;
+        }
+        let step = match event.r#type() {
+            NSEventType::ScrollWheel => {
+                // Mouse wheels have no fingers to lift, so no gesture to end.
+                if !event.hasPreciseScrollingDeltas() {
+                    return false;
+                }
+                let phase = Phase::from_appkit(event.phase().0);
+                // The setting matters only when a gesture begins.
+                let allowed =
+                    phase == Phase::Began && NSEvent::isSwipeTrackingFromScrollEventsEnabled();
+                watch.tracker.feed(Sample {
+                    dx: event.scrollingDeltaX(),
+                    dy: event.scrollingDeltaY(),
+                    phase,
+                    momentum: event.momentumPhase() != NSEventPhase::None,
+                    allowed,
+                })
+            }
+            NSEventType::Swipe => swipe_step(event.deltaX(), event.deltaY()),
+            _ => None,
+        };
+        step.is_some_and(|step| watch.sender.send(step).is_ok())
+    });
+    if !sent {
+        return false;
+    }
+    // Waking only schedules the UI task on the main run loop; it does not run it here.
+    if let Some(waker) = SWIPE_WAKER.take() {
+        waker.wake();
+    }
+    // Scroll events still reach the page or chrome under the pointer.
+    event.r#type() == NSEventType::Swipe
+}
+
+/// A page reported that the sideways scroll under way was its own, so the swipe does not also
+/// navigate. Pages are untrusted: all one can do with this is keep its own swipe from
+/// navigating, as a page that handles wheel events can in any browser.
+fn page_scrolled() {
+    #[cfg(target_os = "macos")]
+    SWIPES.with(|watch| {
+        // The page's message arrives from the run loop, never from inside the monitor; should
+        // that ever change, dropping the report is better than a panic.
+        if let Ok(mut watch) = watch.try_borrow_mut()
+            && let Some(watch) = watch.as_mut()
+        {
+            watch.tracker.page_scrolled();
+        }
+    });
 }
 
 /// Agent control is opt-in. The new setting takes precedence, including an explicit disable.
