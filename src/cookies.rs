@@ -445,6 +445,13 @@ pub enum BackOut {
     Close,
 }
 
+/// A delete that waits for the user's one confirmation: exactly the cookies it named.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pending {
+    pub node: Node,
+    pub keys: HashSet<Key>,
+}
+
 /// Everything the Cookies window decides, apart from GPUI and WebKit: the cookies, the
 /// filter, what is open and selected, the delete question and what WebKit last said. The
 /// window draws this state, and sends to WebKit the deletes that its methods return.
@@ -459,8 +466,9 @@ pub struct WindowState {
     rows: Vec<Row>,
     expanded: HashSet<Node>,
     selection: Node,
-    /// A branch whose deletion waits for the user's one confirmation.
-    confirming: Option<Node>,
+    /// A branch whose deletion waits for the user's one confirmation. It is dropped as soon
+    /// as the cookies shown under the branch are no longer the ones it named.
+    confirming: Option<Pending>,
     revealed: bool,
     loaded: bool,
     /// A delete is on its way; its answer is the next list of cookies.
@@ -509,7 +517,7 @@ impl WindowState {
         &self.selection
     }
 
-    pub fn confirming(&self) -> Option<&Node> {
+    pub fn confirming(&self) -> Option<&Pending> {
         self.confirming.as_ref()
     }
 
@@ -567,10 +575,10 @@ impl WindowState {
         if selection != self.selection {
             self.select(selection);
         }
-        if self
-            .confirming
-            .as_ref()
-            .is_some_and(|node| !self.shown.contains(node))
+        // A filter edit or a refresh can change what is under the branch: the question then
+        // no longer says what a confirmation would delete.
+        if let Some(pending) = &self.confirming
+            && self.keys_under(&pending.node) != pending.keys
         {
             self.confirming = None;
         }
@@ -682,40 +690,48 @@ impl WindowState {
         }
     }
 
+    /// The cookies shown at or below `node`: what deleting it takes. With a filter on, a
+    /// site's hidden hosts keep theirs.
+    fn keys_under(&self, node: &Node) -> HashSet<Key> {
+        self.shown
+            .subtree(node)
+            .into_iter()
+            .map(Cookie::key)
+            .collect()
+    }
+
     /// Deletes the selected cookie at once, returning it to send to WebKit; a branch first
     /// asks, naming how many cookies go.
     pub fn request_delete(&mut self) -> Option<HashSet<Key>> {
-        if self.deleting || self.shown.subtree(&self.selection).is_empty() {
+        let keys = self.keys_under(&self.selection);
+        if self.deleting || keys.is_empty() {
             return None;
         }
         if matches!(self.selection, Node::Cookie(_)) {
-            self.begin_delete(&self.selection.clone())
+            self.begin_delete(keys)
         } else {
-            self.confirming = Some(self.selection.clone());
+            self.confirming = Some(Pending {
+                node: self.selection.clone(),
+                keys,
+            });
             None
         }
     }
 
-    /// The user confirmed the pending delete: the cookies to send to WebKit.
+    /// The user confirmed the pending delete: exactly the cookies it named, to send to
+    /// WebKit.
     pub fn confirm(&mut self) -> Option<HashSet<Key>> {
-        let node = self.confirming.take()?;
-        self.begin_delete(&node)
+        let pending = self.confirming.take()?;
+        self.begin_delete(pending.keys)
     }
 
     pub fn cancel(&mut self) {
         self.confirming = None;
     }
 
-    /// Deletes exactly the cookies shown under `node`: with a filter on, a site's hidden
-    /// hosts keep theirs. The tree shows the result at once; WebKit's answer then replaces
-    /// it with what is stored.
-    fn begin_delete(&mut self, node: &Node) -> Option<HashSet<Key>> {
-        let keys: HashSet<Key> = self
-            .shown
-            .subtree(node)
-            .into_iter()
-            .map(Cookie::key)
-            .collect();
+    /// Deletes exactly these cookies. The tree shows the result at once; WebKit's answer
+    /// then replaces it with what is stored.
+    fn begin_delete(&mut self, keys: HashSet<Key>) -> Option<HashSet<Key>> {
         if keys.is_empty() || self.deleting {
             return None;
         }
@@ -1559,7 +1575,7 @@ mod tests {
         let site = Node::Site("google.com".into());
         state.select(site.clone());
         assert_eq!(state.request_delete(), None);
-        assert_eq!(state.confirming(), Some(&site));
+        assert_eq!(state.confirming().map(|pending| &pending.node), Some(&site));
         assert_eq!(
             state.tree().count(),
             3,
@@ -1621,5 +1637,55 @@ mod tests {
         state.send_failed("no store".into());
         assert!(state.may_fetch());
         assert_eq!(state.error(), Some("no store"));
+    }
+
+    #[test]
+    fn a_pending_delete_never_takes_more_than_it_named() {
+        let cookies = store();
+        let google = [&cookies[0], &cookies[1], &cookies[2]];
+        let mut state = loaded(&cookies);
+        // Filter, ask to delete everything shown, then clear the filter by editing it.
+        state.set_query("google");
+        state.select(Node::All);
+        state.request_delete();
+        assert!(state.confirming().is_some());
+        state.set_query("");
+        assert!(
+            state.confirming().is_none(),
+            "the question named 3 cookies, not 4"
+        );
+        assert_eq!(state.confirm(), None);
+        assert_eq!(state.tree().count(), 4);
+
+        // A filter edit that shows the same cookies keeps the question.
+        state.set_query("google");
+        state.request_delete();
+        state.set_query("googl");
+        assert!(state.confirming().is_some());
+        state.cancel();
+
+        // A refresh that adds a cookie under the branch drops it.
+        let site = Node::Site("google.com".into());
+        state.set_query("");
+        state.select(site.clone());
+        state.request_delete();
+        let mut more = cookies.clone();
+        more.push(cookie("docs.google.com", "e"));
+        state.answered(Some(&more));
+        assert!(state.confirming().is_none());
+
+        // So does one that removes a cookie under it.
+        state.request_delete();
+        state.answered(Some(&cookies));
+        assert!(state.confirming().is_none());
+
+        // A refresh elsewhere keeps it, and the delete is exactly what was named.
+        state.request_delete();
+        let mut elsewhere = cookies.clone();
+        elsewhere.push(cookie("other.example", "f"));
+        state.answered(Some(&elsewhere));
+        assert!(state.confirming().is_some());
+        assert_eq!(state.confirm(), Some(keys(&google)));
+        assert_eq!(state.tree().count(), 2);
     }
 }

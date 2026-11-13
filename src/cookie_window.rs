@@ -445,7 +445,7 @@ impl CookieManager {
             return panel;
         }
         match self.state.confirming() {
-            Some(node) => panel.child(
+            Some(pending) => panel.child(
                 div()
                     .mt_2()
                     .p_3()
@@ -458,8 +458,8 @@ impl CookieManager {
                     .bg(rgb(p.elevated))
                     .text_size(px(13.))
                     .child(SharedString::from(cookies::delete_prompt(
-                        node,
-                        totals.cookies,
+                        &pending.node,
+                        pending.keys.len(),
                     )))
                     .child(
                         div()
