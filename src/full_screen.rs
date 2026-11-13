@@ -82,7 +82,33 @@ struct Filled {
 /// AppKit's frames are whole points or halves; anything more is a move or resize.
 const SAME_FRAME: f64 = 0.5;
 
+/// How much of a restored window must show on some screen for its title bar to be reachable.
+const REACHABLE: f64 = 40.;
+
 impl Frame {
+    /// The frame, or one of its size centred on the first of `screens` (the window's own) and
+    /// shrunk to fit, if no screen shows enough of it: its display may be gone since the fill.
+    pub fn kept_on(self, screens: &[Frame]) -> Frame {
+        let reachable = |screen: &Frame| {
+            let width = (self.x + self.width).min(screen.x + screen.width) - self.x.max(screen.x);
+            let height =
+                (self.y + self.height).min(screen.y + screen.height) - self.y.max(screen.y);
+            width >= REACHABLE.min(self.width) && height >= REACHABLE.min(self.height)
+        };
+        match screens.first() {
+            Some(home) if !screens.iter().any(reachable) => {
+                let (width, height) = (self.width.min(home.width), self.height.min(home.height));
+                Frame {
+                    x: home.x + (home.width - width) / 2.,
+                    y: home.y + (home.height - height) / 2.,
+                    width,
+                    height,
+                }
+            }
+            _ => self,
+        }
+    }
+
     fn near(self, other: Frame) -> bool {
         [
             self.x - other.x,
@@ -182,7 +208,9 @@ impl Fills {
 mod native {
     use super::{Fills, Frame, Insets, Request, Toggle};
     use objc2::{MainThreadMarker, rc::Retained};
-    use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions as Options, NSWindow};
+    use objc2_app_kit::{
+        NSApplication, NSApplicationPresentationOptions as Options, NSScreen, NSWindow,
+    };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use std::cell::RefCell;
 
@@ -205,7 +233,7 @@ mod native {
             screen: screen.as_ref().map(|screen| frame(screen.frame())),
             // macOS 12 and later, the deployment target. With the menu bar hidden, the top
             // inset keeps the toolbar and traffic lights below a MacBook's camera housing.
-            safe_area: screen.map_or_else(Insets::default, |screen| {
+            safe_area: screen.as_ref().map_or_else(Insets::default, |screen| {
                 let insets = screen.safeAreaInsets();
                 Insets {
                     top: insets.top,
@@ -219,7 +247,17 @@ mod native {
         let (target, animate, fill) = match FILLS.with_borrow_mut(|fills| fills.toggle(request)) {
             Toggle::Native => return window.toggle_fullscreen(),
             Toggle::Fill { frame, animate } => (frame, animate, true),
-            Toggle::Restore { frame, animate } => (frame, animate, false),
+            Toggle::Restore {
+                frame: restore,
+                animate,
+            } => {
+                let mut screens = Vec::from_iter(screen.as_ref().map(|s| frame(s.visibleFrame())));
+                if let Some(mtm) = MainThreadMarker::new() {
+                    let all = NSScreen::screens(mtm).to_vec();
+                    screens.extend(all.iter().map(|screen| frame(screen.visibleFrame())));
+                }
+                (restore.kept_on(&screens), animate, false)
+            }
         };
         let number = request.window;
         // Resize after this action: AppKit's resize callbacks update the GPUI window. An
@@ -408,6 +446,50 @@ mod tests {
         // A settle that comes after the window was forgotten doesn't bring it back.
         fills.settled(1, SCREEN);
         assert!(!fills.is_filled(1));
+    }
+
+    #[test]
+    fn a_restored_frame_stays_on_a_connected_screen() {
+        let side = Frame {
+            x: 1512.,
+            y: 0.,
+            width: 1920.,
+            height: 1080.,
+        };
+        let on_side = Frame {
+            x: 1700.,
+            y: 300.,
+            width: 1200.,
+            height: 700.,
+        };
+        // Both screens are there, or the window's own: the frame stays as it was.
+        assert_eq!(on_side.kept_on(&[SCREEN, side]), on_side);
+        assert_eq!(window(40.).kept_on(&[SCREEN]), window(40.));
+        assert_eq!(on_side.kept_on(&[]), on_side);
+        // The side display is gone: the window comes back centred on its own screen.
+        assert_eq!(
+            on_side.kept_on(&[SCREEN]),
+            Frame {
+                x: 156.,
+                y: 141.,
+                width: 1200.,
+                height: 700.,
+            }
+        );
+        // A frame bigger than the remaining screen shrinks to it.
+        let huge = Frame { x: 1600., ..side };
+        assert_eq!(huge.kept_on(&[SCREEN]), SCREEN);
+        // A sliver along the edge isn't enough to grab the title bar.
+        let sliver = Frame {
+            x: SCREEN.width - 10.,
+            ..window(0.)
+        };
+        assert_ne!(sliver.kept_on(&[SCREEN]), sliver);
+        let reachable = Frame {
+            x: SCREEN.width - 40.,
+            ..window(0.)
+        };
+        assert_eq!(reachable.kept_on(&[SCREEN]), reachable);
     }
 
     #[test]
