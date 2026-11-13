@@ -41,7 +41,7 @@ const ASK: &str = r#"
     promise, new Promise(done => setTimeout(() => done('pending'), 3000))]);
   const media = navigator.mediaDevices
     ? await limit(navigator.mediaDevices.getUserMedia({ audio: true }).then(() => 'granted', error => error.name))
-    : 'unsupported';
+    : (window.isSecureContext ? 'unsupported' : 'unsupported-insecure');
   const place = await limit(new Promise(done => navigator.geolocation.getCurrentPosition(
     () => done('granted'), error => done('error' + error.code))));
   const notes = typeof Notification === 'undefined'
@@ -199,6 +199,20 @@ fn main() {
                                 continue;
                             };
                             check_answers(true, shown_done);
+                            // Some WebKit versions give a loopback page no
+                            // `navigator.mediaDevices`. Then no request reaches Felinaut, and
+                            // this run does not cover a real prompt: say so, not only PASS.
+                            let asked_media = !shown_done.starts_with("unsupported");
+                            assert_eq!(
+                                prompts,
+                                usize::from(asked_media),
+                                "one prompt for one microphone request: {shown_done}"
+                            );
+                            if !asked_media {
+                                println!(
+                                    "LIMITED: the page has no navigator.mediaDevices ({shown_done}), so no real request reached Felinaut. Only the direct delegate checks ran."
+                                );
+                            }
                             check_answers(false, hidden_done);
                             assert_eq!(shown.capture(), (false, false));
                             assert!(permissions::native::requests().is_empty());
