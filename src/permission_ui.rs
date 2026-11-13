@@ -114,6 +114,15 @@ impl Selection {
         }
     }
 
+    /// The bar got the keys, from ⌘⇧P or a click. Nothing is selected, so a confirm needs a
+    /// new key press, and that key starts the wait: an allow by keys never comes earlier
+    /// than `ALLOW_DELAY` after the keys arrive. A choice selected before the keys left the
+    /// bar does not wait there for a stray Return. The wait for a click does not start
+    /// again, so the click that moved the keys can still choose.
+    fn focus(&mut self) {
+        self.index = None;
+    }
+
     /// Tab or an arrow key. The wait for an allow choice starts again.
     fn step(&mut self, forward: bool, now: Instant) {
         self.index = Some(step(self.index, forward));
@@ -258,15 +267,17 @@ impl Browser {
         &mut self,
         _: &FocusPermissionPrompt,
         window: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
-        if self.permission_prompt.is_none() {
+        let Some(prompt) = &mut self.permission_prompt else {
             return;
-        }
+        };
+        prompt.selection.focus();
         if let Some(page) = &self.tabs[self.active].page {
             let _ = page.focus_parent();
         }
         window.focus(&self.permission_focus);
+        cx.notify();
     }
 
     /// The prompt for the request on display, if there is one.
@@ -636,6 +647,27 @@ mod tests {
         assert_eq!(keys.confirm(at(late + 499)), None);
         // An early confirm starts the wait again too: it also holds back a click.
         assert_eq!(keys.since, at(late + 499));
+    }
+
+    #[test]
+    fn keys_that_come_back_to_the_bar_start_with_nothing_selected() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let late = 10 * ALLOW_DELAY.as_millis() as u64;
+        // The user selects Always Allow and leaves the bar. A page shortcut or a click
+        // brings the keys back long after: an immediate Return confirms nothing.
+        let mut keys = Selection::new(start);
+        keys.focus();
+        for _ in 0..4 {
+            keys.step(true, at(0));
+        }
+        assert_eq!(CHOICES[keys.index.unwrap()].0, Choice::Always);
+        keys.focus();
+        assert_eq!(keys.index, None);
+        assert_eq!(keys.confirm(at(late)), None);
+        // After the focus, the earliest allow by keys is one wait after the next key.
+        keys.step(false, at(late));
+        assert_eq!(keys.confirm(at(late + 1)), Some(Choice::NotNow));
     }
 
     #[test]
