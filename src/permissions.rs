@@ -269,6 +269,57 @@ impl Permissions {
     }
 }
 
+/// What `route` knows of a tab.
+pub struct TabState<'a> {
+    /// The key of the tab's page in `native`, if the tab has a page.
+    pub page: Option<usize>,
+    /// The address of the tab. It changes as soon as a load starts.
+    pub url: &'a str,
+    /// Whether the user sees the page: the tab is the selected tab or its split partner, and
+    /// it shows neither the home page nor a load error.
+    pub on_display: bool,
+}
+
+/// The answers to give now, as request id and grant, and the request to show.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Routed {
+    pub answers: Vec<(u64, bool)>,
+    pub prompt: Option<native::Request>,
+}
+
+/// Decides what happens with the waiting requests, oldest first.
+/// - A request of a page that no tab has, or of a tab that left the site that asked, is
+///   void: the answer is a denial. A prompt therefore never outlives its document's site.
+/// - A stored decision answers at once, in each tab.
+/// - The oldest request without a decision in a page on display is the prompt. Each other
+///   such request waits for its turn.
+pub fn route(
+    requests: Vec<native::Request>,
+    tabs: &[TabState],
+    permissions: &Permissions,
+) -> Routed {
+    let mut routed = Routed::default();
+    for request in requests {
+        let tab = tabs
+            .iter()
+            .find(|tab| tab.page == Some(request.page))
+            .filter(|tab| origin_of_url(tab.url).as_ref() == Some(&request.origin));
+        let Some(tab) = tab else {
+            routed.answers.push((request.id, false));
+            continue;
+        };
+        match permissions.answer(&request.origin, request.kinds) {
+            Answer::Grant => routed.answers.push((request.id, true)),
+            Answer::Deny => routed.answers.push((request.id, false)),
+            Answer::Ask if routed.prompt.is_none() && tab.on_display => {
+                routed.prompt = Some(request);
+            }
+            Answer::Ask => {}
+        }
+    }
+    routed
+}
+
 /// Saved decisions. A line with an unknown decision or kind, a missing field or an origin that
 /// could not ask is skipped. An origin must be in the exact form that `origin` makes.
 pub fn parse(text: &str) -> BTreeMap<(String, Kind), Decision> {
@@ -460,6 +511,138 @@ mod tests {
             "an origin that cannot ask"
         );
         assert_eq!(askable(true, None, None), None);
+    }
+
+    fn request(id: u64, page: usize, origin: &str, kinds: &'static [Kind]) -> native::Request {
+        native::Request {
+            id,
+            page,
+            origin: origin.into(),
+            kinds,
+        }
+    }
+
+    fn tab(page: usize, url: &str, on_display: bool) -> TabState<'_> {
+        TabState {
+            page: Some(page),
+            url,
+            on_display,
+        }
+    }
+
+    #[test]
+    fn a_request_goes_to_its_tab_and_the_oldest_one_on_display_is_the_prompt() {
+        let permissions = Permissions::default();
+        let tabs = [
+            tab(1, "https://meet.example/room", true),
+            tab(2, "https://other.example/", true),
+            tab(3, "https://meet.example/lobby", false),
+        ];
+        let requests = vec![
+            request(10, 3, SITE, BOTH),
+            request(11, 2, "https://other.example", &[Kind::Camera]),
+            request(12, 1, SITE, BOTH),
+        ];
+        // Tab 3 is in the background: its request waits. The split partner's request is
+        // older than that of the selected tab, so it is the prompt.
+        let routed = route(requests.clone(), &tabs, &permissions);
+        assert_eq!(routed.answers, []);
+        assert_eq!(routed.prompt, Some(requests[1].clone()));
+        // The next request on display follows when the first has its answer.
+        let routed = route(
+            vec![requests[0].clone(), requests[2].clone()],
+            &tabs,
+            &permissions,
+        );
+        assert_eq!(routed.answers, []);
+        assert_eq!(routed.prompt, Some(requests[2].clone()));
+        // No request, or no tab on display that asks: no prompt.
+        assert_eq!(route(vec![], &tabs, &permissions), Routed::default());
+        let waits = route(vec![requests[0].clone()], &tabs, &permissions);
+        assert_eq!(waits, Routed::default());
+    }
+
+    #[test]
+    fn requests_of_tabs_that_left_the_site_are_void() {
+        let permissions = Permissions::default();
+        let tabs = [
+            tab(1, "https://elsewhere.example/", true),
+            tab(2, "https://meet.example:8443/", true),
+            tab(3, "about:blank", true),
+            TabState {
+                page: None,
+                url: "https://meet.example/",
+                on_display: true,
+            },
+        ];
+        let requests = vec![
+            request(1, 1, SITE, BOTH),
+            request(2, 2, SITE, BOTH),
+            request(3, 3, SITE, BOTH),
+            // No tab has page 9.
+            request(4, 9, SITE, BOTH),
+        ];
+        let routed = route(requests, &tabs, &permissions);
+        assert_eq!(
+            routed.answers,
+            [(1, false), (2, false), (3, false), (4, false)]
+        );
+        assert_eq!(routed.prompt, None);
+
+        // A stored permission does not help a tab that left the site.
+        let mut permissions = Permissions::default();
+        permissions.remember(SITE, BOTH, Decision::Allow);
+        let routed = route(vec![request(1, 1, SITE, BOTH)], &tabs, &permissions);
+        assert_eq!(routed.answers, [(1, false)]);
+    }
+
+    #[test]
+    fn stored_decisions_answer_in_each_tab_without_a_prompt() {
+        let blocked = "https://ads.example";
+        let mut permissions = Permissions::default();
+        permissions.remember(SITE, &[Kind::Microphone], Decision::Allow);
+        permissions.remember(blocked, &[Kind::Camera], Decision::Deny);
+        let tabs = [
+            tab(1, "https://meet.example/", true),
+            tab(2, "https://ads.example/", true),
+            tab(3, "https://meet.example/", false),
+            tab(4, "https://ads.example/", false),
+        ];
+        let requests = vec![
+            // Background tabs and the split partner get the stored answer too.
+            request(1, 3, SITE, &[Kind::Microphone]),
+            request(2, 4, blocked, BOTH),
+            request(3, 2, blocked, &[Kind::Camera]),
+            request(4, 1, SITE, &[Kind::Microphone]),
+            // The camera has no decision for this site: this request asks.
+            request(5, 1, SITE, BOTH),
+            request(6, 3, SITE, BOTH),
+        ];
+        let routed = route(requests.clone(), &tabs, &permissions);
+        assert_eq!(
+            routed.answers,
+            [(1, true), (2, false), (3, false), (4, true)]
+        );
+        assert_eq!(routed.prompt, Some(requests[4].clone()));
+    }
+
+    #[test]
+    fn home_and_failed_tabs_get_no_prompt() {
+        // The host marks a selected tab that shows the home page or a load error as not on
+        // display. Its request waits, and a later request of a page on display is the prompt.
+        let permissions = Permissions::default();
+        let tabs = [
+            tab(1, "https://meet.example/", false),
+            tab(2, "https://other.example/", true),
+        ];
+        let later = request(2, 2, "https://other.example", BOTH);
+        let routed = route(
+            vec![request(1, 1, SITE, BOTH), later.clone()],
+            &tabs,
+            &permissions,
+        );
+        assert_eq!(routed.answers, []);
+        assert_eq!(routed.prompt, Some(later));
     }
 
     #[test]

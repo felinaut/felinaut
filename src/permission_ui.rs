@@ -15,7 +15,7 @@ use gpui::{
 
 use crate::{
     Browser, brand, history,
-    permissions::{self, Answer, Decision, native},
+    permissions::{self, Decision, native},
     theme::Palette,
 };
 
@@ -152,38 +152,26 @@ impl Browser {
         }
         // Only a page on display gets a prompt. A request of another tab waits for its turn.
         let shown = [Some(self.active), self.partner(self.active)];
-        let mut next = None;
-        for request in native::requests() {
-            let tab = self.tabs.iter().enumerate().find(|(_, tab)| {
-                tab.page
-                    .as_ref()
-                    .is_some_and(|page| page.permission_key() == request.page)
-            });
-            // The tab left the site that asked: the request is void. `tab.url` changes as
-            // soon as a load starts, so a prompt never outlives its document's site.
-            let Some((index, tab)) = tab.filter(|(_, tab)| {
-                permissions::origin_of_url(&tab.url).as_ref() == Some(&request.origin)
-            }) else {
-                native::answer(request.id, false);
-                continue;
-            };
-            match self.permissions.answer(&request.origin, request.kinds) {
-                Answer::Grant => native::answer(request.id, true),
-                Answer::Deny => native::answer(request.id, false),
-                Answer::Ask => {
-                    let on_display =
-                        shown.contains(&Some(index)) && !tab.home && tab.load_failure.is_none();
-                    if next.is_none() && on_display {
-                        next = tab.page.clone().map(|page| (request, page));
-                    }
-                }
-            }
+        let tabs: Vec<_> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| permissions::TabState {
+                page: tab.page.as_ref().map(|page| page.permission_key()),
+                url: &tab.url,
+                on_display: shown.contains(&Some(index)) && !tab.home && tab.load_failure.is_none(),
+            })
+            .collect();
+        let routed = permissions::route(native::requests(), &tabs, &self.permissions);
+        for (id, grant) in routed.answers {
+            native::answer(id, grant);
         }
+        let next = routed.prompt;
         let current = self
             .permission_prompt
             .as_ref()
             .map(|prompt| prompt.request.id);
-        if next.as_ref().map(|(request, _)| request.id) != current {
+        if next.as_ref().map(|request| request.id) != current {
             changed = true;
             // A new bar never takes the keys: they stay with the page, so a key that was
             // meant for the page cannot answer. The user moves to the bar with a click or
@@ -195,7 +183,7 @@ impl Browser {
                     let _ = page.focus();
                 }
             }
-            self.permission_prompt = next.map(|(request, _)| Prompt {
+            self.permission_prompt = next.map(|request| Prompt {
                 request,
                 selection: Selection::new(Instant::now()),
             });
