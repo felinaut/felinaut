@@ -12,9 +12,11 @@ mod engine;
 mod history;
 mod icons;
 mod input;
+mod language;
 mod live;
 mod load_error;
 mod session;
+mod settings;
 mod suggestions;
 mod theme;
 mod volume;
@@ -284,6 +286,7 @@ actions!(
         Home,
         Quit,
         AboutFelinaut,
+        OpenSettings,
         VolumeControls,
         MuteTab,
         ToggleSidebar,
@@ -1679,7 +1682,8 @@ impl Browser {
         }
     }
     fn navigate(&mut self, input: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let url = match engine::resolve_input(input) {
+        let settings = cx.global::<ThemeSettings>();
+        let url = match engine::resolve_input(input, settings.search, settings.language) {
             Ok(url) => url,
             Err(error) => {
                 self.tabs[self.active].error = Some(error);
@@ -4178,6 +4182,9 @@ fn open_links(window: WindowHandle<Browser>, cx: &mut impl AppContext, urls: Vec
 }
 
 fn main() {
+    // Before anything reads the locale: WebKit takes the preferred languages from here.
+    let launch_language = ThemeSettings::load().language;
+    language::apply(launch_language);
     let handoff = Rc::new(RefCell::new(UrlHandoff::default()));
     let opener = handoff.clone();
     let app = Application::new().with_assets(brand::BrandAssets);
@@ -4190,6 +4197,7 @@ fn main() {
     });
     app.run(move |cx: &mut App| {
         cx.set_global(ThemeSettings::load());
+        cx.set_global(settings::LaunchLanguage(launch_language));
         input::init(cx);
         dialog_panel::init(cx);
         #[cfg(target_os = "macos")]
@@ -4203,6 +4211,7 @@ fn main() {
             KeyBinding::new("cmd-]", Forward, None),
             KeyBinding::new("cmd-shift-h", Home, None),
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-,", OpenSettings, None),
             KeyBinding::new("cmd-shift-m", MuteTab, None),
             KeyBinding::new("cmd-s", ToggleSidebar, None),
             KeyBinding::new("cmd-d", PinTab, None),
@@ -4227,6 +4236,8 @@ fn main() {
                 name: "Felinaut".into(),
                 items: vec![
                     MenuItem::action("About Felinaut", AboutFelinaut),
+                    MenuItem::separator(),
+                    MenuItem::action("Settings…", OpenSettings),
                     MenuItem::separator(),
                     MenuItem::action("Quit Felinaut", Quit),
                 ],
@@ -4292,6 +4303,7 @@ fn main() {
             },
         ]);
         cx.on_action(|_: &AboutFelinaut, cx| about::open(cx));
+        cx.on_action(|_: &OpenSettings, cx| settings::open(cx));
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {

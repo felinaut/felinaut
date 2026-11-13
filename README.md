@@ -41,7 +41,7 @@ CARGO_PROFILE_RELEASE_STRIP=none cargo build --release
 ./target/release/felinaut
 ```
 
-The first build downloads dependencies from crates.io. The new-tab page contains no remote assets or telemetry. Search queries go to DuckDuckGo. Websites control their own requests once loaded.
+The first build downloads dependencies from crates.io. The new-tab page contains no remote assets or telemetry. Search queries go to your chosen search engine (DuckDuckGo by default). Websites control their own requests once loaded.
 
 ## Build a DMG for friends
 
@@ -193,6 +193,7 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | `⌘D`             | Pin / unpin active tab                                          |
 | `⌘1`–`⌘8` / `⌘9` | Go to tab 1–8 / last tab                                        |
 | `⌃Tab` / `⌃⇧Tab` | Next / previous tab (also `⌘⇧]` / `⌘⇧[`)                        |
+| `⌘,`             | Open Settings                                                   |
 | `⌘Q`             | Quit                                                            |
 
 ### Title-first address bar and history suggestions
@@ -206,7 +207,7 @@ Every completed HTTP(S) page load is remembered with its title, visit count and 
 - Matching is case-insensitive and fuzzy: contiguous text ranks highest, with a bonus for starting the host (`rust` → **rust**-lang.org) or a word; scattered subsequences (`hkrn` → **H**ac**k**e**r** **N**ews) still match. Every space-separated word must match the title or the URL. Equal matches are ordered by frecency: more visits and more recent visits first.
 - Each row shows the title and the URL with the matched characters highlighted.
 - Typing completes the first row whose address contains the text, drawn dimmed around what you typed: `le` shows `goog`**le**`.com`, `lang.org` shows `rust-`**lang.org**. `Enter` opens that page, `→` at the end of the text accepts the completion into the field, and editing keeps working on just what you typed. Rows that only match by title, multi-word queries and edits mid-text are never completed.
-- `↓` / `↑` move through the rows and put the selected URL into the address bar; stepping past the end restores what you typed. `Enter` opens the selected row, or, with nothing selected, resolves the typed text as usual (URL, host, or DuckDuckGo search). `Esc` closes the list and restores the typed text; clicking a row opens it.
+- `↓` / `↑` move through the rows and put the selected URL into the address bar; stepping past the end restores what you typed. `Enter` opens the selected row, or, with nothing selected, resolves the typed text as usual (URL, host, or a search with your search engine). `Esc` closes the list and restores the typed text; clicking a row opens it.
 - Hovering a row reveals an **×** at its right edge that forgets the page: it leaves history on disk as well, and the list refills from what you typed.
 
 History lives in `~/Library/Application Support/Felifox/history/visits.tsv`, one tab-separated line per URL (last visit as unix seconds, visit count, URL, title), newest first, with site icons beside it in `history/icons/`. Delete the folder to clear both. The GPUI Home page, `about:` pages and failed loads are not recorded; the file is capped at 10 000 pages, dropping the least recently visited.
@@ -288,7 +289,16 @@ Limitations: the "Leave the page?" question of `beforeunload` does not show, and
 
 ## Artwork and appearance
 
-The toolbar's **Theme ▾** button opens six curated palettes: **Milky Way** (the new-profile default), Midnight Party, Confetti Sunset, Neon Wool, Alpine Pop, and Forest Carnival. Existing saved selections keep their original theme keys. Themes recolor Felinaut's chrome, address field, New Tab page and About window—not websites. Theme, animation and address-bar choices are saved to `~/Library/Application Support/Felifox/settings` (`key=value` lines, including sidebar choices) and restored on launch.
+The toolbar's **Theme ▾** button opens six curated palettes: **Milky Way** (the new-profile default), Midnight Party, Confetti Sunset, Neon Wool, Alpine Pop, and Forest Carnival. Existing saved selections keep their original theme keys. Themes recolor Felinaut's chrome, address field, New Tab page and About window—not websites. Theme, animation and address-bar choices are saved to `~/Library/Application Support/Felifox/settings` (`key=value` lines, including sidebar choices and `search=` for the search engine) and restored on launch.
+
+Address-bar searches use **DuckDuckGo** by default. Choose another in **Felinaut → Settings…** (`⌘,`), under **Search engine**; the change applies to your next search. The other choices are **Google**, **Bing**, **Brave Search**, **Ecosia** and **Startpage**; the choice is saved as `search=duckduckgo|google|bing|brave|ecosia|startpage`. The list is fixed: only the encoded query varies, so a saved value cannot send searches to any other site. A missing, unknown or edited value falls back to DuckDuckGo, and older settings files keep working.
+
+**Website language** (also in Settings) is **Same as macOS** by default, or **English** or **Français**, saved as `language=system|en|fr`. Many sites, Google among them, pick a language from your location rather than your browser, so a chosen language works in two ways:
+
+- **Searches** carry the engine's own language parameter right away: `hl=` for Google, `setlang=` for Bing, `lang=` for Brave Search and `kad=` for DuckDuckGo. Ecosia and Startpage have none and follow the browser language below. The query stays the only other parameter.
+- **All websites** receive it as their `Accept-Language` header and `navigator.language` after you restart Felinaut; Settings says when a restart is pending. At launch Felinaut writes the choice to its own `AppleLanguages` default (never the system-wide one), which WebKit reads when it starts; **Same as macOS** removes it again. Felinaut's own interface is English either way.
+
+Sites that decide by location alone may still ignore the browser language. Cookie-consent pages appear once per site regardless of language.
 
 - **Original embedded SVG artwork:** a happy orange-and-cream astronaut cat exploring colorful yarn planets, a simplified helmet symbol, and a floating cardboard exploration box on New Tab. She has one clear smile, a cyan bubble visor, and a white/lavender suit. No fox emoji, external assets or large background bitmaps.
 - **Six distinct procedural scenes:** Milky Way has layered galactic nebulae, subtle stars, moons and cross-wound yarn planets. All themes share restrained orbital threads and wool-planet discoveries; Midnight Party has tumbling confetti, streamers, golden stars and neon ribbons; Confetti Sunset has a golden sun, peach/coral hills and falling confetti; Alpine Pop has snowcapped ice mountains, glacier facets, drifting snow and ridge glints; Neon Wool has rolling yarn balls and flowing loose threads; Forest Carnival has swaying foliage, citrus, cherries, flowers and fluttering petals.
@@ -316,7 +326,7 @@ The previous WebRender/SWGL pipeline, HTML extraction, custom HTTP loader and `-
 
 ## Scope and limitations
 
-Keep it small: no bookmarks manager, extensions, permission UI, tracker-blocker promise, or private-mode promise. Felinaut persists browsing history and site icons (`~/Library/Application Support/Felifox/history/`, delete it to clear them), Appearance choices (`…/Felifox/settings`), saved tabs (`…/Felifox/tabs.tsv`), live folders (`…/Felifox/live.tsv`) and the downloads list (`…/Felifox/downloads.tsv`: state, start time, size, source host and file path of at most 200 downloads, never the download URL; delete it to clear the list, the files stay). Volume choices last for the session only. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
+Keep it small: no bookmarks manager, extensions, permission UI, tracker-blocker promise, or private-mode promise. Felinaut persists browsing history and site icons (`~/Library/Application Support/Felifox/history/`, delete it to clear them), Appearance, search engine and website language choices (`…/Felifox/settings`, plus the app's own `AppleLanguages` default when a website language is chosen), saved tabs (`…/Felifox/tabs.tsv`), live folders (`…/Felifox/live.tsv`) and the downloads list (`…/Felifox/downloads.tsv`: state, start time, size, source host and file path of at most 200 downloads, never the download URL; delete it to clear the list, the files stay). Volume choices last for the session only. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
 
 - Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
@@ -346,7 +356,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 
 - `src/main.rs`: GPUI window, tabs and navigation controls.
 - `src/input.rs`: address input adapted from Zed's Apache-2.0 GPUI input example.
-- `src/engine.rs`: address-to-URL/search resolution only.
+- `src/engine.rs`: address-to-URL/search resolution and the fixed list of search engines.
 - `src/history.rs`: on-disk visit store, fuzzy matcher and frecency ranking.
 - `src/suggestions.rs`: the native, non-focusing history dropdown under the address bar.
 - `src/icons.rs`, `src/page_icon.js`: site icons handed over by the page as validated PNGs, stored per host, with monogram fallback.
@@ -360,6 +370,8 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/brand.rs` and `assets/`: embedded original SVG mascot, symbol and monochrome UI icons.
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.
+- `src/settings.rs`: the Settings window (`⌘,`): search engine and website language.
+- `src/language.rs`: the website language choice and how it reaches WebKit at launch.
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.
 - `tests/native_audio.rs`: opt-in WebKit check of audio routing, cross-origin fallback and reset.

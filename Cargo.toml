@@ -52,6 +52,9 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSURL",
     "NSURLRequest",
     "NSURLResponse",
+    # The website language setting: the app's own AppleLanguages default.
+    "NSArray",
+    "NSUserDefaults",
 ] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = [
     "std",
