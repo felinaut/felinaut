@@ -1,6 +1,6 @@
 # macOS optional engines: CEF and Gecko feasibility
 
-**Research checked: 12 November 2026. Status: standalone native CEF/GPUI functional probe passes; no browser adapter. Visual verification, effective confinement/helper exit and WebKit coexistence remain pending.**
+**Research checked: 12 November 2026; native visual evidence updated 13 November 2026. Status: standalone native CEF/GPUI functional and static-fixture visual checks pass; no browser adapter. Effective confinement/helper exit and WebKit coexistence remain pending.**
 
 Scope: build-time optional engines, eventually selectable at runtime **per tab in one GPUI window**, starting with native macOS arm64. This report adds no dependencies, Cargo features, adapter, launcher, preference, or selector. Build-request gates and the existing Cocoa choices are documented separately in [engine builds](engine-builds.md); neither enables an alternate adapter. Read alongside [the backend contract](engine-backends.md), [porting plan](porting-plan.md), [GPUI controls](gpui-controls.md), and [macOS status](macos-backend-status.md).
 
@@ -18,7 +18,7 @@ The [SDK-free GPUI lifecycle probe](../tools/cef-probe/README.md) now passes on 
 
 A later opt-in runtime checkpoint uses the published `cef`/`cef-dll-sys` **156.4.0+156.0.26** pair and matching prebuilt CEF **156.0.26+g8ea0c73+chromium-156.0.8078.88**, not the newer research-only 156.0.28 pin below. Native checks now pass real protocol conformance, framework initialization, reference-compatible pumping, native child creation, loopback HTTP/JavaScript, AppKit text/trusted pointer interaction, viewport resize and CEF shutdown before GPUI termination. The disposable fixture uses Chromium's mock-Keychain test switch; this is not production secret storage.
 
-**Effective helper confinement/exit, correct visible pixels and WKWebView coexistence are not yet verified.** Window-only capture failed through both `screencapture` and ScreenCaptureKit; visual verification is pending. The existing image depicts only the SDK-free lifecycle window. The [probe README](../tools/cef-probe/README.md#real-cef-runtime-probe) records reproducible commands, safety boundaries and remaining gates. The original research sections below remain historical source evidence; the browser's CEF feature remains blocked.
+**Effective helper confinement/exit and WKWebView coexistence are not yet verified.** After unlocking the desktop, two complete window-only capture runs passed. The [reviewed CEF/GPUI screenshot](screenshots/macos-cef-runtime-probe.png) shows the actual document, native text and trusted-click confirmation after resize; it verifies this static fixture's presentation, not full browser behavior or accessibility. Earlier locked-session capture failures remain recorded in the probe README. The [probe README](../tools/cef-probe/README.md#real-cef-runtime-probe) records reproducible commands, safety boundaries and remaining gates. The original research sections below remain historical source evidence; the browser's CEF feature remains blocked.
 
 ## 1. Evidence boundary and exact pins
 
