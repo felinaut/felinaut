@@ -434,6 +434,14 @@ pub const FIRST_VIEW: usize = 60;
 /// The most sites it shows at first; beyond that it starts as the root alone.
 pub const FIRST_VIEW_SITES: usize = 200;
 
+/// What the window has to do after WebKit's answer, or its absence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Follow {
+    Nothing,
+    /// Read the store again: WebKit did not confirm a delete, which may still have run.
+    Fetch,
+}
+
 /// What Escape did in the Cookies window, which backs out one step at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackOut {
@@ -479,8 +487,9 @@ pub struct WindowState {
     confirming: Option<Pending>,
     revealed: bool,
     loaded: bool,
-    /// A delete is on its way; its answer is the next list of cookies.
-    deleting: bool,
+    /// A delete is on its way; its answer is the next list of cookies. This is the tree from
+    /// before it, which is still what WebKit stores if the request never reaches it.
+    deleting: Option<Tree>,
     error: Option<String>,
 }
 
@@ -496,7 +505,7 @@ impl Default for WindowState {
             confirming: None,
             revealed: false,
             loaded: false,
-            deleting: false,
+            deleting: None,
             error: None,
         };
         state.rebuild();
@@ -545,12 +554,14 @@ impl WindowState {
     /// Whether a new request for the cookies may go out: not while a delete is on its way,
     /// whose answer is the list anyway.
     pub fn may_fetch(&self) -> bool {
-        !self.deleting
+        self.deleting.is_none()
     }
 
-    /// WebKit's answer to a fetch or a delete: the cookies, or `None` when it did not answer.
-    pub fn answered(&mut self, cookies: Option<&[Cookie]>) {
-        self.deleting = false;
+    /// WebKit's answer to a fetch or a delete: the cookies, or `None` when it did not answer
+    /// in time.
+    #[must_use]
+    pub fn answered(&mut self, cookies: Option<&[Cookie]>) -> Follow {
+        let deleted = self.deleting.take().is_some();
         match cookies {
             Some(cookies) => {
                 self.tree = Tree::build(cookies);
@@ -560,14 +571,30 @@ impl WindowState {
                 self.loaded = true;
                 self.error = None;
                 self.rebuild();
+                Follow::Nothing
             }
-            None => self.error = Some("WebKit did not answer. Try Refresh.".into()),
+            // Some of the cookies may be gone and others not: neither the tree from before
+            // nor the one shown now can be trusted, so ask WebKit what it stores.
+            None if deleted => {
+                self.error = Some(
+                    "WebKit has not confirmed the delete yet. Reading the cookies again.".into(),
+                );
+                Follow::Fetch
+            }
+            None => {
+                self.error = Some("WebKit did not answer. Try Refresh.".into());
+                Follow::Nothing
+            }
         }
     }
 
-    /// A request could not be sent to WebKit at all.
+    /// A request could not be sent to WebKit at all. A delete that never left has deleted
+    /// nothing: the cookies come back.
     pub fn send_failed(&mut self, error: String) {
-        self.deleting = false;
+        if let Some(before) = self.deleting.take() {
+            self.tree = before;
+            self.rebuild();
+        }
         self.error = Some(error);
     }
 
@@ -712,7 +739,7 @@ impl WindowState {
     /// asks, naming how many cookies go.
     pub fn request_delete(&mut self) -> Option<HashSet<Key>> {
         let keys = self.keys_under(&self.selection);
-        if self.deleting || keys.is_empty() {
+        if self.deleting.is_some() || keys.is_empty() {
             return None;
         }
         if matches!(self.selection, Node::Cookie(_)) {
@@ -742,11 +769,11 @@ impl WindowState {
     /// Deletes exactly these cookies. The tree shows the result at once; WebKit's answer
     /// then replaces it with what is stored.
     fn begin_delete(&mut self, keys: HashSet<Key>) -> Option<HashSet<Key>> {
-        if keys.is_empty() || self.deleting {
+        if keys.is_empty() || self.deleting.is_some() {
             return None;
         }
+        self.deleting = Some(self.tree.clone());
         self.tree.remove_keys(&keys);
-        self.deleting = true;
         self.rebuild();
         Some(keys)
     }
@@ -1420,7 +1447,7 @@ mod tests {
 
     fn loaded(cookies: &[Cookie]) -> WindowState {
         let mut state = WindowState::default();
-        state.answered(Some(cookies));
+        assert_eq!(state.answered(Some(cookies)), Follow::Nothing);
         state
     }
 
@@ -1449,14 +1476,14 @@ mod tests {
         assert_eq!(state.rows().len(), 10);
         state.toggle(&Node::Site("google.com".into()));
         assert_eq!(state.rows().len(), 5);
-        state.answered(Some(&store()));
+        assert_eq!(state.answered(Some(&store())), Follow::Nothing);
         assert_eq!(
             state.rows().len(),
             5,
             "a refresh keeps what the user closed"
         );
         // An empty answer is still an answer.
-        state.answered(Some(&[]));
+        assert_eq!(state.answered(Some(&[])), Follow::Nothing);
         assert_eq!(state.tree().count(), 0);
         assert_eq!(state.rows().len(), 1);
     }
@@ -1464,7 +1491,7 @@ mod tests {
     #[test]
     fn no_answer_keeps_the_cookies_and_says_so() {
         let mut state = loaded(&store());
-        state.answered(None);
+        assert_eq!(state.answered(None), Follow::Nothing);
         assert_eq!(state.error(), Some("WebKit did not answer. Try Refresh."));
         assert_eq!(state.tree().count(), 4);
         state.send_failed("Cookies can only be read on the main thread".into());
@@ -1473,7 +1500,7 @@ mod tests {
             Some("Cookies can only be read on the main thread")
         );
         // The next answer clears the error.
-        state.answered(Some(&store()));
+        assert_eq!(state.answered(Some(&store())), Follow::Nothing);
         assert_eq!(state.error(), None);
     }
 
@@ -1585,7 +1612,7 @@ mod tests {
         assert!(!state.may_fetch());
         assert_eq!(state.tree().count(), 3, "shown deleted at once");
         assert_eq!(state.request_delete(), None, "one delete at a time");
-        state.answered(Some(&cookies[..3]));
+        assert_eq!(state.answered(Some(&cookies[..3])), Follow::Nothing);
         assert!(state.may_fetch());
 
         let site = Node::Site("google.com".into());
@@ -1687,19 +1714,19 @@ mod tests {
         state.request_delete();
         let mut more = cookies.clone();
         more.push(cookie("docs.google.com", "e"));
-        state.answered(Some(&more));
+        assert_eq!(state.answered(Some(&more)), Follow::Nothing);
         assert!(state.confirming().is_none());
 
         // So does one that removes a cookie under it.
         state.request_delete();
-        state.answered(Some(&cookies));
+        assert_eq!(state.answered(Some(&cookies)), Follow::Nothing);
         assert!(state.confirming().is_none());
 
         // A refresh elsewhere keeps it, and the delete is exactly what was named.
         state.request_delete();
         let mut elsewhere = cookies.clone();
         elsewhere.push(cookie("other.example", "f"));
-        state.answered(Some(&elsewhere));
+        assert_eq!(state.answered(Some(&elsewhere)), Follow::Nothing);
         assert!(state.confirming().is_some());
         assert_eq!(state.confirm(), Some(keys(&google)));
         assert_eq!(state.tree().count(), 2);
@@ -1763,5 +1790,55 @@ mod tests {
             prompt(&state).as_deref(),
             Some("Delete all 4 cookies? This signs you out of every site.")
         );
+    }
+
+    #[test]
+    fn a_delete_that_cannot_be_sent_puts_the_cookies_back() {
+        let cookies = store();
+        let mut state = loaded(&cookies);
+        state.select(Node::Site("google.com".into()));
+        state.request_delete();
+        assert!(state.confirm().is_some());
+        assert_eq!(state.tree().count(), 1, "shown deleted at once");
+        // Nothing reached WebKit, so every cookie is still stored.
+        state.send_failed("Cookies can only be read on the main thread".into());
+        assert_eq!(state.tree(), &Tree::build(&cookies));
+        assert!(state.rows().iter().any(|row| row.label == "google.com"));
+        assert!(state.may_fetch());
+        assert_eq!(
+            state.error(),
+            Some("Cookies can only be read on the main thread")
+        );
+        // A failed fetch has nothing to put back.
+        state.send_failed("again".into());
+        assert_eq!(state.tree(), &Tree::build(&cookies));
+    }
+
+    #[test]
+    fn a_delete_that_webkit_does_not_confirm_reads_the_store_again() {
+        let cookies = store();
+        let mut state = loaded(&cookies);
+        state.select(Node::Site("google.com".into()));
+        state.request_delete();
+        state.confirm();
+        // WebKit may have deleted some or all of them: ask it, rather than guess.
+        assert_eq!(state.answered(None), Follow::Fetch);
+        assert!(state.may_fetch());
+        assert_eq!(
+            state.error(),
+            Some("WebKit has not confirmed the delete yet. Reading the cookies again.")
+        );
+        assert_eq!(
+            state.tree().count(),
+            1,
+            "the deleted cookies do not come back"
+        );
+        // That fetch times out too: say so, and leave the next step to the user.
+        assert_eq!(state.answered(None), Follow::Nothing);
+        assert_eq!(state.error(), Some("WebKit did not answer. Try Refresh."));
+        // The answer then shows what is stored.
+        assert_eq!(state.answered(Some(&cookies[1..])), Follow::Nothing);
+        assert_eq!(state.tree().count(), 3);
+        assert_eq!(state.error(), None);
     }
 }

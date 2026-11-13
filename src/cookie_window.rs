@@ -18,7 +18,7 @@ use gpui::{
 use crate::{
     cookie_graph::CookieGraph,
     cookie_store,
-    cookies::{self, BackOut, Cookie, Key, Node, WindowState},
+    cookies::{self, BackOut, Cookie, Follow, Key, Node, WindowState},
     input::{AddressEvent, AddressInput},
     theme::{self, Palette, ThemeSettings},
 };
@@ -196,15 +196,16 @@ impl CookieManager {
         }
         let (reply, answer) = mpsc::channel();
         let sent = cookie_store::fetch(reply);
-        self.wait(sent, answer, window, cx);
+        self.wait(sent, answer, ANSWER_TIMEOUT, window, cx);
     }
 
     /// WebKit answers in a native callback, which only fills `answer`. Poll it from GPUI's
-    /// side until it has the list, for a bounded time; a newer request replaces this wait.
+    /// side until it has the list, for at most `timeout`; a newer request replaces this wait.
     fn wait(
         &mut self,
         sent: Result<(), String>,
         answer: mpsc::Receiver<Vec<Cookie>>,
+        timeout: Duration,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -220,15 +221,18 @@ impl CookieManager {
                 match answer.try_recv() {
                     Ok(cookies) => break Some(cookies),
                     Err(TryRecvError::Disconnected) => break None,
-                    Err(TryRecvError::Empty) if waited >= ANSWER_TIMEOUT => break None,
+                    Err(TryRecvError::Empty) if waited >= timeout => break None,
                     Err(TryRecvError::Empty) => {}
                 }
                 cx.background_executor().timer(step).await;
                 waited += step;
             };
-            let _ = this.update(cx, |this, cx| {
-                this.state.answered(cookies.as_deref());
+            let _ = this.update_in(cx, |this, window, cx| {
+                let follow = this.state.answered(cookies.as_deref());
                 this.changed(cx);
+                if follow == Follow::Fetch {
+                    this.refresh(window, cx);
+                }
             });
         }));
     }
@@ -336,7 +340,7 @@ impl CookieManager {
         };
         let (reply, answer) = mpsc::channel();
         let sent = cookie_store::delete(keys, reply);
-        self.wait(sent, answer, window, cx);
+        self.wait(sent, answer, ANSWER_TIMEOUT, window, cx);
     }
 
     fn click(&mut self, node: &Node, window: &mut Window, cx: &mut Context<Self>) {
