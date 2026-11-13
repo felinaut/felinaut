@@ -59,6 +59,10 @@ Implement only operations demanded by existing behavior and proven prototypes. A
 
 The existing [`src/engine.rs`](../src/engine.rs) resolves address-bar text; despite its name it is **not** a multi-engine backend abstraction. Do not overload it or rename it as an unrelated cleanup. Agree on the new module boundary before platform agents implement against it.
 
+## Script request ledger checkpoint
+
+`src/page/requests.rs` supplies a native-object-free, bounded request ledger for adapter integration: a two-phase dispatch handshake, typed errors, weak page/document scopes, deadline/result limits and exactly-once terminal callbacks. Failed dispatch invokes no callback; accepted requests explicitly resolve success, native error, cancellation, discard or timeout. Callbacks run outside the mutex and must enqueue any UI work. The independent `cargo test --locked --test page_requests` target passes **28 deterministic behavioral tests**, including synchronous native callbacks, close/navigation races, duplicate/late completions, result bounds and reentrancy. This component checkpoint alone does not establish native integration or full event/snapshot/download cancellation.
+
 ## Profiles and engine selection
 
 Target per-tab selection among validated backends, with a separate website-data context for each backend/profile pair. Backend selection belongs to the tab, not a process-global preference; runtime initialization/shutdown may still be application-wide for a particular adapter. The existing [Cocoa comparison launcher](macos-webkit-comparison.md) remains startup-only, separate-process developer tooling, not an implementation of mixed-engine tabs. Selection UI must report actual availability; no enabled WPE/macOS or Gecko option without a proven native adapter.
