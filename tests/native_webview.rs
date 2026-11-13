@@ -10,6 +10,10 @@ mod auth_prompt;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/downloads.rs"]
 mod downloads;
+// `theme.rs` needs the search engine and the website language.
+#[allow(dead_code, unused_imports)]
+#[path = "../src/engine.rs"]
+mod engine;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/http_auth.rs"]
 mod http_auth;
@@ -19,6 +23,9 @@ mod icons;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/input.rs"]
 mod input;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/language.rs"]
+mod language;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/load_error.rs"]
 mod load_error;

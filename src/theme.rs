@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use gpui::{App, Global};
 
+use crate::{engine::SearchEngine, language::WebLanguage};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Theme {
     MidnightParty,
@@ -206,6 +208,10 @@ pub struct ThemeSettings {
     pub sidebar: bool,
     /// Its width in points, set by dragging its right edge.
     pub sidebar_width: f32,
+    /// Where address-bar searches go, chosen in Settings (⌘,).
+    pub search: SearchEngine,
+    /// The language asked of websites and search engines, chosen in Settings (⌘,).
+    pub language: WebLanguage,
 }
 
 pub const SIDEBAR_MIN: f32 = 200.;
@@ -220,6 +226,8 @@ impl Default for ThemeSettings {
             address: AddressDisplay::default(),
             sidebar: true,
             sidebar_width: 240.,
+            search: SearchEngine::default(),
+            language: WebLanguage::default(),
         }
     }
 }
@@ -252,6 +260,16 @@ impl ThemeSettings {
                         settings.sidebar_width = width.clamp(SIDEBAR_MIN, SIDEBAR_MAX);
                     }
                 }
+                ("search", value) => {
+                    if let Some(engine) = SearchEngine::from_key(value) {
+                        settings.search = engine;
+                    }
+                }
+                ("language", value) => {
+                    if let Some(language) = WebLanguage::from_key(value) {
+                        settings.language = language;
+                    }
+                }
                 ("address", value) => {
                     if let Some(display) =
                         AddressDisplay::ALL.into_iter().find(|d| d.key() == value)
@@ -267,12 +285,14 @@ impl ThemeSettings {
 
     pub fn serialize(&self) -> String {
         format!(
-            "theme={}\nanimate={}\naddress={}\nsidebar={}\nsidebar_width={:.0}\n",
+            "theme={}\nanimate={}\naddress={}\nsidebar={}\nsidebar_width={:.0}\nsearch={}\nlanguage={}\n",
             self.theme.key(),
             self.animate,
             self.address.key(),
             self.sidebar,
-            self.sidebar_width
+            self.sidebar_width,
+            self.search.key(),
+            self.language.key()
         )
     }
 
@@ -347,11 +367,13 @@ mod tests {
             address: AddressDisplay::Domain,
             sidebar: false,
             sidebar_width: 312.4,
+            search: SearchEngine::Ecosia,
+            language: WebLanguage::French,
         };
         let text = settings.serialize();
         assert_eq!(
             text,
-            "theme=alpine-pop\nanimate=false\naddress=domain\nsidebar=false\nsidebar_width=312\n"
+            "theme=alpine-pop\nanimate=false\naddress=domain\nsidebar=false\nsidebar_width=312\nsearch=ecosia\nlanguage=fr\n"
         );
         assert_eq!(ThemeSettings::parse(&text).sidebar_width, 312.);
         for (text, width) in [("sidebar_width=10", 200.), ("sidebar_width=9999", 400.)] {
@@ -369,6 +391,8 @@ mod tests {
         assert!(!parsed.animate);
         assert!(!parsed.sidebar);
         assert_eq!(parsed.address, AddressDisplay::Domain);
+        assert_eq!(parsed.search, SearchEngine::Ecosia);
+        assert_eq!(parsed.language, WebLanguage::French);
 
         let sloppy = ThemeSettings::parse("junk\ntheme = Neon Wool\naddress=url\nanimate=yes\n");
         assert_eq!(
@@ -435,6 +459,81 @@ mod tests {
         assert_eq!(
             ThemeSettings::parse(" theme = milky-way \n").theme,
             Theme::MilkyWay
+        );
+    }
+
+    #[test]
+    fn search_engine_is_saved_and_older_or_edited_files_keep_duckduckgo() {
+        for engine in SearchEngine::ALL {
+            let settings = ThemeSettings {
+                search: engine,
+                ..ThemeSettings::default()
+            };
+            assert_eq!(ThemeSettings::parse(&settings.serialize()).search, engine);
+        }
+        assert_eq!(
+            ThemeSettings::parse(" search = google \n").search,
+            SearchEngine::Google
+        );
+        // Files written before this setting existed, and unknown or edited values.
+        for text in [
+            "",
+            "theme=alpine-pop\nanimate=false\naddress=domain\nsidebar=false\nsidebar_width=312\n",
+            "search=",
+            "search=yahoo",
+            "search=Google",
+            "search=https://evil.example/?q=",
+            "search",
+        ] {
+            assert_eq!(
+                ThemeSettings::parse(text).search,
+                SearchEngine::DuckDuckGo,
+                "{text:?}"
+            );
+        }
+        // A bad search value leaves the other settings alone.
+        let parsed = ThemeSettings::parse("search=yahoo\ntheme=alpine-pop\naddress=url\n");
+        assert_eq!(parsed.theme, Theme::AlpinePop);
+        assert_eq!(parsed.address, AddressDisplay::Url);
+    }
+
+    #[test]
+    fn website_language_is_saved_and_older_or_edited_files_follow_macos() {
+        for language in WebLanguage::ALL {
+            let settings = ThemeSettings {
+                language,
+                ..ThemeSettings::default()
+            };
+            assert_eq!(
+                ThemeSettings::parse(&settings.serialize()).language,
+                language
+            );
+        }
+        assert_eq!(
+            ThemeSettings::parse(" language = en \n").language,
+            WebLanguage::English
+        );
+        for text in [
+            "",
+            "theme=alpine-pop\nsearch=google\n",
+            "language=",
+            "language=de",
+            "language=French",
+            "language=fr,de",
+            "language",
+        ] {
+            assert_eq!(
+                ThemeSettings::parse(text).language,
+                WebLanguage::System,
+                "{text:?}"
+            );
+        }
+        let parsed = ThemeSettings::parse("language=de\nsearch=google\nlanguage=fr\n");
+        assert_eq!(parsed.search, SearchEngine::Google);
+        assert_eq!(
+            parsed.language,
+            WebLanguage::French,
+            "the last valid value wins"
         );
     }
 
