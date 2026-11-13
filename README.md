@@ -175,6 +175,7 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 - New-window links open as tabs instead of unmanaged native windows.
 - Native menus keep browser shortcuts available while the webview has focus.
 - **Per-tab volume** from 0 % to 600 %, with mute and sound presets (see below).
+- **SOCKS5 proxies** for every tab under the toolbar's shield button, with an optional user name and password kept in the Keychain (see below; macOS 14 or later).
 - **Downloads** are saved to `~/Downloads` and listed under the toolbar's **↓** button, with progress, cancel, open and show in Finder (see below).
 
 | Shortcut         | Action                                                          |
@@ -255,6 +256,17 @@ How it works: a document-start script (`src/audio_control.js`) runs in every fra
 
 Limitation: media served from another origin without CORS would go silent in Web Audio, so it is only lowered or muted through its `volume` (no boost or EQ). The popover says so when this applies. Audio from plugins, WebRTC streams and offline rendering is not boosted.
 
+## SOCKS5 proxy
+
+Click the shield left of the speaker button to send every page through a SOCKS5 proxy, like a browser VPN extension but built in. Add a proxy with a name, its host (`host`, `host:port`, `[IPv6]:port` or a pasted `socks5://host:port`), its port (1080 if left empty) and, if it needs one, a user name and password. **Save and connect** switches to it; click another saved proxy to switch, **Direct connection** to turn it off, or × to forget one. The shield is tinted while a proxy is on, and turns orange when the proxy does not answer.
+
+- **One choice for everything.** Every tab, download and live folder shares WebKit's default website data store, so they all use the chosen proxy. The browser's own traffic only: other apps are not affected.
+- **Fails closed.** A proxy is never bypassed: if it is down or rejects the password, pages fail to load (the error page names the proxy) instead of connecting directly. Host names are sent to the proxy, so DNS is resolved there too. Switching applies to new connections; reload open pages.
+- **Status.** After switching, opening the popover, or a failed page load, Felinaut opens one connection to the proxy itself and runs the SOCKS5 greeting (and the user-name/password check) without asking it to reach anything, with a 6-second limit per step. Clicking the proxy in use checks it again.
+- **Storage.** The list lives in `~/Library/Application Support/Felifox/proxies.json` (name, host, port and user name, plus which one is in use; no passwords). Passwords are in the login Keychain as "Felinaut SOCKS proxy" items, one per `user@host:port`; × removes both. An unreadable file starts with no proxies, and invalid entries are skipped.
+- **At launch**, Felinaut routes pages through the saved proxy before the first page loads. The password is read from the Keychain in the background; until it arrives, pages go to the proxy without it and fail, and a page that failed meanwhile is reloaded once the password is set.
+- **Limits.** It needs macOS 14 or later (WebKit's `proxyConfigurations`); on older macOS the popover says so and pages connect directly. SOCKS5 only: no HTTP proxies, SOCKS4 or PAC files. A development or ad-hoc-signed build changes its code signature on every build, so macOS may ask once again for access to a saved password after an update. The password field hides what you type and cannot be copied from, but it is not a native secure text field, so input methods can see the text while you type it.
+
 ## Downloads
 
 A download link, or a response WebKit cannot show (an attachment, an archive…), is saved to `~/Downloads`. Nothing asks where to put it, and nothing is ever overwritten: a second `report.pdf` becomes `report (1).pdf`. The name comes from the server, so Felinaut treats it as untrusted: only its last path component is used, without control or text-direction characters, leading dots or colons, cut to a length the disk accepts. A file can therefore never land outside `~/Downloads`. Pages you cannot see (the readers behind live folders) cannot download at all.
@@ -311,7 +323,7 @@ The previous WebRender/SWGL pipeline, HTML extraction, custom HTTP loader and `-
 
 ## Scope and limitations
 
-Keep it small: no bookmarks manager, extensions, permission UI, tracker-blocker promise, or private-mode promise. Felinaut persists browsing history and site icons (`~/Library/Application Support/Felifox/history/`, delete it to clear them), Appearance, search engine and website language choices (`…/Felifox/settings`, plus the app's own `AppleLanguages` default when a website language is chosen), saved tabs (`…/Felifox/tabs.tsv`), live folders (`…/Felifox/live.tsv`) and the downloads list (`…/Felifox/downloads.tsv`: state, start time, size, source host and file path of at most 200 downloads, never the download URL; delete it to clear the list, the files stay). Volume choices last for the session only. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
+Keep it small: no bookmarks manager, extensions, permission UI, tracker-blocker promise, or private-mode promise. Felinaut persists browsing history and site icons (`~/Library/Application Support/Felifox/history/`, delete it to clear them), Appearance, search engine and website language choices (`…/Felifox/settings`, plus the app's own `AppleLanguages` default when a website language is chosen), saved tabs (`…/Felifox/tabs.tsv`), SOCKS5 proxies (`…/Felifox/proxies.json`, passwords in the Keychain), live folders (`…/Felifox/live.tsv`) and the downloads list (`…/Felifox/downloads.tsv`: state, start time, size, source host and file path of at most 200 downloads, never the download URL; delete it to clear the list, the files stay). Volume choices last for the session only. WebKit's normal website storage is enabled; cookies and local storage may persist independently of the in-memory tab list.
 
 - Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
@@ -331,6 +343,8 @@ FELINAUT_NATIVE_TEST=1 cargo test --test native_webview
 FELINAUT_NATIVE_TEST=1 cargo test --test brand_ui
 # Per-tab audio in real WebKit (plays a quiet tone from two loopback origins):
 FELINAUT_NATIVE_TEST=1 cargo test --test native_audio
+# Proxy passwords in the real login Keychain (adds and removes one throwaway item):
+FELINAUT_KEYCHAIN_TEST=1 cargo test --bins keychain
 ```
 
 Add `-F gpui/runtime_shaders` to these commands on machines without full Xcode.
@@ -351,6 +365,8 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/link_interactions.js`: document-level link status, modifier-click and accessible context-menu handling.
 - `src/audio.rs`, `src/audio_control.js`: per-tab volume model, slider mapping, the audio bridge and Web Audio routing.
 - `src/volume.rs`: the native volume popover.
+- `src/proxy.rs` and `src/proxy/`: saved SOCKS5 proxies (`model.rs`), the SOCKS5 status check (`probe.rs`), WebKit routing through the Network framework (`network.rs`) and Keychain passwords (`keychain.rs`).
+- `src/proxy_panel.rs`: the native proxy popover.
 - `src/brand.rs` and `assets/`: embedded original SVG mascot, symbol and monochrome UI icons.
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.

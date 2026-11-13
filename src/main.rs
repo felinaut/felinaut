@@ -14,6 +14,7 @@ mod language;
 mod live;
 mod load_error;
 mod proxy;
+mod proxy_panel;
 mod session;
 mod settings;
 mod suggestions;
@@ -2250,6 +2251,34 @@ impl Browser {
             .hover(move |s| s.bg(rgb(p.elevated)).text_color(rgb(p.text)))
             .child(label)
     }
+    fn proxy_button(&self, p: Palette, cx: &mut Context<Self>) -> Stateful<Div> {
+        let state = cx.global::<proxy::Proxies>();
+        let color = proxy_panel::button_color(state, p);
+        let on = state.list.active.is_some();
+        div()
+            .id("proxy")
+            .size(px(34.))
+            .flex_shrink_0()
+            .rounded_lg()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .when(on, |button| button.bg(rgb(p.elevated)))
+            .hover(move |s| s.bg(rgb(p.elevated)))
+            .on_click(cx.listener(|_, event: &ClickEvent, window, cx| {
+                let anchor = (!event.is_keyboard()).then(|| event.position().x);
+                // Opening a window draws it at once; not from inside this update.
+                window.defer(cx, move |window, cx| {
+                    proxy_panel::toggle(anchor, window, cx)
+                });
+            }))
+            .child(
+                brand::icon(brand::icon::SHIELD)
+                    .size(px(18.))
+                    .text_color(rgb(color)),
+            )
+    }
     fn volume_button(&self, p: Palette, cx: &mut Context<Self>) -> Stateful<Div> {
         let tab = &self.tabs[self.active];
         let audio = tab.audio;
@@ -2514,6 +2543,10 @@ impl Browser {
                             .child(failure.kind.text().0),
                     )
                     .child(note(failure.kind.text().1.into()))
+                    .children(
+                        proxy_panel::failure_hint(cx.global::<proxy::Proxies>(), failure.kind)
+                            .map(|hint| note(hint.into()).text_color(rgb(p.accent))),
+                    )
                     .child(
                         div()
                             .max_w(px(520.))
@@ -4093,6 +4126,7 @@ impl Render for Browser {
                                     this.show_downloads(&ShowDownloads, window, cx)
                                 }),
                             ))
+                            .child(self.proxy_button(p, cx))
                             .child(self.volume_button(p, cx))
                             .child(
                                 self.button("appearance", "◈ Theme ▾", p)
