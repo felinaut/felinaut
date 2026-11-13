@@ -308,6 +308,7 @@ fn main() {
                         let mut background_opens = 0;
                         let mut foreground_open = false;
                         let mut failure = None;
+                        let mut page_failed = false;
                         let mut downloads = Vec::new();
                         let key = second_page.key().expect("a visible page has a key");
                         let mut closing = None;
@@ -324,6 +325,7 @@ fn main() {
                                 match event {
                                     Event::Title(value) => title = value,
                                     Event::Finished(_) => finished = true,
+                                    Event::Failed(_) => page_failed = true,
                                     Event::Hover(Some(url)) if url.ends_with("/link-destination") => hover_seen = true,
                                     Event::Hover(None) => hover_cleared = true,
                                     Event::OpenInBackground(url) if url.ends_with("/link-destination") => background_opens += 1,
@@ -347,7 +349,10 @@ fn main() {
                             if (stage == 13 || stage == 15) && question.is_none() { continue; }
                             if stage == 14 && (title != "AUTH NEEDED" || image_requests.load(Ordering::SeqCst) == 0) { continue; }
                             if stage == 16 && title != "JS FIRST" { continue; }
-                            if stage == 17 && closing_key.and_then(http_auth::waiting).is_none() { continue; }
+                            if (stage == 17 || stage == 19) && question.is_none() { continue; }
+                            if stage == 18 && title != "AUTH NEEDED" { continue; }
+                            if stage == 20 && !page_failed { continue; }
+                            if stage == 21 && closing_key.and_then(http_auth::waiting).is_none() { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
@@ -492,10 +497,51 @@ fn main() {
                                         window.focus(&browser);
                                         window.refresh();
                                     }).unwrap();
+                                    second_page.navigate(&other_auth_url).unwrap();
+                                }
+                                17 => {
+                                    // The question comes while the tab is in the background and
+                                    // the user types in the address bar: the prompt takes nothing.
+                                    let (id, _) = http_auth::waiting(key).unwrap();
+                                    cx.update(|window, cx| {
+                                        window.focus(&address);
+                                        assert!(auth_prompt::sync(&second_page, false, &browser, window, cx));
+                                        assert!(auth_prompt::view(&second_page, cx).is_some());
+                                        assert!(address.is_focused(window), "a prompt in the background takes no keys");
+                                        // The user selects the tab: the browser gives the keys to
+                                        // the prompt, as in select_tab.
+                                        window.focus(&browser);
+                                        auth_prompt::focus(&second_page, window, cx);
+                                        assert!(!browser.is_focused(window) && !address.is_focused(window));
+                                        window.refresh();
+                                    }).unwrap();
+                                    // Escape works without a click in a field.
+                                    Timer::after(Duration::from_millis(250)).await;
+                                    cx.update(|window, cx| window.dispatch_keystroke(Keystroke::parse("escape").unwrap(), cx)).unwrap();
+                                    assert!(!http_auth::is_waiting(id), "the selected tab's prompt has the keys");
+                                }
+                                18 => {
+                                    prompt_closed(&second_page, &browser, cx);
+                                    second_page.navigate(&other_auth_url).unwrap();
+                                }
+                                19 => {
+                                    // The load fails before a document commits, with the prompt
+                                    // open: WebKit blocks port 1.
+                                    cx.update(|window, cx| {
+                                        assert!(auth_prompt::sync(&second_page, true, &browser, window, cx));
+                                        window.refresh();
+                                    }).unwrap();
+                                    page_failed = false;
+                                    second_page.navigate("http://127.0.0.1:1/").unwrap();
+                                }
+                                20 => {
+                                    // The failed load cancelled the question and its prompt.
+                                    assert_eq!(http_auth::waiting(key), None);
+                                    prompt_closed(&second_page, &browser, cx);
                                     let page = cx.update(|window, _| NativePage::new(window, &other_auth_url)).unwrap();
                                     closing = Some(page.expect("create the tab to close"));
                                 }
-                                17 => {
+                                21 => {
                                     // The tab closes with its question open. WebKit raises an
                                     // exception unless the handler is called exactly one time.
                                     let (id, challenge) = closing_key.and_then(http_auth::waiting).unwrap();
@@ -504,7 +550,7 @@ fn main() {
                                     assert!(!http_auth::is_waiting(id));
                                     Timer::after(Duration::from_millis(300)).await;
                                     assert_eq!(http_auth::waiting(key), None);
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and the HTTP sign-in prompt: Escape cancels, typed text, Tab and Enter sign in after a refused answer, Cancel does not ask again for a second method, a frame or an image, a new document and a closed tab cancel, and a hidden page and an image of another origin ask nothing");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and the HTTP sign-in prompt: Escape cancels, typed text, Tab and Enter sign in after a refused answer, Cancel does not ask again for a second method, a frame or an image, a prompt of a background tab takes no keys and has them once its tab is selected, a new document, a failed load and a closed tab cancel, and a hidden page and an image of another origin ask nothing");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;
