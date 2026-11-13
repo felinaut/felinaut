@@ -13,6 +13,12 @@ mod art;
 #[path = "../src/brand.rs"]
 mod brand;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/engine.rs"]
+mod engine;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/language.rs"]
+mod language;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/theme.rs"]
 mod theme;
 

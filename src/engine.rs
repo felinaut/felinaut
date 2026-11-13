@@ -2,11 +2,111 @@
 
 use url::Url;
 
+use crate::language::WebLanguage;
+
 const MAX_URL_CHARS: usize = 8_192;
 const NEW_TAB: &str = "felinaut://newtab";
 
-/// Resolve address-bar input to a web URL, the internal new tab, or a search.
-pub fn resolve_input(input: &str) -> Result<String, String> {
+/// Where address-bar searches go. A fixed list: the query is the only thing
+/// that varies, so a saved setting can never point searches at an arbitrary site.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchEngine {
+    #[default]
+    DuckDuckGo,
+    Google,
+    Bing,
+    Brave,
+    Ecosia,
+    Startpage,
+}
+
+impl SearchEngine {
+    pub const ALL: [Self; 6] = [
+        Self::DuckDuckGo,
+        Self::Google,
+        Self::Bing,
+        Self::Brave,
+        Self::Ecosia,
+        Self::Startpage,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DuckDuckGo => "DuckDuckGo",
+            Self::Google => "Google",
+            Self::Bing => "Bing",
+            Self::Brave => "Brave Search",
+            Self::Ecosia => "Ecosia",
+            Self::Startpage => "Startpage",
+        }
+    }
+
+    /// The persisted identifier, independent of the display name.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::DuckDuckGo => "duckduckgo",
+            Self::Google => "google",
+            Self::Bing => "bing",
+            Self::Brave => "brave",
+            Self::Ecosia => "ecosia",
+            Self::Startpage => "startpage",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|engine| engine.key() == key)
+    }
+
+    /// The results page and the name of its query parameter.
+    fn endpoint(self) -> (&'static str, &'static str) {
+        match self {
+            Self::DuckDuckGo => ("https://duckduckgo.com/", "q"),
+            Self::Google => ("https://www.google.com/search", "q"),
+            Self::Bing => ("https://www.bing.com/search", "q"),
+            Self::Brave => ("https://search.brave.com/search", "q"),
+            Self::Ecosia => ("https://www.ecosia.org/search", "q"),
+            Self::Startpage => ("https://www.startpage.com/sp/search", "query"),
+        }
+    }
+
+    /// The engine's own parameter for its interface and results language, when it has one
+    /// that overrides the language it would guess from the visitor's location. Engines
+    /// without one get the language from the browser's preferred languages instead.
+    fn language_hint(self, language: WebLanguage) -> Option<(&'static str, &'static str)> {
+        let code = language.code()?;
+        match (self, code) {
+            (Self::Google, code) => Some(("hl", code)),
+            (Self::Bing, code) => Some(("setlang", code)),
+            (Self::Brave, code) => Some(("lang", code)),
+            (Self::DuckDuckGo, "en") => Some(("kad", "en_US")),
+            (Self::DuckDuckGo, "fr") => Some(("kad", "fr_FR")),
+            (Self::DuckDuckGo, _) | (Self::Ecosia | Self::Startpage, _) => None,
+        }
+    }
+
+    /// The results page for `query`: the encoded query, plus the engine's language
+    /// parameter when a website language is chosen.
+    pub fn search_url(self, query: &str, language: WebLanguage) -> Result<String, String> {
+        let (base, parameter) = self.endpoint();
+        let mut url = Url::parse(base).map_err(|e| e.to_string())?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair(parameter, query);
+            if let Some((name, value)) = self.language_hint(language) {
+                pairs.append_pair(name, value);
+            }
+        }
+        Ok(url.into())
+    }
+}
+
+/// Resolve address-bar input to a web URL, the internal new tab, or a search with `engine`
+/// in `language`.
+pub fn resolve_input(
+    input: &str,
+    engine: SearchEngine,
+    language: WebLanguage,
+) -> Result<String, String> {
     let input = input.trim();
     if input.is_empty() {
         return Err("Enter an address or search query.".into());
@@ -32,9 +132,7 @@ pub fn resolve_input(input: &str) -> Result<String, String> {
         return web_url(input).map(|url| url.to_string());
     }
 
-    let mut search = Url::parse("https://duckduckgo.com/").map_err(|e| e.to_string())?;
-    search.query_pairs_mut().append_pair("q", input);
-    Ok(search.into())
+    engine.search_url(input, language)
 }
 
 fn web_url(input: &str) -> Result<Url, String> {
@@ -102,7 +200,13 @@ mod tests {
             ("127.0.0.1:8080", "https://127.0.0.1:8080/"),
             ("[::1]:8080", "https://[::1]:8080/"),
         ] {
-            assert_eq!(resolve_input(input).unwrap(), expected, "{input}");
+            for engine in SearchEngine::ALL {
+                assert_eq!(
+                    resolve_input(input, engine, WebLanguage::System).unwrap(),
+                    expected,
+                    "{input}"
+                );
+            }
         }
     }
 
@@ -113,7 +217,10 @@ mod tests {
             "cats & dogs #cute + café",
             "why example.com fails",
         ] {
-            let url = Url::parse(&resolve_input(query).unwrap()).unwrap();
+            let url = Url::parse(
+                &resolve_input(query, SearchEngine::default(), WebLanguage::default()).unwrap(),
+            )
+            .unwrap();
             assert_eq!(url.host_str(), Some("duckduckgo.com"));
             assert_eq!(
                 url.query_pairs().collect::<Vec<_>>(),
@@ -142,7 +249,146 @@ mod tests {
             "https://example.com:bad",
             "https://example.com/a b",
         ] {
-            assert!(resolve_input(input).is_err(), "{input}");
+            for engine in SearchEngine::ALL {
+                assert!(
+                    resolve_input(input, engine, WebLanguage::System).is_err(),
+                    "{input}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn duckduckgo_stays_the_default_search_engine() {
+        assert_eq!(SearchEngine::default(), SearchEngine::DuckDuckGo);
+        assert_eq!(
+            resolve_input("cats", SearchEngine::default(), WebLanguage::default()).unwrap(),
+            "https://duckduckgo.com/?q=cats"
+        );
+    }
+
+    #[test]
+    fn every_search_engine_gets_only_the_encoded_query() {
+        let expected = [
+            (SearchEngine::DuckDuckGo, "duckduckgo.com", "/", "q"),
+            (SearchEngine::Google, "www.google.com", "/search", "q"),
+            (SearchEngine::Bing, "www.bing.com", "/search", "q"),
+            (SearchEngine::Brave, "search.brave.com", "/search", "q"),
+            (SearchEngine::Ecosia, "www.ecosia.org", "/search", "q"),
+            (
+                SearchEngine::Startpage,
+                "www.startpage.com",
+                "/sp/search",
+                "query",
+            ),
+        ];
+        assert_eq!(SearchEngine::ALL.len(), expected.len());
+        for (engine, host, path, parameter) in expected {
+            for query in [
+                "rust browser",
+                "cats & dogs #cute + café",
+                "a=b&q=evil",
+                "?",
+            ] {
+                let url = Url::parse(&resolve_input(query, engine, WebLanguage::System).unwrap())
+                    .unwrap();
+                assert_eq!(url.scheme(), "https", "{engine:?}");
+                assert_eq!(url.host_str(), Some(host), "{engine:?}");
+                assert_eq!(url.path(), path, "{engine:?}");
+                assert_eq!(url.fragment(), None, "{engine:?}");
+                assert_eq!(
+                    url.query_pairs().collect::<Vec<_>>(),
+                    vec![(parameter.into(), query.into())],
+                    "{engine:?} {query}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn search_engine_keys_round_trip_and_reject_unknown_values() {
+        let mut keys = Vec::new();
+        for engine in SearchEngine::ALL {
+            assert_eq!(SearchEngine::from_key(engine.key()), Some(engine));
+            keys.push(engine.key());
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), SearchEngine::ALL.len(), "keys must be unique");
+        for key in [
+            "",
+            "DuckDuckGo",
+            "Google",
+            " google",
+            "yahoo",
+            "https://evil.example/?q=",
+        ] {
+            assert_eq!(SearchEngine::from_key(key), None, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn a_chosen_language_adds_only_each_engines_own_language_parameter() {
+        let expected = [
+            (SearchEngine::Google, Some(("hl", "en")), Some(("hl", "fr"))),
+            (
+                SearchEngine::Bing,
+                Some(("setlang", "en")),
+                Some(("setlang", "fr")),
+            ),
+            (
+                SearchEngine::Brave,
+                Some(("lang", "en")),
+                Some(("lang", "fr")),
+            ),
+            (
+                SearchEngine::DuckDuckGo,
+                Some(("kad", "en_US")),
+                Some(("kad", "fr_FR")),
+            ),
+            // These follow the browser's preferred languages instead.
+            (SearchEngine::Ecosia, None, None),
+            (SearchEngine::Startpage, None, None),
+        ];
+        assert_eq!(expected.len(), SearchEngine::ALL.len());
+        for (engine, english, french) in expected {
+            let query_name = engine.endpoint().1;
+            for (language, hint) in [
+                (WebLanguage::System, None),
+                (WebLanguage::English, english),
+                (WebLanguage::French, french),
+            ] {
+                // A query that tries to set the language itself stays part of the query.
+                for query in ["météo", "x&hl=de&setlang=de&kad=de_CH"] {
+                    let url = Url::parse(&resolve_input(query, engine, language).unwrap()).unwrap();
+                    let mut want = vec![(query_name.to_owned(), query.to_owned())];
+                    want.extend(hint.map(|(n, v)| (n.to_owned(), v.to_owned())));
+                    assert_eq!(
+                        url.query_pairs().into_owned().collect::<Vec<_>>(),
+                        want,
+                        "{engine:?} {language:?} {query}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_chosen_language_never_changes_typed_addresses() {
+        for language in [WebLanguage::English, WebLanguage::French] {
+            for (input, expected) in [
+                ("example.com", "https://example.com/"),
+                (
+                    "https://www.google.com/search?q=x",
+                    "https://www.google.com/search?q=x",
+                ),
+                ("felinaut://newtab", NEW_TAB),
+            ] {
+                assert_eq!(
+                    resolve_input(input, SearchEngine::Google, language).unwrap(),
+                    expected
+                );
+            }
         }
     }
 }
