@@ -4028,7 +4028,11 @@ impl Render for Browser {
             .on_action(cx.listener(Self::new_live_folder))
             .on_action(cx.listener(Self::show_downloads))
             .on_action(cx.listener(Self::reset_site_permissions))
-            .on_action(cx.listener(Self::focus_permission_prompt))
+            // Only while a request shows: at other times the menu item is off and the page
+            // gets ⌘⇧P, which some web apps use.
+            .when(self.permission_prompt.is_some(), |root| {
+                root.on_action(cx.listener(Self::focus_permission_prompt))
+            })
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(
