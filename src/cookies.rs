@@ -434,6 +434,10 @@ impl Tree {
 pub const FIRST_VIEW: usize = 60;
 /// The most sites it shows at first; beyond that it starts as the root alone.
 pub const FIRST_VIEW_SITES: usize = 200;
+/// The most nodes the graph shows at once. Its force-directed layout compares every pair of
+/// nodes on each step, on the UI thread, so this bounds the work of a frame. It is well above
+/// the first view, which a store of any size falls back to.
+pub const MAX_SHOWN: usize = 1_000;
 
 /// How long the window waits for WebKit's answer. A delete takes one request per cookie
 /// and then reads the store again, so its wait grows with the cookies it takes, up to a bound.
@@ -504,6 +508,8 @@ pub struct WindowState {
     total: usize,
     shown_count: usize,
     loaded: bool,
+    /// Why the graph shows less than was asked for, until the next change.
+    notice: Option<String>,
     /// A delete is on its way; its answer is the next list of cookies. This is the tree from
     /// before it, which is still what WebKit stores if the request never reaches it.
     deleting: Option<Tree>,
@@ -526,6 +532,7 @@ impl Default for WindowState {
             total: 0,
             shown_count: 0,
             loaded: false,
+            notice: None,
             deleting: None,
             error: None,
         };
@@ -593,6 +600,10 @@ impl WindowState {
         self.error.as_deref()
     }
 
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
     /// Whether a new request for the cookies may go out: not while a delete is on its way,
     /// whose answer is the list anyway.
     pub fn may_fetch(&self) -> bool {
@@ -612,6 +623,7 @@ impl WindowState {
                 }
                 self.loaded = true;
                 self.error = None;
+                self.notice = None;
                 self.rebuild();
                 Follow::Nothing
             }
@@ -642,6 +654,7 @@ impl WindowState {
 
     pub fn set_query(&mut self, query: &str) {
         self.query = query.to_string();
+        self.notice = None;
         self.rebuild();
     }
 
@@ -660,6 +673,15 @@ impl WindowState {
             self.confirming = None;
         }
         self.rows = self.shown.rows(&self.expanded);
+        // A refresh or a filter edit can show far more of what is open than when it was
+        // opened: start again from the first view, which is always within the bound.
+        if self.rows.len() > MAX_SHOWN {
+            self.expanded = self.shown.opened_within(FIRST_VIEW, FIRST_VIEW_SITES);
+            self.rows = self.shown.rows(&self.expanded);
+            self.notice = Some(format!(
+                "Branches were closed: the graph shows at most {MAX_SHOWN} nodes at once."
+            ));
+        }
         self.total = self.tree.count();
         self.shown_count = self.shown.count();
         self.describe_selection();
@@ -691,13 +713,24 @@ impl WindowState {
         self.revealed = !self.revealed;
     }
 
-    /// Opens a closed branch or closes an open one. A cookie has nothing to open.
+    /// Opens a closed branch or closes an open one. A cookie has nothing to open, and a
+    /// branch stays closed when opening it would show more than `MAX_SHOWN` nodes.
     pub fn toggle(&mut self, node: &Node) {
         if matches!(node, Node::Cookie(_)) {
             return;
         }
+        self.notice = None;
         if !self.expanded.remove(node) {
             self.expanded.insert(node.clone());
+            let shown = self.shown.rows(&self.expanded).len();
+            if shown > MAX_SHOWN {
+                self.expanded.remove(node);
+                self.notice = Some(format!(
+                    "Opening this would show {shown} nodes; the graph shows at most \
+                     {MAX_SHOWN}. Filter by domain, or close a branch first."
+                ));
+                return;
+            }
         }
         self.rebuild();
     }
@@ -1951,5 +1984,61 @@ mod tests {
         assert_eq!(state.answered(Some(&cookies[..1])), Follow::Nothing);
         fresh(&state);
         assert_eq!(state.total(), 1);
+    }
+
+    /// One site of one host per entry, holding that many cookies.
+    fn wide_store(per_host: &[usize]) -> Vec<Cookie> {
+        per_host
+            .iter()
+            .enumerate()
+            .flat_map(|(site, &count)| {
+                (0..count)
+                    .map(move |index| cookie(&format!("site{site}.example"), &format!("c{index}")))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_graph_never_shows_more_nodes_than_it_can_lay_out() {
+        let host = |index: usize| Node::Host(format!("site{index}.example"));
+        let mut state = loaded(&wide_store(&[300; 5]));
+        // 1 root + 5 sites + 5 hosts; the 1,500 cookies start closed.
+        assert_eq!(state.rows().len(), 11);
+        for index in 0..3 {
+            state.toggle(&host(index));
+        }
+        assert_eq!(state.rows().len(), 911);
+        assert_eq!(state.notice(), None);
+        // A fourth host would make 1,211 nodes: it stays closed, and the window says why.
+        state.toggle(&host(3));
+        assert_eq!(state.rows().len(), 911);
+        assert!(state.notice().is_some_and(|notice| notice.contains("1211")));
+        state.select(host(3));
+        state.expand();
+        assert_eq!(state.rows().len(), 911, "→ is refused the same way");
+        // Closing a branch makes room, and the next change clears the notice.
+        state.toggle(&host(0));
+        assert_eq!(state.notice(), None);
+        state.toggle(&host(3));
+        assert_eq!(state.rows().len(), 911);
+
+        // A refresh that grows an open branch past the bound falls back to the first view.
+        assert_eq!(
+            state.answered(Some(&wide_store(&[300, 900, 300, 300, 300]))),
+            Follow::Nothing
+        );
+        assert!(state.rows().len() <= MAX_SHOWN);
+        assert_eq!(state.rows().len(), 11);
+        assert!(state.notice().is_some());
+
+        // So does a filter that shows more of what was open.
+        let mut state = loaded(&wide_store(&[600, 600]));
+        state.set_query("site0");
+        state.toggle(&host(0));
+        state.set_query("site1");
+        state.toggle(&host(1));
+        assert_eq!(state.rows().len(), 603);
+        state.set_query("");
+        assert!(state.rows().len() <= MAX_SHOWN, "{}", state.rows().len());
     }
 }

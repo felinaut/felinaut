@@ -742,8 +742,8 @@ impl Render for CookieManager {
                     .border_color(rgb(p.border))
                     .text_size(px(11.))
                     .text_color(rgb(p.muted))
-                    .child(match self.state.error() {
-                        Some(error) => SharedString::from(error.to_string()),
+                    .child(match self.state.error().or(self.state.notice()) {
+                        Some(message) => SharedString::from(message.to_string()),
                         None => "Click a node to open it · drag to move it or the view · scroll \
                                  to zoom. Session cookies end when Felinaut quits."
                             .into(),

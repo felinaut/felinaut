@@ -32,10 +32,9 @@ type LayoutState = FruchtermanReingoldWithCenterGravityState;
 type Graph = egui_graphs::Graph<Payload, (), Directed, DefaultIx, NodeShape, EdgeShape>;
 
 // ponytail: egui_graphs' Fruchterman-Reingold compares every pair of nodes each step, so a
-// frame costs O(n²) while the layout moves. Fine for the hundreds of nodes a store shows
-// (large stores start closed, see `Tree::opened_within`); with thousands of open nodes the
-// animation gets slow, though it still stops at `MAX_STEPS`. If that matters, give the
-// layout a spatial grid or cap the open nodes.
+// frame costs O(n²) while the layout moves. `cookies::MAX_SHOWN` bounds the nodes the model
+// lets the graph show, and large stores start closed (see `Tree::opened_within`); the layout
+// still stops at `MAX_STEPS`. If a larger graph ever matters, give the layout a spatial grid.
 
 /// Nodes move less than this per step (graph units) once the layout has settled.
 const SETTLED: f32 = 0.06;
