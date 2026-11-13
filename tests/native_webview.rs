@@ -4,7 +4,7 @@
 #[allow(dead_code, unused_imports)]
 #[path = "../src/audio.rs"]
 mod audio;
-#[allow(dead_code)]
+#[allow(dead_code, unused_imports)]
 #[path = "../src/auth_prompt.rs"]
 mod auth_prompt;
 #[allow(dead_code, unused_imports)]

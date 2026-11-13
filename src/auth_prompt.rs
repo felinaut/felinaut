@@ -159,6 +159,22 @@ impl AuthPrompt {
     }
 }
 
+const NOT_SECURE: &str = "⚠ This connection is not secure. Other people on the network can read \
+                          what you send to this site.";
+const REFUSED: &str = "The site did not accept that user name and password.";
+
+/// The warnings of a prompt, in their order on screen.
+fn warnings(challenge: &Challenge) -> Vec<&'static str> {
+    let mut warnings = Vec::new();
+    if !challenge.secure {
+        warnings.push(NOT_SECURE);
+    }
+    if challenge.retry {
+        warnings.push(REFUSED);
+    }
+    warnings
+}
+
 fn button(
     id: &'static str,
     label: &'static str,
@@ -246,17 +262,7 @@ impl Render for AuthPrompt {
                     format!("The site says: “{}”", self.challenge.realm).into(),
                 ))
             })
-            .when(!self.challenge.secure, |form| {
-                form.child(warning(
-                    "⚠ This connection is not secure. Other people on the network can read \
-                     what you send to this site.",
-                ))
-            })
-            .when(self.challenge.retry, |form| {
-                form.child(warning(
-                    "The site did not accept that user name and password.",
-                ))
-            })
+            .children(warnings(&self.challenge).into_iter().map(warning))
             .child(field("User name", &self.user))
             .child(field("Password", &self.password))
             .child(
@@ -294,5 +300,26 @@ impl Render for AuthPrompt {
             .child(div().h(px(80.)).flex_shrink_0())
             .child(form)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NOT_SECURE, REFUSED, warnings};
+    use crate::http_auth::Challenge;
+
+    #[test]
+    fn only_plain_http_and_a_refused_answer_show_a_warning() {
+        let https = Challenge::new("example.com", 443, "Admin", true, false);
+        assert!(warnings(&https).is_empty(), "HTTPS shows no warning");
+        let http = Challenge::new("example.com", 80, "Admin", false, false);
+        assert_eq!(warnings(&http), [NOT_SECURE]);
+        let refused = Challenge::new("example.com", 443, "", true, true);
+        assert_eq!(warnings(&refused), [REFUSED]);
+        let both = Challenge::new("127.0.0.1", 8080, "", false, true);
+        assert_eq!(warnings(&both), [NOT_SECURE, REFUSED]);
+        // The port and the realm do not change the warnings.
+        let odd = Challenge::new("example.com", 80, "", true, false);
+        assert!(warnings(&odd).is_empty());
     }
 }
