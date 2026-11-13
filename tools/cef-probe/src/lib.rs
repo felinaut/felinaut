@@ -9,6 +9,9 @@ pub mod audio;
 #[path = "../../../src/page/cef.rs"]
 pub mod cef_page;
 #[cfg(feature = "runtime")]
+#[path = "../../../src/page/cef/protocol.rs"]
+pub mod evaluation_protocol;
+#[cfg(feature = "runtime")]
 #[path = "../../../src/load_error.rs"]
 pub mod load_error;
 #[cfg(feature = "runtime")]

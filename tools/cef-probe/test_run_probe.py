@@ -763,7 +763,10 @@ class RunnerTests(unittest.TestCase):
                     response = connection.getresponse()
                     self.assertEqual(response.status, status)
                     self.assertEqual(
-                        response.getheader("Content-Security-Policy"), runner.CSP
+                        response.getheader("Content-Security-Policy"),
+                        runner.EVALUATION_CSP
+                        if status == 200 and path == "/?contract=second"
+                        else runner.CSP,
                     )
                     self.assertEqual(response.getheader("Cache-Control"), "no-store")
                     body = response.read()

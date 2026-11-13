@@ -1,6 +1,6 @@
 # macOS optional engines: CEF and Gecko feasibility
 
-**Research checked: 12 November 2026; native visual evidence updated 13 November 2026. Status: standalone native CEF/GPUI functional, static-fixture visual and scoped helper policy/syscall/exit checks pass; no browser adapter. Minimal same-window WKWebView/CEF coexistence also passes; production backend/security integration and per-tab selection remain pending.**
+**Research checked: 12 November 2026; native visual evidence updated 13 November 2026. Status: standalone native CEF/GPUI functional, static-fixture visual and scoped helper policy/syscall/exit checks pass; an initial shared PageBackend adapter passes native navigation/presentation/evaluation checks inside the harness only. Minimal same-window WKWebView/CEF coexistence also passes; production backend/security integration and per-tab selection remain pending.**
 
 Scope: build-time optional engines, eventually selectable at runtime **per tab in one GPUI window**, starting with native macOS arm64. This report adds no dependencies, Cargo features, adapter, launcher, preference, or selector. Build-request gates and the existing Cocoa choices are documented separately in [engine builds](engine-builds.md); neither enables an alternate adapter. Read alongside [the backend contract](engine-backends.md), [porting plan](porting-plan.md), [GPUI controls](gpui-controls.md), and [macOS status](macos-backend-status.md).
 
@@ -25,6 +25,10 @@ A later opt-in runtime checkpoint uses the published `cef`/`cef-dll-sys` **156.4
 The opt-in standalone `coexistence` feature now pairs Wry **0.57.1** system WKWebView with the pinned CEF runtime in **one GPUI window**. Native checks pass both document loads, same-origin cookie/localStorage separation, scoped native input WebKit → CEF → WebKit, retained CEF input, two 600-CSS-pixel resized viewports and WebKit detach before CEF shutdown. The CEF canary/policy/exit audit remains required and passes. The [actual reviewed screenshot](screenshots/macos-webkit-cef-coexistence.png) and [reproducible runner command/limitations](../tools/cef-probe/README.md#same-window-system-webkit--cef-probe) record this macOS 27 arm64 result. Normal hardware keyboard routing, IME, accessibility and production browser features are not established by the fixed fixture.
 
 This resolves the minimal same-host coexistence feasibility question, not the main browser's adapter or per-tab picker. `engine-cef` remains blocked; system/upstream Cocoa WebKit still need separate hosts because their own framework identity conflict is unrelated to CEF.
+
+## Shared-contract adapter checkpoint
+
+The [initial CEF PageBackend and renderer-result checkpoint](../tools/cef-probe/README.md#shared-pagebackend-checkpoint) now runs the root browser's shared API source against real CEF in the standalone host. Navigation/history/reload, logical presentation/focus, document scopes, JSON values/errors/limits and reload/page-drop cancellation pass, as does the WebKit+CEF coexistence regression. Evaluation is native-only, context-scoped and bounded, but captured indirect eval respects site CSP; CSP-blocked evaluation remains a parity gap. Root runtime/factory integration, production multi-page/profile/security work and per-tab selection are still missing. The research/API mapping below is historical evidence, not an assertion that these production gates are complete.
 
 ## 1. Evidence boundary and exact pins
 

@@ -45,7 +45,10 @@ MARKERS = (
     "READY: real CEF loopback document loaded and JavaScript executed",
     "PASS: native text input and trusted pointer click",
     "PASS: CEF viewport followed the GPUI/native container resize",
+    "PASS: CEF PageBackend reports CSP-blocked evaluation without bypassing site policy",
     "PASS: CEF PageBackend navigation, history, reload, rejected URL, focus, visibility and document scopes",
+    "PASS: CEF PageBackend JSON values, script errors, captured serializer, conversion hazards and byte limits",
+    "PASS: CEF PageBackend cancels accepted scripts on reload and page drop, then rebinds",
     "PASS: CEF OnBeforeClose, callback release, pump cancellation and shutdown before GPUI termination",
     "PASS: original GPUI shutdown callback after CEF shutdown",
 )
@@ -64,6 +67,12 @@ CSP = (
     "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
     "connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; "
     "form-action 'none'; base-uri 'none'; object-src 'none'"
+)
+
+# Only the dedicated result-conformance document opts into indirect evaluation.
+# The original and coexistence fixtures retain strict CSP; no engine bypass flag.
+EVALUATION_CSP = CSP.replace(
+    "script-src 'unsafe-inline';", "script-src 'unsafe-inline' 'unsafe-eval';"
 )
 
 
@@ -326,12 +335,14 @@ def fixture_server(coexistence=False):
         def log_message(self, format, *args):
             pass
 
-        def reply(self, status, content=b"", content_type="text/plain; charset=utf-8"):
+        def reply(
+            self, status, content=b"", content_type="text/plain; charset=utf-8", csp=CSP
+        ):
             self.send_response(status)
             for key, value in (
                 ("Content-Type", content_type),
                 ("Content-Length", str(len(content))),
-                ("Content-Security-Policy", CSP),
+                ("Content-Security-Policy", csp),
                 ("Cache-Control", "no-store"),
                 ("X-Content-Type-Options", "nosniff"),
                 ("Referrer-Policy", "no-referrer"),
@@ -347,7 +358,12 @@ def fixture_server(coexistence=False):
             if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
                 self.reply(403)
             elif self.path in routes:
-                self.reply(200, body, "text/html; charset=utf-8")
+                csp = (
+                    EVALUATION_CSP
+                    if not coexistence and self.path == "/?contract=second"
+                    else CSP
+                )
+                self.reply(200, body, "text/html; charset=utf-8", csp=csp)
             elif self.path == "/favicon.ico":
                 self.reply(204)
             else:

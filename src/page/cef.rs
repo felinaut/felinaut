@@ -21,6 +21,10 @@ use crate::{
     page::{BackendInfo, Event, PageBackend, RequestScope, ScriptCallback, ScriptRequests},
 };
 
+#[path = "cef/evaluation.rs"]
+pub mod evaluation;
+use evaluation::Evaluation;
+
 const EVENT_LIMIT: usize = 256;
 const TEXT_LIMIT: usize = 16 * 1024;
 
@@ -48,8 +52,13 @@ struct Shared {
 }
 
 impl Notifications {
+    pub fn script_requests(&self) -> ScriptRequests {
+        self.shared.requests.clone()
+    }
+
     pub fn push(&self, event: Event) {
-        if self.shared.closed.load(Ordering::Acquire) {
+        if self.shared.closed.load(Ordering::Acquire) || !self.shared.requests.scope().is_current()
+        {
             return;
         }
         if matches!(event, Event::Started(_)) {
@@ -135,6 +144,7 @@ pub struct CefPage {
     presentation: Rc<dyn Presentation>,
     navigation_allowed: Box<dyn Fn(&str) -> bool>,
     document: RefCell<Option<(String, String)>>,
+    evaluation: Evaluation,
 }
 
 impl CefPage {
@@ -145,12 +155,14 @@ impl CefPage {
         browser: Browser,
         info: BackendInfo,
         notifications: Notifications,
+        evaluation: Evaluation,
         presentation: Rc<dyn Presentation>,
         navigation_allowed: impl Fn(&str) -> bool + 'static,
     ) -> Result<Self, String> {
         if cef::currently_on(cef::ThreadId::UI) == 0 || browser.is_valid() == 0 {
             return Err("CEF page attachment requires a live browser on its UI thread".into());
         }
+        evaluation.attach(&browser)?;
         Ok(Self {
             browser,
             info,
@@ -158,6 +170,7 @@ impl CefPage {
             presentation,
             navigation_allowed: Box::new(navigation_allowed),
             document: RefCell::new(None),
+            evaluation,
         })
     }
 
@@ -175,6 +188,7 @@ impl CefPage {
     fn changing_document(&self) -> Result<(), String> {
         self.ready()?;
         self.notifications.document_changed();
+        self.evaluation.invalidate();
         Ok(())
     }
 }
@@ -264,7 +278,10 @@ impl PageBackend for CefPage {
         self.presentation.set_bounds(bounds)
     }
     fn drain_events(&self) -> Vec<Event> {
-        self.notifications.shared.requests.expire(Instant::now());
+        self.evaluation.expire(Instant::now());
+        if self.ready().is_ok() {
+            self.evaluation.reconcile(&self.browser);
+        }
         let events = self.notifications.drain();
         for event in &events {
             match event {
@@ -284,9 +301,9 @@ impl PageBackend for CefPage {
         }
         events
     }
-    fn evaluate(&self, _script: &str, _callback: ScriptCallback) -> Result<(), String> {
+    fn evaluate(&self, script: &str, callback: ScriptCallback) -> Result<(), String> {
         self.ready()?;
-        Err("CEF renderer evaluation transport is not attached".into())
+        self.evaluation.evaluate(&self.browser, script, callback)
     }
     fn request_scope(&self) -> Option<RequestScope> {
         self.ready().ok()?;
@@ -299,6 +316,7 @@ impl Drop for CefPage {
         // Do not free the child/parent here: CEF close is asynchronous. Its runtime
         // owner retains those resources and dispatches close outside this drop.
         self.notifications.closed();
+        self.evaluation.close();
     }
 }
 

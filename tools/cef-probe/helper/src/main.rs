@@ -2,7 +2,7 @@
 compile_error!("The CEF probe helper requires native macOS arm64 validation");
 
 mod evaluation;
-#[path = "../../src/evaluation_protocol.rs"]
+#[path = "../../../../src/page/cef/protocol.rs"]
 mod evaluation_protocol;
 
 use cef::*;

@@ -1,11 +1,13 @@
 //! Trusted-loopback native prototype, deliberately separate from the browser adapter.
 #[path = "runtime_policy.rs"]
 mod policy;
+#[path = "script_contract.rs"]
+mod script_contract;
 
 use cef::*;
 use felinaut_cef_probe::{
     self as native,
-    cef_page::{CefPage, Notifications, Presentation},
+    cef_page::{CefPage, Notifications, Presentation, evaluation::Evaluation},
     page::{self},
     pump,
 };
@@ -128,17 +130,21 @@ wrap_browser_process_handler! {
     }
 }
 wrap_client! {
-    struct ProbeClient { events: SyncSender<Event>, target: url::Url, notifications: Notifications }
+    struct ProbeClient { events: SyncSender<Event>, target: url::Url, notifications: Notifications, evaluation: Evaluation }
     impl Client {
-        fn life_span_handler(&self) -> Option<LifeSpanHandler> { Some(ProbeLife::new(self.events.clone(), self.notifications.clone())) }
-        fn load_handler(&self) -> Option<LoadHandler> { Some(ProbeLoad::new(self.events.clone(), self.notifications.clone())) }
+        fn life_span_handler(&self) -> Option<LifeSpanHandler> { Some(ProbeLife::new(self.events.clone(), self.notifications.clone(), self.evaluation.clone())) }
+        fn load_handler(&self) -> Option<LoadHandler> { Some(ProbeLoad::new(self.events.clone(), self.notifications.clone(), self.evaluation.clone())) }
         fn display_handler(&self) -> Option<DisplayHandler> { Some(ProbeDisplay::new(self.events.clone(), self.notifications.clone())) }
         fn request_handler(&self) -> Option<RequestHandler> { Some(ProbeRequest::new(self.events.clone(), self.target.clone())) }
         fn download_handler(&self) -> Option<DownloadHandler> { Some(ProbeDownload::new()) }
+        fn frame_handler(&self) -> Option<FrameHandler> { Some(ProbeFrames::new(self.notifications.clone(), self.evaluation.clone())) }
+        fn on_process_message_received(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, source: ProcessId, message: Option<&mut ProcessMessage>) -> i32 {
+            self.evaluation.receive(browser, frame, source, message)
+        }
     }
 }
 wrap_life_span_handler! {
-    struct ProbeLife { events: SyncSender<Event>, notifications: Notifications }
+    struct ProbeLife { events: SyncSender<Event>, notifications: Notifications, evaluation: Evaluation }
     impl LifeSpanHandler {
         fn on_after_created(&self, value: Option<&mut Browser>) {
             if let Some(value) = value {
@@ -154,6 +160,7 @@ wrap_life_span_handler! {
         }
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             self.notifications.closed();
+            self.evaluation.close();
             BROWSER.with_borrow_mut(|slot| { slot.take(); });
             emit(&self.events, Event::Closed);
         }
@@ -161,21 +168,38 @@ wrap_life_span_handler! {
     }
 }
 wrap_load_handler! {
-    struct ProbeLoad { events: SyncSender<Event>, notifications: Notifications }
+    struct ProbeLoad { events: SyncSender<Event>, notifications: Notifications, evaluation: Evaluation }
     impl LoadHandler {
         fn on_load_start(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, _transition: TransitionType) {
             if let Some(frame) = frame && frame.is_main() != 0 {
                 self.notifications.push(page::Event::Started(CefString::from(&frame.url()).to_string()));
+                self.evaluation.invalidate();
             }
         }
-        fn on_load_end(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, status: i32) {
+        fn on_load_end(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, status: i32) {
             if let Some(frame) = frame && frame.is_main() != 0 {
                 self.notifications.push(page::Event::Finished(CefString::from(&frame.url()).to_string()));
+                if let Some(browser) = browser { self.evaluation.reconcile(browser); }
                 emit(&self.events, Event::Loaded(status));
             }
         }
         fn on_load_error(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, error: Errorcode, _text: Option<&CefString>, _url: Option<&CefString>) {
             if error != Errorcode::ABORTED && frame.is_some_and(|frame| frame.is_main() != 0) { emit(&self.events, Event::Failed("Main-frame load failed")); }
+        }
+    }
+}
+wrap_frame_handler! {
+    struct ProbeFrames { notifications: Notifications, evaluation: Evaluation }
+    impl FrameHandler {
+        fn on_frame_detached(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>) {
+            if frame.is_some_and(|frame| frame.is_main() != 0) {
+                self.notifications.document_changed();
+                self.evaluation.invalidate();
+            }
+        }
+        fn on_main_frame_changed(&self, _browser: Option<&mut Browser>, _old: Option<&mut Frame>, _new: Option<&mut Frame>) {
+            self.notifications.document_changed();
+            self.evaluation.invalidate();
         }
     }
 }
@@ -477,6 +501,7 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
     let cef: CefOwner = StdRc::new(RefCell::new(None));
     let window_cef = cef.clone();
     let notifications = Notifications::default();
+    let evaluation = Evaluation::new(notifications.script_requests());
     let parent = StdRc::new(Cell::new(std::ptr::null_mut()));
     let container = parent.clone();
     #[cfg(feature = "coexistence")]
@@ -566,7 +591,9 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
             let mut action_at = Instant::now();
             let mut contract_stage = 0;
             let mut contract_finished = false;
-
+            let mut script_checks: Option<script_contract::Scripts> = None;
+            let mut cancellation_checks: Option<script_contract::Scripts> = None;
+            let mut close_checks: Option<script_contract::Scripts> = None;
             let mut failure = None;
             #[cfg(feature = "coexistence")]
             let mut coex = crate::coexistence_policy::Probe::new();
@@ -598,6 +625,7 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
                                 browser().expect("OnAfterCreated browser"),
                                 info,
                                 notifications.clone(),
+                                evaluation.clone(),
                                 StdRc::new(NativePresentation),
                                 move |url| policy::allows_navigation(url, &target),
                             ) {
@@ -697,7 +725,7 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
                         },
                     );
                     let mut client =
-                        ProbeClient::new(events.clone(), target.clone(), notifications.clone());
+                        ProbeClient::new(events.clone(), target.clone(), notifications.clone(), evaluation.clone());
                     let mut context = request_context_create_context(
                         Some(&RequestContextSettings::default()),
                         None,
@@ -843,8 +871,17 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
                         let mut second = target.clone();
                         second.set_query(Some("contract=second"));
                         let result: Result<(), String> = (|| {
+                            let scripts_finished = script_checks.as_mut().map(|checks| checks.finished()).transpose()?.unwrap_or(false);
+                            let cancellation_finished = cancellation_checks.as_mut().map(|checks| checks.finished()).transpose()?.unwrap_or(false);
                             match contract_stage {
                                 0 => {
+                                    if script_checks.is_none() {
+                                        script_checks = script_contract::Scripts::blocked(&page)?;
+                                        return Ok(());
+                                    }
+                                    if !scripts_finished { return Ok(()); }
+                                    println!("PASS: CEF PageBackend reports CSP-blocked evaluation without bypassing site policy");
+                                    script_checks.take();
                                     if page.backend_info().id != "cef" || page.is_loading() || page.document().is_none() || page.can_go_back() || page.can_go_forward() {
                                         return Err("Invalid initial CEF PageBackend state".into());
                                     }
@@ -890,6 +927,30 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
                                     println!("PASS: CEF PageBackend navigation, history, reload, rejected URL, focus, visibility and document scopes");
                                     contract_stage = 5;
                                 }
+                                5 => {
+                                    if let Some(checks) = script_contract::Scripts::start(&page)? {
+                                        script_checks = Some(checks);
+                                        contract_stage = 6;
+                                    }
+                                }
+                                6 if scripts_finished => {
+                                    println!("PASS: CEF PageBackend JSON values, script errors, captured serializer, conversion hazards and byte limits");
+                                    cancellation_checks = Some(script_contract::Scripts::cancellation(&page, page::ScriptError::DocumentChanged)?);
+                                    page.reload()?;
+                                    contract_finished = false;
+                                    contract_stage = 7;
+                                }
+                                7 if contract_finished && !page.is_loading() && cancellation_finished => {
+                                    if let Some(checks) = script_contract::Scripts::ready(&page)? {
+                                        script_checks = Some(checks);
+                                        contract_stage = 8;
+                                    }
+                                }
+                                8 if scripts_finished => {
+                                    close_checks = Some(script_contract::Scripts::cancellation(&page, page::ScriptError::PageClosed)?);
+                                    cef.borrow_mut().take();
+                                    contract_stage = 9;
+                                }
                                 _ => {}
                             }
                             Ok(())
@@ -898,7 +959,14 @@ fn run_with_mode(coexistence: bool) -> ExitCode {
                             eprintln!("CEF contract check failed: {error}");
                             failure = Some("CEF PageBackend conformance failed");
                         }
-                        if contract_stage == 5 {
+                        if contract_stage == 9 {
+                            // Last page owner drops before the runtime's separately retained
+                            // browser/native parent starts its asynchronous CEF close.
+                            drop(page);
+                            match close_checks.as_mut().expect("close cancellation check").finished() {
+                                Ok(true) => println!("PASS: CEF PageBackend cancels accepted scripts on reload and page drop, then rebinds"),
+                                _ => failure = Some("CEF page-drop cancellation failed"),
+                            }
                             cx.update(|cx| cx.quit()).unwrap();
                             stage = 7;
                         }

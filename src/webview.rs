@@ -290,7 +290,7 @@ impl NativePage {
             .script_requests
             .prepare(std::time::Instant::now(), callback)
             .map_err(|error| error.to_string())?;
-        let completion = dispatch.completion();
+        let completion: crate::page::ScriptCompletion = dispatch.completion();
         let result = self
             .webview
             .evaluate_script_with_callback(script, move |value| {

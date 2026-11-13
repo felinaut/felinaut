@@ -13,7 +13,7 @@ use crate::load_error::LoadFailure;
 
 #[path = "requests.rs"]
 mod requests;
-pub use requests::{RequestScope, ScriptError, ScriptRequests};
+pub use requests::{Completion as ScriptCompletion, RequestScope, ScriptError, ScriptRequests};
 
 pub type Page = Rc<dyn PageBackend>;
 pub type ScriptResult = Result<String, ScriptError>;
