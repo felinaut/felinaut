@@ -126,6 +126,12 @@ Validation passed: tool/default/coexistence formatting and Clippy with warnings 
 
 Remaining: production CEF page/event/capability adapter, generation/cancellation and permission handling, normal chrome/content keyboard routing, IME/accessibility, media/downloads, renderer crash/recovery, durable profiles/real Keychain, production packaging/security updates and per-tab engine selection/reload policy. The browser's `engine-cef` gate remains blocked. The system/upstream Cocoa WebKit process-exclusivity constraint is unchanged: this probe pairs **system WebKit with Chromium/CEF**, not two Cocoa WebKit builds.
 
+## Renderer evaluation transport
+
+The helper now implements a native-only, main-frame evaluation transport in `helper/src/evaluation.rs`, with the dependency-free wire contract in `src/evaluation_protocol.rs`. Bindings refer to retained engine contexts and actual native frame/browser identities, not URLs or page JSON. Source/results are limited to 1 MiB, errors to 4 KiB, and retained contexts to 64. Context release removes V8 references. No JavaScript global, query handler, filesystem or host-command API is installed.
+
+The helper captures the context's JSON serializer before page scripts run, returns explicit evaluation/serialization errors and rejects duplicate request IDs. Evaluation and serialization cannot be interrupted by this CEF API; deadlines cancel delivery, not execution or side effects. **20 helper unit tests and all-target Clippy pass.** The ordinary native input/resize/shutdown probe also passes with this helper, preserving the canary and helper-exit audit. Browser-side result delivery and live evaluation conformance are a separate checkpoint; these unit tests do not prove that integration.
+
 ## Real CEF runtime probe
 
 After explicit SDK preparation:

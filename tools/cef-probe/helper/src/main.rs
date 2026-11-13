@@ -1,6 +1,10 @@
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 compile_error!("The CEF probe helper requires native macOS arm64 validation");
 
+mod evaluation;
+#[path = "../../src/evaluation_protocol.rs"]
+mod evaluation_protocol;
+
 use cef::*;
 use std::{
     ffi::OsString,
@@ -79,17 +83,30 @@ fn audit_role(arguments: &[OsString]) -> Result<AuditRole, String> {
 
 // This callback is native-only. No filesystem operation is exposed to JavaScript.
 wrap_app! {
-    struct ProbeApp { canary: PathBuf }
+    struct ProbeApp { canary: PathBuf, evaluation: evaluation::Bridge }
     impl App {
         fn render_process_handler(&self) -> Option<RenderProcessHandler> {
-            Some(ProbeRenderer::new(self.canary.clone()))
+            evaluation::contain(|| Some(ProbeRenderer::new(self.canary.clone(), self.evaluation.clone())))
         }
     }
 }
 wrap_render_process_handler! {
-    struct ProbeRenderer { canary: PathBuf }
+    struct ProbeRenderer { canary: PathBuf, evaluation: evaluation::Bridge }
     impl RenderProcessHandler {
+        fn on_context_created(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, context: Option<&mut V8Context>) {
+            self.evaluation.context_created(browser, frame, context);
+        }
+        fn on_context_released(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, context: Option<&mut V8Context>) {
+            self.evaluation.context_released(frame, context);
+        }
+        fn on_browser_destroyed(&self, browser: Option<&mut Browser>) {
+            self.evaluation.browser_destroyed(browser);
+        }
+        fn on_process_message_received(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, source_process: ProcessId, message: Option<&mut ProcessMessage>) -> i32 {
+            self.evaluation.on_message(browser, frame, source_process, message)
+        }
         fn on_web_kit_initialized(&self) {
+            evaluation::contain(|| {
             let path = self.canary.clone();
             // Start only after sandbox initialization; no UI thread waits on disk I/O.
             std::thread::spawn(move || {
@@ -101,6 +118,7 @@ wrap_render_process_handler! {
                     Err(error) => ("error", error.raw_os_error().unwrap_or(-1)),
                 };
                 audit_record(format!("CEF_RENDERER_CANARY pid={} outcome={outcome} errno={error}", std::process::id()));
+            });
             });
         }
     }
@@ -295,7 +313,7 @@ fn run() -> Result<i32, String> {
     if cef::api_hash(cef::sys::CEF_API_VERSION_LAST, 0).is_null() {
         return Err("CEF rejected the binding's last supported API version".into());
     }
-    let mut app = ProbeApp::new(canary);
+    let mut app = ProbeApp::new(canary, evaluation::Bridge::default());
     let code = cef::execute_process(
         Some(args.as_main_args()),
         Some(&mut app),
