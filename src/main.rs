@@ -4023,6 +4023,7 @@ impl Render for Browser {
             .on_action(cx.listener(Self::new_live_folder))
             .on_action(cx.listener(Self::show_downloads))
             .on_action(cx.listener(Self::reset_site_permissions))
+            .on_action(cx.listener(Self::focus_permission_prompt))
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(
@@ -4270,6 +4271,10 @@ fn main() {
                 items: [
                     MenuItem::action("Toggle Sidebar", ToggleSidebar),
                     MenuItem::action("Downloads", ShowDownloads),
+                    MenuItem::action(
+                        "Answer Permission Request",
+                        permission_ui::FocusPermissionPrompt,
+                    ),
                     MenuItem::action(
                         "Reset Site Permissions",
                         permission_ui::ResetSitePermissions,

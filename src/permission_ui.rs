@@ -3,12 +3,13 @@
 //!
 //! The prompt is a bar between the toolbar and the page. GPUI content drawn over the page
 //! would sit behind Wry's child NSView, so the bar takes a row of its own and the page moves
-//! down. No key grants by accident: the bar starts with no choice selected.
+//! down. No key grants by accident: the bar never takes the keys on its own, it starts with
+//! no choice selected, and an allow choice counts only some time after the last key press.
 
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Div, Focusable, FontWeight, KeyBinding, Stateful, Window, actions, div,
+    App, Context, Div, FontWeight, KeyBinding, MouseButton, Stateful, Window, actions, div,
     prelude::*, px, rgb,
 };
 
@@ -25,13 +26,15 @@ actions!(
         NextChoice,
         PreviousChoice,
         ConfirmChoice,
+        FocusPermissionPrompt,
         ResetSitePermissions
     ]
 );
 
 const CONTEXT: &str = "FelinautPermission";
 /// A new bar moves the page down, under a pointer that was about to click. An allow choice
-/// counts only after this time, so such a click cannot allow by accident.
+/// counts only after this time, so such a click cannot allow by accident. Each key press on
+/// the bar starts the time again, so a fast run of keys cannot allow either.
 const ALLOW_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,28 +64,58 @@ impl Choice {
         }
     }
 
-    /// Whether a click or key counts when the prompt has been on display for `age`.
+    /// Whether a click or key counts, `age` after the prompt appeared or got its last key.
     fn counts(self, age: Duration) -> bool {
         !self.outcome().0 || age >= ALLOW_DELAY
     }
 }
 
 /// The choice that Tab or an arrow key selects next. The first key selects the safest end.
+/// A step back from the safest end stays there: it never wraps to the allow choices.
 fn step(selected: Option<usize>, forward: bool) -> usize {
-    let last = CHOICES.len() - 1;
     match (selected, forward) {
         (None, _) => 0,
         (Some(index), true) => (index + 1) % CHOICES.len(),
-        (Some(0), false) => last,
-        (Some(index), false) => index - 1,
+        (Some(index), false) => index.saturating_sub(1),
+    }
+}
+
+/// The choice that the keys selected, and the time from which an allow choice counts.
+struct Selection {
+    index: Option<usize>,
+    since: Instant,
+}
+
+impl Selection {
+    fn new(now: Instant) -> Self {
+        Self {
+            index: None,
+            since: now,
+        }
+    }
+
+    /// Tab or an arrow key. The wait for an allow choice starts again.
+    fn step(&mut self, forward: bool, now: Instant) {
+        self.index = Some(step(self.index, forward));
+        self.since = now;
+    }
+
+    /// Return: the selected choice, if it counts now. A Return that comes too early clears
+    /// the selection and starts the wait again, so a second Return cannot confirm it.
+    fn confirm(&mut self, now: Instant) -> Option<Choice> {
+        let choice = CHOICES[self.index?].0;
+        if choice.counts(now.duration_since(self.since)) {
+            return Some(choice);
+        }
+        *self = Self::new(now);
+        None
     }
 }
 
 /// The request on display and the choice that Return confirms.
 pub struct Prompt {
     request: native::Request,
-    selected: Option<usize>,
-    shown: Instant,
+    selection: Selection,
 }
 
 pub fn init(cx: &mut App) {
@@ -93,8 +126,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("right", NextChoice, context),
         KeyBinding::new("shift-tab", PreviousChoice, context),
         KeyBinding::new("left", PreviousChoice, context),
+        // Space is not here: pages use it a lot, and only Return confirms.
         KeyBinding::new("enter", ConfirmChoice, context),
-        KeyBinding::new("space", ConfirmChoice, context),
+        KeyBinding::new("cmd-shift-p", FocusPermissionPrompt, None),
     ]);
 }
 
@@ -147,26 +181,19 @@ impl Browser {
             .map(|prompt| prompt.request.id);
         if next.as_ref().map(|(request, _)| request.id) != current {
             changed = true;
-            let had_focus = self.permission_focus.is_focused(window);
-            match &next {
-                // Keys go to the bar, unless the user types an address.
-                Some((_, page)) if !self.address.read(cx).focus_handle(cx).is_focused(window) => {
-                    let _ = page.focus_parent();
-                    window.focus(&self.permission_focus);
+            // A new bar never takes the keys: they stay with the page, so a key that was
+            // meant for the page cannot answer. The user moves to the bar with a click or
+            // with ⌘⇧P. The keys return to the page when the bar goes away.
+            if next.is_none() && self.permission_focus.is_focused(window) {
+                window.focus(&self.focus);
+                let tab = &self.tabs[self.active];
+                if let Some(page) = tab.page.as_ref().filter(|_| !tab.home) {
+                    let _ = page.focus();
                 }
-                None if had_focus => {
-                    window.focus(&self.focus);
-                    let tab = &self.tabs[self.active];
-                    if let Some(page) = tab.page.as_ref().filter(|_| !tab.home) {
-                        let _ = page.focus();
-                    }
-                }
-                _ => {}
             }
             self.permission_prompt = next.map(|(request, _)| Prompt {
                 request,
-                selected: None,
-                shown: Instant::now(),
+                selection: Selection::new(Instant::now()),
             });
         }
         if let Some((path, contents)) = self.permissions.snapshot_due(Instant::now()) {
@@ -181,13 +208,23 @@ impl Browser {
         changed
     }
 
+    /// A click on a choice, or an agent's answer. An allow choice that comes too early does
+    /// nothing.
     fn choose(&mut self, choice: Choice, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Prompt { request, shown, .. }) = &self.permission_prompt else {
+        let early = self
+            .permission_prompt
+            .as_ref()
+            .is_some_and(|prompt| !choice.counts(prompt.selection.since.elapsed()));
+        if !early {
+            self.decide(choice, window, cx);
+        }
+    }
+
+    /// Answers the request on display.
+    fn decide(&mut self, choice: Choice, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Prompt { request, .. }) = &self.permission_prompt else {
             return;
         };
-        if !choice.counts(shown.elapsed()) {
-            return;
-        }
         let (grant, decision) = choice.outcome();
         if let Some(decision) = decision {
             self.permissions
@@ -200,9 +237,25 @@ impl Browser {
 
     fn step_choice(&mut self, forward: bool, cx: &mut Context<Self>) {
         if let Some(prompt) = &mut self.permission_prompt {
-            prompt.selected = Some(step(prompt.selected, forward));
+            prompt.selection.step(forward, Instant::now());
             cx.notify();
         }
+    }
+
+    /// ⌘⇧P or a click on the bar: the keys go to the bar. Only the user moves them there.
+    pub(crate) fn focus_permission_prompt(
+        &mut self,
+        _: &FocusPermissionPrompt,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        if self.permission_prompt.is_none() {
+            return;
+        }
+        if let Some(page) = &self.tabs[self.active].page {
+            let _ = page.focus_parent();
+        }
+        window.focus(&self.permission_focus);
     }
 
     /// The prompt for the request on display, if there is one.
@@ -216,7 +269,7 @@ impl Browser {
             .into_iter()
             .enumerate()
             .map(|(index, (choice, label))| {
-                let selected = prompt.selected == Some(index);
+                let selected = prompt.selection.index == Some(index);
                 div()
                     .id(("permission-choice", index))
                     .h(px(28.))
@@ -251,11 +304,22 @@ impl Browser {
                     cx.listener(|this, _: &PreviousChoice, _, cx| this.step_choice(false, cx)),
                 )
                 .on_action(cx.listener(|this, _: &ConfirmChoice, window, cx| {
-                    let selected = this.permission_prompt.as_ref().and_then(|p| p.selected);
-                    if let Some(index) = selected {
-                        this.choose(CHOICES[index].0, window, cx);
+                    let confirmed = this
+                        .permission_prompt
+                        .as_mut()
+                        .and_then(|prompt| prompt.selection.confirm(Instant::now()));
+                    match confirmed {
+                        Some(choice) => this.decide(choice, window, cx),
+                        // An early Return cleared the selection: show that.
+                        None => cx.notify(),
                     }
                 }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.focus_permission_prompt(&FocusPermissionPrompt, window, cx);
+                    }),
+                )
                 .h(px(52.))
                 .flex_shrink_0()
                 .px_4()
@@ -278,7 +342,7 @@ impl Browser {
                                 .child(permissions::display_origin(&prompt.request.origin)),
                         )
                         .child(line().text_size(px(11.)).text_color(rgb(p.muted)).child(format!(
-                            "wants to use your {}  ·  ⇥ choose  ·  ↩ confirm  ·  Esc not now",
+                            "wants to use your {}  ·  ⌘⇧P for keys: ⇥ choose  ·  ↩ confirm  ·  Esc not now",
                             permissions::describe(prompt.request.kinds)
                         ))),
                 )
@@ -418,8 +482,8 @@ impl Browser {
 
 #[cfg(test)]
 mod tests {
-    use super::{ALLOW_DELAY, CHOICES, Choice, Decision, step};
-    use std::time::Duration;
+    use super::{ALLOW_DELAY, CHOICES, Choice, Decision, Selection, step};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn only_the_allow_choices_grant_and_only_the_lasting_ones_are_stored() {
@@ -441,13 +505,75 @@ mod tests {
     }
 
     #[test]
-    fn keys_start_at_the_safe_end_and_wrap() {
+    fn keys_start_at_the_safe_end_and_never_wrap_back_to_an_allow_choice() {
         // No choice is selected at first, so Return confirms nothing.
         assert_eq!(CHOICES[step(None, true)].0, Choice::NotNow);
         assert_eq!(CHOICES[step(None, false)].0, Choice::NotNow);
         assert_eq!(step(Some(0), true), 1);
-        assert_eq!(step(Some(3), true), 0);
-        assert_eq!(step(Some(0), false), 3);
         assert_eq!(step(Some(2), false), 1);
+        // Forward from Always goes to the safe end. Back from the safe end stays there.
+        assert_eq!(CHOICES[step(Some(3), true)].0, Choice::NotNow);
+        assert_eq!(CHOICES[step(Some(0), false)].0, Choice::NotNow);
+        let mut selected = None;
+        for _ in 0..10 {
+            selected = Some(step(selected, false));
+            assert_eq!(selected, Some(0));
+        }
+    }
+
+    #[test]
+    fn keys_meant_for_the_page_never_allow() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let late = 10 * ALLOW_DELAY.as_millis() as u64;
+
+        // Return alone confirms nothing, at any time.
+        let mut keys = Selection::new(start);
+        assert_eq!(keys.confirm(at(late)), None);
+
+        // ← ← and a confirm: the selection is the safe end, so the answer is a refusal.
+        let mut keys = Selection::new(start);
+        keys.step(false, at(late));
+        keys.step(false, at(late + 1));
+        assert_eq!(keys.confirm(at(late + 2)), Some(Choice::NotNow));
+
+        // A fast run of keys that ends on an allow choice: the confirm comes too early. It
+        // clears the selection, so one more confirm does nothing either.
+        for steps in [3, 4] {
+            let mut keys = Selection::new(start);
+            for _ in 0..steps {
+                keys.step(true, at(late));
+            }
+            assert!(CHOICES[keys.index.unwrap()].0.outcome().0);
+            assert_eq!(keys.confirm(at(late + 499)), None);
+            assert_eq!(keys.index, None);
+            assert_eq!(keys.confirm(at(late + 5000)), None);
+        }
+
+        // Each key press starts the wait again, also when the bar is old.
+        let mut keys = Selection::new(start);
+        keys.step(true, at(0));
+        keys.step(true, at(0));
+        keys.step(true, at(late));
+        assert_eq!(keys.confirm(at(late + 499)), None);
+        // An early confirm starts the wait again too: it also holds back a click.
+        assert_eq!(keys.since, at(late + 499));
+    }
+
+    #[test]
+    fn a_selected_allow_choice_counts_after_the_wait() {
+        let start = Instant::now();
+        let mut keys = Selection::new(start);
+        for _ in 0..3 {
+            keys.step(true, start);
+        }
+        assert_eq!(keys.confirm(start + ALLOW_DELAY), Some(Choice::Once));
+        keys.step(true, start);
+        assert_eq!(keys.confirm(start + ALLOW_DELAY), Some(Choice::Always));
+        // The refusals count at once.
+        let mut keys = Selection::new(start);
+        keys.step(true, start);
+        keys.step(true, start);
+        assert_eq!(keys.confirm(start), Some(Choice::Never));
     }
 }

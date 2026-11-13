@@ -192,6 +192,7 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | `⌘⇧H`            | Home                                                            |
 | `⌘⇧M`            | Mute / unmute active tab                                        |
 | `⌘⇧J`            | Show / hide the downloads list                                  |
+| `⌘⇧P`            | Move the keys to the camera or microphone request               |
 | `⌘S`             | Show / hide the tab sidebar (remembered)                        |
 | `⌘D`             | Pin / unpin active tab                                          |
 | `⌘1`–`⌘8` / `⌘9` | Go to tab 1–8 / last tab                                        |
@@ -281,7 +282,7 @@ Limitations: there is no pause or resume, no "ask where to save", no per-site fo
 A site gets the camera or the microphone only after you allow it. When a page asks, a bar appears between the toolbar and the page. It names the site that asks (scheme, host and port; HTTPS is implied and a long name keeps its end) and what it wants:
 
 - **Not Now** refuses this request. **Never Allow** refuses it and each later request of the site. **Allow Once** allows this request. **Always Allow** allows it and each later request of the site for the same device.
-- Keyboard: the bar takes the keys when it appears, unless you type in the address bar. `Tab` or `→` and `⇧Tab` or `←` select a choice, `↩` or `Space` confirms it, `Esc` is **Not Now**. No choice is selected at first, and an allow choice does not count in the first half second, so a key press or a click that was meant for the page cannot allow anything.
+- Keyboard: the bar never takes the keys on its own, so a key press that was meant for the page cannot answer. Press `⌘⇧P` (**View → Answer Permission Request**) or click the bar to move the keys there. Then `Tab` or `→` and `⇧Tab` or `←` select a choice, `↩` confirms it, `Esc` is **Not Now**. No choice is selected at first, and `←` at **Not Now** stays there. An allow choice does not count in the first half second after the bar appears or after the last key press: a `↩` that comes too early clears the selection. A click that was meant for the page cannot allow anything either.
 - The request is refused when you close the tab or the tab leaves the site. A request of a tab in the background waits until you select that tab.
 - macOS asks one time whether Felinaut itself may use the camera or the microphone. That question comes from macOS, after you allow a site.
 
