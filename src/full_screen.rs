@@ -75,6 +75,24 @@ struct Filled {
     window: isize,
     restore: Frame,
     animate: bool,
+    /// The frame AppKit gave the window once the fill resize ended; `None` while it runs.
+    filled: Option<Frame>,
+}
+
+/// AppKit's frames are whole points or halves; anything more is a move or resize.
+const SAME_FRAME: f64 = 0.5;
+
+impl Frame {
+    fn near(self, other: Frame) -> bool {
+        [
+            self.x - other.x,
+            self.y - other.y,
+            self.width - other.width,
+            self.height - other.height,
+        ]
+        .iter()
+        .all(|difference| difference.abs() <= SAME_FRAME)
+    }
 }
 
 /// The windows that fill their screen without a new Space.
@@ -100,6 +118,7 @@ impl Fills {
                     window: request.window,
                     restore: request.frame,
                     animate: request.animate,
+                    filled: None,
                 });
                 Toggle::Fill {
                     frame: frame.inset(request.safe_area),
@@ -108,6 +127,32 @@ impl Fills {
             }
             _ => Toggle::Native,
         }
+    }
+
+    /// Records the frame a window has once its fill resize ends.
+    pub fn settled(&mut self, window: isize, frame: Frame) {
+        if let Some(index) = self.index(window) {
+            self.windows[index].filled = Some(frame);
+        }
+    }
+
+    /// Forgets a filled window that the user moved, resized or put in native full screen with
+    /// the green button, so the menu bar and Dock come back and the next ⌃⌘F fills again
+    /// rather than jumping to an old frame. True if it forgot the window. Changes during the
+    /// fill resize itself are ignored.
+    pub fn bounds_changed(&mut self, window: isize, frame: Frame, native: bool) -> bool {
+        let Some(index) = self.index(window) else {
+            return false;
+        };
+        let stale = match self.windows[index].filled {
+            _ if native => true,
+            Some(filled) => !filled.near(frame),
+            None => false,
+        };
+        if stale {
+            self.windows.remove(index);
+        }
+        stale
     }
 
     /// Forgets a window that closes; true if it filled its screen.
@@ -171,19 +216,38 @@ mod native {
             }),
             animate,
         };
-        let (frame, animate) = match FILLS.with_borrow_mut(|fills| fills.toggle(request)) {
+        let (target, animate, fill) = match FILLS.with_borrow_mut(|fills| fills.toggle(request)) {
             Toggle::Native => return window.toggle_fullscreen(),
-            Toggle::Fill { frame, animate } | Toggle::Restore { frame, animate } => {
-                (frame, animate)
-            }
+            Toggle::Fill { frame, animate } => (frame, animate, true),
+            Toggle::Restore { frame, animate } => (frame, animate, false),
         };
-        // Resize after this action: AppKit's resize callbacks update the GPUI window.
+        let number = request.window;
+        // Resize after this action: AppKit's resize callbacks update the GPUI window. An
+        // animated resize returns when the animation ends; no borrow is held across it, since
+        // its callbacks reach `bounds_changed`.
         cx.foreground_executor()
             .spawn(async move {
                 present();
-                ns_window.setFrame_display_animate(rect(frame), true, animate);
+                ns_window.setFrame_display_animate(rect(target), true, animate);
+                if fill {
+                    let settled = frame(ns_window.frame());
+                    FILLS.with_borrow_mut(|fills| fills.settled(number, settled));
+                }
             })
             .detach();
+    }
+
+    /// Call when the window moves or resizes: a filled window the user moved, resized or put
+    /// in native full screen no longer fills the screen.
+    pub fn bounds_changed(window: &gpui::Window) {
+        let Some(ns_window) = ns_window(window) else {
+            return;
+        };
+        let (number, now) = (ns_window.windowNumber(), frame(ns_window.frame()));
+        let native = window.is_fullscreen();
+        if FILLS.with_borrow_mut(|fills| fills.bounds_changed(number, now, native)) {
+            present();
+        }
     }
 
     /// Forgets a closing window, bringing back the menu bar and Dock if it filled the screen.
@@ -244,7 +308,7 @@ mod native {
     }
 }
 #[cfg(target_os = "macos")]
-pub use native::{closed, is_filled, toggle};
+pub use native::{bounds_changed, closed, is_filled, toggle};
 
 /// Only native full screen elsewhere.
 #[cfg(not(target_os = "macos"))]
@@ -253,6 +317,8 @@ pub fn toggle(window: &gpui::Window, _: &gpui::App, _: bool, _: bool) {
 }
 #[cfg(not(target_os = "macos"))]
 pub fn closed(_: &gpui::Window) {}
+#[cfg(not(target_os = "macos"))]
+pub fn bounds_changed(_: &gpui::Window) {}
 #[cfg(not(target_os = "macos"))]
 pub fn is_filled(_: &gpui::Window) -> bool {
     false
@@ -288,6 +354,60 @@ mod tests {
             safe_area: Insets::default(),
             animate: true,
         }
+    }
+
+    #[test]
+    fn a_move_or_resize_after_the_fill_forgets_it() {
+        let mut fills = Fills::default();
+        fills.toggle(press(1, window(40.)));
+        // The animated fill resize passes through other frames; they aren't the user's.
+        assert!(!fills.bounds_changed(1, window(200.), false));
+        assert!(fills.is_filled(1));
+        // AppKit may round the frame it gives.
+        let given = Frame {
+            height: 981.5,
+            ..SCREEN
+        };
+        fills.settled(1, given);
+        assert!(!fills.bounds_changed(1, given, false));
+        assert!(!fills.bounds_changed(1, SCREEN, false));
+        // GPUI also reports bounds when another window becomes key; the frame is the same.
+        assert!(!fills.bounds_changed(2, window(500.), false));
+        assert!(fills.is_filled(1) && fills.hides_menu_bar());
+        // A drag by the title bar.
+        let dragged = Frame { x: 80., ..given };
+        assert!(fills.bounds_changed(1, dragged, false));
+        assert!(!fills.is_filled(1) && !fills.hides_menu_bar());
+        assert!(!fills.bounds_changed(1, window(40.), false));
+        // The next ⌃⌘F fills again instead of jumping to the frame from before the drag.
+        assert!(matches!(
+            fills.toggle(press(1, dragged)),
+            Toggle::Fill { .. }
+        ));
+        fills.settled(1, SCREEN);
+        let smaller = Frame {
+            width: 1200.,
+            ..SCREEN
+        };
+        assert!(fills.bounds_changed(1, smaller, false));
+        assert!(!fills.is_filled(1));
+    }
+
+    #[test]
+    fn native_full_screen_on_top_of_fill_forgets_it() {
+        let mut fills = Fills::default();
+        fills.toggle(press(1, window(40.)));
+        fills.toggle(press(2, window(500.)));
+        fills.settled(1, SCREEN);
+        // The green button, before the frame even changes.
+        assert!(fills.bounds_changed(1, SCREEN, true));
+        assert!(!fills.is_filled(1));
+        // Also while the fill resize still runs.
+        assert!(fills.bounds_changed(2, window(500.), true));
+        assert!(!fills.hides_menu_bar());
+        // A settle that comes after the window was forgotten doesn't bring it back.
+        fills.settled(1, SCREEN);
+        assert!(!fills.is_filled(1));
     }
 
     #[test]
