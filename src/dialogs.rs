@@ -137,6 +137,8 @@ pub struct Queue<T> {
     origins: HashMap<String, bool>,
     /// The user started a navigation, and no document has committed since.
     user_navigation: bool,
+    /// The origin of the document that committed last. `None` before the first commit.
+    document: Option<String>,
 }
 
 impl<T> Default for Queue<T> {
@@ -146,6 +148,7 @@ impl<T> Default for Queue<T> {
             next_id: 0,
             origins: HashMap::new(),
             user_navigation: false,
+            document: None,
         }
     }
 }
@@ -222,11 +225,14 @@ impl<T> Queue<T> {
 
     /// A document of `origin` committed. The dialogs of the old document get the default
     /// answer. The counts and the stopped origins stay, so a page cannot clear them with a
-    /// reload or a redirect. Only a navigation of the user to another origin clears them.
+    /// reload or a redirect. Only a navigation of the user from one origin to another clears
+    /// them; a reload by the user keeps them, also those of the frames in the page.
     pub fn commit(&mut self, origin: &str) -> Vec<T> {
-        if std::mem::take(&mut self.user_navigation) {
+        let user_navigation = std::mem::take(&mut self.user_navigation);
+        if user_navigation && self.document.as_deref() != Some(origin) {
             self.origins.retain(|known, _| known == origin);
         }
+        self.document = Some(origin.to_owned());
         self.dismiss()
     }
 }
@@ -390,6 +396,28 @@ mod tests {
         queue.commit("https://other.example");
         queue.commit(SITE);
         queue.push(request("again"), 7).unwrap();
+        assert!(!queue.shown().unwrap().can_suppress);
+    }
+
+    #[test]
+    fn a_reload_by_the_user_keeps_the_stopped_frames_of_the_page() {
+        let ad = || {
+            let origin = origin("https", "ads.example", 0);
+            Request::new(Kind::Alert, origin, false, "ad", "")
+        };
+        let mut queue = Queue::default();
+        queue.commit(SITE);
+        queue.push(ad(), 1).unwrap();
+        let shown = queue.shown().unwrap();
+        queue.answer(shown.id, true).unwrap();
+        // The user reloads, or types another address of the same site.
+        queue.user_navigates();
+        queue.commit(SITE);
+        assert_eq!(queue.push(ad(), 2), Err(2));
+        // A page of another site may have the same frame: it starts again.
+        queue.user_navigates();
+        queue.commit("https://other.example");
+        queue.push(ad(), 3).unwrap();
         assert!(!queue.shown().unwrap().can_suppress);
     }
 
