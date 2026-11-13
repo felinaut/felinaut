@@ -107,6 +107,13 @@ fn main() {
                 let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
                 continue;
             }
+            if request.starts_with("GET /load-dialog ") {
+                // The page asks while it loads, before the browser's poll sees the new document.
+                let body =
+                    "<!doctype html><script>document.title = 'LOAD ' + confirm('load?');</script>";
+                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+                continue;
+            }
             let second = request.starts_with("GET /second ");
             let script = if second {
                 "document.title = localStorage.getItem('felifox-smoke') === 'yes' ? 'JS SECOND' : 'STORAGE FAILED';"
@@ -135,6 +142,7 @@ fn main() {
         let hidden_answers = hidden_answers.clone();
         let origin = base.clone();
         let hidden_dialogs_url = format!("{base}/hidden-dialogs");
+        let load_dialog_url = format!("{base}/load-dialog");
         let handle = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(800.), px(600.)), cx))),
@@ -194,7 +202,7 @@ fn main() {
                                 let request = &shown.request;
                                 let reply = |accepted, text: &str| dialogs::Reply { accepted, text: text.into() };
                                 let answer = match request.message.as_str() {
-                                    "one" | "two" => Some((reply(true, ""), false)),
+                                    "one" | "two" | "load?" => Some((reply(true, ""), false)),
                                     "three" | "five" => Some((reply(false, "ignored"), false)),
                                     "four" => Some((reply(true, "typed"), false)),
                                     "six" => Some((reply(true, &request.default_text), true)),
@@ -216,6 +224,7 @@ fn main() {
                             if stage == 7 && !(title.starts_with("DIALOGS ") && background_dialog.is_some()) { continue; }
                             if (stage == 8 || stage == 10) && !finished { continue; }
                             if stage == 9 && !leave_shown { continue; }
+                            if stage == 11 && !title.starts_with("LOAD ") { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
@@ -325,8 +334,14 @@ fn main() {
                                     assert_eq!(second_page.dialog(), None);
                                 }
                                 10 => {
+                                    second_page.navigate(&load_dialog_url).unwrap();
+                                }
+                                11 => {
+                                    // A dialog of a script that runs while the page loads waits for
+                                    // its answer: the commit of its own document must not end it.
+                                    assert_eq!(title, "LOAD true");
                                     assert_eq!(*hidden_answers.lock().unwrap(), "false-null", "a hidden page gets the default answers");
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and alert, confirm and prompt answers, with dialogs stopped by the user, closed with their tab, ended by a navigation and refused for a hidden page");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and alert, confirm and prompt answers, with dialogs stopped by the user, closed with their tab, ended by a navigation, asked while the page loads and refused for a hidden page");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;

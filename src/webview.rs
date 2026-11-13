@@ -59,6 +59,9 @@ impl NativePage {
         let title_sender = sender.clone();
         let link_sender = sender.clone();
         let failure_sender = sender.clone();
+        // The address of the WKWebView, known only after the build.
+        let page_key = std::rc::Rc::new(std::cell::Cell::new(0));
+        let committed = page_key.clone();
         let mut builder = WebViewBuilder::new();
         if agent_enabled() {
             builder =
@@ -99,7 +102,13 @@ impl NativePage {
                 // Wry has no load-failure callback. Finished means an actual native finish,
                 // not a timeout or a failed provisional navigation.
                 let event = match event {
-                    PageLoadEvent::Started => Event::Started(url),
+                    PageLoadEvent::Started => {
+                        // Wry reports this at the commit. The dialogs of the old document
+                        // end here, before a script of the new document can ask for one.
+                        // A reset in `drain_events` came later and cancelled such a dialog.
+                        crate::dialogs::native::reset(committed.get());
+                        Event::Started(url)
+                    }
                     PageLoadEvent::Finished => Event::Finished(url),
                 };
                 let _ = load_sender.send(event);
@@ -108,6 +117,7 @@ impl NativePage {
             .build_as_child(window)
             .map_err(|error| error.to_string())?;
         let failure_key = watch_failures(&webview, failure_sender);
+        page_key.set(failure_key.unwrap_or(0));
         {
             use wry::WebViewExtMacOS;
             crate::downloads::native::attach(&webview.webview(), failure_key.is_some());
@@ -292,14 +302,6 @@ impl NativePage {
 
     pub fn drain_events(&self) -> Vec<Event> {
         let mut events: Vec<_> = self.events.try_iter().collect();
-        // A new document: the dialogs of the old one end, and so does the choice to stop them.
-        if let Some(key) = self.failure_key
-            && events
-                .iter()
-                .any(|event| matches!(event, Event::Started(_)))
-        {
-            crate::dialogs::native::reset(key);
-        }
         // Poll the committed native URL: the navigation-policy callback also sees
         // subframes and attempted navigations, and misses history.pushState changes.
         if let Some(url) = self.current_url() {
