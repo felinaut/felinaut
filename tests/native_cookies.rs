@@ -174,6 +174,57 @@ async fn rows(
     }
 }
 
+fn probe(cx: &mut AsyncWindowContext) -> egui_host::Probe {
+    cx.update(|_, cx| cookie_window::update_for_test(cx, |manager, _, _| manager.graph_probe()))
+        .unwrap()
+}
+
+/// The graph once it has come to rest: no pass for half a second.
+async fn rest(cx: &mut AsyncWindowContext, start: Instant, stage: &str) -> egui_host::Probe {
+    let mut last = probe(cx);
+    let mut still = 0;
+    while still < 10 {
+        tick(start, stage).await;
+        let now = probe(cx);
+        still = if now.passes == last.passes {
+            still + 1
+        } else {
+            0
+        };
+        last = now;
+    }
+    last
+}
+
+/// The graph follows a resize by itself.
+async fn graph(cx: &mut AsyncWindowContext, start: Instant) {
+    let before = rest(cx, start, "the graph comes to rest").await;
+    let painted = before.painted.expect("the graph was painted");
+    cx.update(|_, cx| {
+        cookie_window::window_for_test(cx, |window, _| {
+            window.resize(size(px(1040.), px(700.)));
+        })
+    })
+    .unwrap();
+    let resized = loop {
+        tick(start, "the resize reaches the graph").await;
+        let now = probe(cx);
+        if now
+            .painted
+            .is_some_and(|bounds| bounds.size != painted.size)
+        {
+            break now;
+        }
+    };
+    // Nothing else happens: the resize alone must bring the next pass to the new size.
+    let after = rest(cx, start, "the resized graph comes to rest").await;
+    assert_eq!(
+        after.passed,
+        after.painted.map(|bounds| bounds.size),
+        "the graph's pass follows the resize ({resized:?} then {after:?})"
+    );
+}
+
 fn has(rows: &[(usize, String, usize)], depth: usize, label: &str, count: usize) -> bool {
     rows.iter()
         .any(|row| *row == (depth, label.to_string(), count))
@@ -220,6 +271,7 @@ async fn set(cx: &mut AsyncWindowContext, pages: [Rc<NativePage>; 2], port: u16)
         windows,
         "Cookies is a single window"
     );
+    graph(cx, start).await;
 
     // A branch asks first: nothing goes until the one confirmation.
     cx.update(|_, cx| {

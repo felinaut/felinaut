@@ -6,7 +6,7 @@
 //! the next input. egui gets no fonts and draws no text: a widget hands its text to `label`,
 //! and GPUI draws it with the system font, like the rest of the window.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -52,17 +52,28 @@ pub struct Frame {
 #[derive(Default)]
 struct Pointer {
     events: Vec<egui::Event>,
-    /// The element's size at its last paint; egui's screen is exactly the element.
-    size: Option<Size<Pixels>>,
+    /// The element's bounds at its last paint; egui's screen is exactly the element.
+    bounds: Option<Bounds<Pixels>>,
     /// A button went down inside the element and has not come up yet.
     pressed: bool,
     inside: bool,
+}
+
+/// What the native test can see of a host: where it was painted, the size its last pass
+/// used and how many passes ran.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Probe {
+    pub painted: Option<Bounds<Pixels>>,
+    pub passed: Option<Size<Pixels>>,
+    pub passes: usize,
 }
 
 pub struct Host {
     ctx: egui::Context,
     pointer: Rc<RefCell<Pointer>>,
     started: Instant,
+    /// The size the last pass used, and how many passes ran.
+    passed: Cell<(Option<Size<Pixels>>, usize)>,
 }
 
 impl Default for Host {
@@ -75,6 +86,7 @@ impl Default for Host {
             ctx,
             pointer: Rc::default(),
             started: Instant::now(),
+            passed: Cell::default(),
         }
     }
 }
@@ -94,12 +106,28 @@ impl Host {
             .any(|event| matches!(event, egui::Event::Zoom(_)))
     }
 
+    #[allow(dead_code, reason = "Used by the opt-in native integration harness")]
+    pub fn probe(&self) -> Probe {
+        let pointer = self.pointer.borrow();
+        let (passed, passes) = self.passed.get();
+        Probe {
+            painted: pointer.bounds,
+            passed,
+            passes,
+        }
+    }
+
     /// Runs `ui` once with the input queued since the last pass.
     pub fn pass(&self, focused: bool, ui: impl FnMut(&mut egui::Ui)) -> Frame {
         let (events, extent) = {
             let mut pointer = self.pointer.borrow_mut();
-            (std::mem::take(&mut pointer.events), pointer.size)
+            (
+                std::mem::take(&mut pointer.events),
+                pointer.bounds.map(|bounds| bounds.size),
+            )
         };
+        let (_, passes) = self.passed.get();
+        self.passed.set((extent, passes + 1));
         // Before the first paint there is no size yet; any plausible one will do.
         let extent = extent.unwrap_or(size(px(600.), px(400.)));
         let input = egui::RawInput {
@@ -132,9 +160,15 @@ impl Host {
         canvas(
             |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
             move |bounds, hitbox, window, cx| {
-                let resized = pointer.borrow_mut().size.replace(bounds.size) != Some(bounds.size);
+                let resized = pointer
+                    .borrow_mut()
+                    .bounds
+                    .replace(bounds)
+                    .is_none_or(|before| before.size != bounds.size);
+                // This runs while GPUI paints, when `notify` cannot schedule a frame: ask for
+                // the next frame, whose pass then sees the new size.
                 if resized {
-                    cx.notify(view);
+                    window.request_animation_frame();
                 }
                 window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
                     for shape in &frame.shapes {

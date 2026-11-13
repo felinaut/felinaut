@@ -568,6 +568,11 @@ impl CookieGraph {
         settled
     }
 
+    #[allow(dead_code, reason = "Used by the opt-in native integration harness")]
+    pub fn probe(&self) -> egui_host::Probe {
+        self.host.probe()
+    }
+
     pub fn element(&self, frame: Frame, view: EntityId) -> Canvas<Hitbox> {
         self.host.element(frame, view)
     }

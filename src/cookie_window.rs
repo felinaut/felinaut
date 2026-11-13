@@ -129,6 +129,21 @@ pub fn update_for_test<R>(
         .expect("live Cookies window")
 }
 
+/// Runs `update` on the open Cookies window without leasing its view, so that events
+/// dispatched there can reach the view's own handlers.
+#[cfg(test)]
+#[allow(dead_code, reason = "Used by the opt-in native integration harness")]
+pub fn window_for_test<R>(cx: &mut App, update: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+    let handle: gpui::AnyWindowHandle = cx
+        .global::<CookiesWindow>()
+        .handle
+        .expect("Cookies is open")
+        .into();
+    handle
+        .update(cx, |_, window, cx| update(window, cx))
+        .expect("live Cookies window")
+}
+
 pub struct CookieManager {
     focus: FocusHandle,
     search: Entity<AddressInput>,
@@ -239,6 +254,12 @@ impl CookieManager {
     #[allow(dead_code, reason = "Used by the opt-in native integration harness")]
     pub fn rows(&self) -> &[cookies::Row] {
         self.state.rows()
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native integration harness")]
+    pub fn graph_probe(&self) -> crate::egui_host::Probe {
+        self.graph.probe()
     }
 
     /// Whether the rows show what WebKit last reported, with no delete on its way.
