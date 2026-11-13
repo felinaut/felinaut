@@ -225,6 +225,13 @@ impl Render for Panel {
     }
 }
 
+/// Whether a new panel takes the keys. A dialog of a background tab waits without them. A
+/// panel never takes them from a field of the browser, such as the address bar: the page
+/// decides when its dialog opens, and the text the user types there must not go to the page.
+fn takes_focus(active: bool, panel_had_focus: bool, chrome_has_focus: bool) -> bool {
+    panel_had_focus || (active && !chrome_has_focus)
+}
+
 /// Makes each tab's panel match the dialog its page shows now. The browser's poll calls this,
 /// outside rendering. Gives whether a panel came or went.
 pub fn sync(browser: &mut Browser, window: &mut Window, cx: &mut Context<Browser>) -> bool {
@@ -261,9 +268,14 @@ pub fn sync(browser: &mut Browser, window: &mut Window, cx: &mut Context<Browser
             .clone()
             .zip(shown)
             .map(|(page, shown)| cx.new(|cx| Panel::new(page, shown, cx)));
+        // The browser's own handle has the focus when the page has the keys, or nothing has.
+        let chrome_has_focus = window
+            .focused(cx)
+            .is_some_and(|focused| focused != browser.focus);
         match (&tab.dialog, page) {
-            // A dialog of a background tab waits, without the focus, until its tab is selected.
-            (Some(panel), _) if active || had_focus => panel.read(cx).take_focus(window, cx),
+            (Some(panel), _) if takes_focus(active, had_focus, chrome_has_focus) => {
+                panel.read(cx).take_focus(window, cx)
+            }
             // The answer is given: the keys go back to the page.
             (None, Some(page)) if had_focus => {
                 window.focus(&browser.focus);
@@ -280,5 +292,25 @@ pub fn sync(browser: &mut Browser, window: &mut Window, cx: &mut Context<Browser
 pub fn focus(browser: &Browser, window: &mut Window, cx: &App) {
     if let Some(panel) = &browser.tabs[browser.active].dialog {
         panel.read(cx).take_focus(window, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::takes_focus;
+
+    #[test]
+    fn a_panel_takes_the_keys_only_from_the_page_or_from_another_panel() {
+        // The active tab's page, or nothing, has the keys.
+        assert!(takes_focus(true, false, false));
+        // The user types in the address bar: the panel shows without the keys.
+        assert!(!takes_focus(true, false, true));
+        // A dialog of a background tab waits, whatever has the keys.
+        assert!(!takes_focus(false, false, false));
+        assert!(!takes_focus(false, false, true));
+        // The next dialog of a queue follows a panel that had the keys. That panel is not
+        // the browser's own handle, so it counts as a field of the browser too.
+        assert!(takes_focus(true, true, true));
+        assert!(takes_focus(false, true, true));
     }
 }
