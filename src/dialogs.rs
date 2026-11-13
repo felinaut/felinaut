@@ -526,6 +526,18 @@ mod tests {
         assert!(long.starts_with("https://…aaa"), "{long}");
         assert!(long.ends_with(".evil.example:8443"), "{long}");
         assert_eq!(long.chars().count(), "https://…".len() - 2 + ORIGIN_LIMIT);
+        // Exactly at the limit, nothing is cut. One character more, and the start goes.
+        let exact = format!("{}.example", "a".repeat(ORIGIN_LIMIT - ".example".len()));
+        assert_eq!(origin("https", &exact, 0), format!("https://{exact}"));
+        assert_eq!(
+            origin("https", &format!("b{exact}"), 0),
+            format!("https://…{exact}")
+        );
+        let with_port = &exact[":8443".len()..];
+        assert_eq!(
+            origin("https", with_port, 8443),
+            format!("https://{with_port}:8443")
+        );
 
         let title = |origin: &str, main_frame| {
             Request::new(Kind::Alert, origin.into(), main_frame, "Felinaut says", "").title()
