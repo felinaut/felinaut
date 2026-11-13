@@ -780,14 +780,22 @@ fn container_y(y: f64, height: f64, parent_height: f64, flipped: bool) -> f64 {
     }
 }
 
-/// Closes the app's key window if it is not a browser window, such as a detached Web Inspector.
+/// Closes the app's key window if it is a detached Web Inspector.
 pub fn close_key_window() {
     if let Some(mtm) = objc2::MainThreadMarker::new()
         && let Some(window) = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow()
-        && window.class().name().to_bytes() != b"GPUIWindow"
+        && is_inspector_window(window.class().name().to_bytes())
     {
         window.performClose(None);
     }
+}
+
+/// Whether a window class is WebKit's detached Web Inspector window. A positive match: GPUI's
+/// browser and Settings windows (`GPUIWindow`), its focusing popups (`GPUIPanel`) and WebKit's
+/// other windows must not be closed behind their owners' backs. Should WebKit rename the class,
+/// ⌘W and ⌥⌘I just stop closing a detached inspector; its own close button still works.
+fn is_inspector_window(class: &[u8]) -> bool {
+    class == b"_WKInspectorWindow"
 }
 
 /// Agent control is opt-in. The new setting takes precedence, including an explicit disable.
@@ -902,6 +910,20 @@ fn check_url(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_detached_inspector_window_closes_on_the_fallback() {
+        // ⌘W or ⌥⌘I in a detached inspector closes just that window.
+        assert!(super::is_inspector_window(b"_WKInspectorWindow"));
+        // Browser and Settings windows, and GPUI's focusing popups (downloads list, volume
+        // popover, dropdowns), keep their own close handling.
+        assert!(!super::is_inspector_window(b"GPUIWindow"));
+        assert!(!super::is_inspector_window(b"GPUIPanel"));
+        // Nor any other AppKit window, such as WebKit's element full screen window.
+        assert!(!super::is_inspector_window(b"NSWindow"));
+        assert!(!super::is_inspector_window(b"WKFullScreenWindow"));
+        assert!(!super::is_inspector_window(b""));
+    }
+
     #[test]
     fn container_y_flips_only_for_an_unflipped_parent() {
         assert_eq!(super::container_y(40., 300., 800., true), 40.);

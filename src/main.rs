@@ -4289,7 +4289,8 @@ fn main() {
         cx.on_action(|_: &AboutFelinaut, cx| about::open(cx));
         cx.on_action(|_: &OpenSettings, cx| settings::open(cx));
         cx.on_action(|_: &Quit, cx| cx.quit());
-        // A detached Web Inspector is not a browser window: ⌥⌘I and ⌘W there close just it.
+        // A detached Web Inspector is not a GPUI window: ⌥⌘I and ⌘W there close just it, and
+        // never a browser window or popup.
         cx.on_action(|_: &DevTools, _| webview::close_key_window());
         cx.on_action(|_: &CloseTab, _| webview::close_key_window());
         cx.on_window_closed(|cx| {
