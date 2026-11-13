@@ -44,6 +44,10 @@ const MAX_STEPS: u64 = 900;
 const STEPS_PER_FRAME: u32 = 3;
 /// The most time one frame gives to those extra steps.
 const STEP_BUDGET_MS: u64 = 5;
+/// Without animation: the most steps, and time, that one frame gives to settling. A layout
+/// that needs more goes on in the next frame, until it settles or reaches `MAX_STEPS`.
+const SETTLE_STEPS_PER_FRAME: u32 = 400;
+const SETTLE_BUDGET_MS: u64 = 40;
 
 /// What a graph node stands for and how it is drawn.
 #[derive(Clone, Debug, PartialEq)]
@@ -438,7 +442,8 @@ impl CookieGraph {
     }
 
     /// Runs one frame of the graph. With `animate` off (Reduce Motion, or animations turned
-    /// off) the layout settles within this call instead of moving on screen.
+    /// off) the layout settles as far as one frame's budget allows instead of moving step by
+    /// step, so a small graph appears settled at once and a large one in a few frames.
     pub fn show(&mut self, p: Palette, animate: bool, focused: bool) -> Shown {
         let root = self
             .nodes
@@ -467,11 +472,17 @@ impl CookieGraph {
             state.base.damping = 0.45;
             state.base.k_scale = 0.62;
             state.extras.0.params.c = 0.42;
+            let running = state.base.is_running;
             egui_graphs::set_layout_state(ui, state, None);
 
-            if !animate && unsettled {
+            if !animate && running {
                 GraphView::<LayoutState, Layout>::fast_forward_until_stable_budgeted(
-                    ui, graph, SETTLED, 400, 40, None,
+                    ui,
+                    graph,
+                    SETTLED,
+                    SETTLE_STEPS_PER_FRAME,
+                    SETTLE_BUDGET_MS,
+                    None,
                 );
             } else if animate {
                 GraphView::<LayoutState, Layout>::fast_forward_budgeted(
@@ -523,10 +534,12 @@ impl CookieGraph {
             if dragging {
                 state.base.is_running = true;
                 state.base.step_count = 0;
-            } else if settled || !animate {
+            } else if settled {
                 state.base.is_running = false;
             }
-            moving = state.base.is_running && animate;
+            // Without animation a layout that did not settle within this frame's budget
+            // goes on settling in the next one, rather than staying half made.
+            moving = state.base.is_running;
             egui_graphs::set_layout_state(ui, state, None);
         });
         self.unsettled = false;
@@ -538,6 +551,21 @@ impl CookieGraph {
             clicked,
             animating: moving || input,
         }
+    }
+
+    /// Whether the layout has come to rest, by the same rule `show` stops it by.
+    #[cfg(test)]
+    fn settled(&self) -> bool {
+        let mut settled = false;
+        self.host.pass(true, |ui| {
+            let state: LayoutState = egui_graphs::get_layout_state(ui, None);
+            settled = state
+                .base
+                .last_avg_displacement
+                .is_some_and(|step| step < SETTLED)
+                || state.base.step_count > MAX_STEPS;
+        });
+        settled
     }
 
     pub fn element(&self, frame: Frame, view: EntityId) -> Canvas<Hitbox> {
@@ -728,6 +756,39 @@ mod tests {
         let settled = graph.graph.node(site).unwrap().location();
         graph.show(palette, false, true);
         assert_eq!(graph.graph.node(site).unwrap().location(), settled);
+    }
+
+    #[test]
+    fn without_animation_a_large_layout_still_settles() {
+        // 1 root, 1 site, 3 hosts and 300 cookies: more than one frame's budget settles.
+        let cookies: Vec<Cookie> = ["a", "b", "c"]
+            .iter()
+            .flat_map(|host| {
+                (0..100)
+                    .map(move |index| cookie(&format!("{host}.example.com"), &format!("c{index}")))
+            })
+            .collect();
+        let tree = Tree::build(&cookies);
+        let mut open = HashSet::from([Node::All, Node::Site("example.com".into())]);
+        for host in ["a", "b", "c"] {
+            open.insert(Node::Host(format!("{host}.example.com")));
+        }
+        let rows = tree.rows(&open);
+        assert_eq!(rows.len(), 305);
+        let mut graph = CookieGraph::default();
+        graph.sync(&rows, &Node::All);
+        let palette = Theme::default().palette();
+        let mut frames = 1;
+        while graph.show(palette, false, true).animating {
+            frames += 1;
+            assert!(frames < 1_000, "the layout stops");
+        }
+        assert!(
+            graph.settled(),
+            "Reduce Motion must not leave the layout half made ({frames} frames)"
+        );
+        // Once settled it stays still and asks for no more frames.
+        assert!(!graph.show(palette, false, true).animating);
     }
 
     #[test]
