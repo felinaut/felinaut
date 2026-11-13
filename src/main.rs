@@ -1597,6 +1597,7 @@ impl Browser {
                 changed = true;
                 match event {
                     Event::Started(url) => {
+                        self.find_bar.committed(index == self.active);
                         tab.sound.clear();
                         tab.hovered_link = None;
                         tab.loading = true;
@@ -4280,6 +4281,10 @@ impl FindBar {
             self.missing = !found;
         }
     }
+    /// A tab committed a new page; a miss on the active tab's old page no longer applies.
+    fn committed(&mut self, active: bool) {
+        self.missing &= !active;
+    }
     /// How far the last open or close has slid, from 0 to 1.
     fn slid(&self, now: Instant, motion: bool) -> f32 {
         self.toggled.filter(|_| motion).map_or(1., |at| {
@@ -4519,6 +4524,23 @@ mod tests {
         assert!(!bar.open && !bar.missing);
         assert_eq!(bar.slid(closed, true), 0.);
         assert_eq!(bar.slid(closed + Duration::from_millis(150), true), 1.);
+    }
+
+    #[test]
+    fn find_bar_forgets_a_miss_when_the_active_tab_commits_a_new_page() {
+        let mut bar = super::FindBar::default();
+        bar.open(Instant::now());
+        assert!(bar.search(true, "foo"));
+        bar.found(true, false);
+        // Another tab's new page leaves the active tab's result alone.
+        bar.committed(false);
+        assert!(bar.missing);
+        bar.committed(true);
+        assert!(!bar.missing);
+        assert!(bar.open, "navigating keeps the bar open");
+        // Without a miss there is nothing to clear.
+        bar.committed(true);
+        assert!(!bar.missing);
     }
 
     fn failed(url: &str) -> super::LoadFailure {
