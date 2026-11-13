@@ -568,7 +568,7 @@ impl Browser {
                 &find,
                 window,
                 |this, _, event: &AddressEvent, window, cx| match event {
-                    AddressEvent::Changed => this.search(false, true, cx),
+                    AddressEvent::Changed => this.search(false, cx),
                     AddressEvent::Escape => this.close_find(window, cx),
                     _ => {}
                 },
@@ -2180,11 +2180,11 @@ impl Browser {
                 input.select_all_text(cx);
             });
         } else {
-            self.search(find.0 < 0, false, cx);
+            self.search(find.0 < 0, cx);
         }
         cx.notify();
     }
-    fn search(&mut self, backwards: bool, restart: bool, cx: &mut Context<Self>) {
+    fn search(&mut self, backwards: bool, cx: &mut Context<Self>) {
         let text = self.find.read(cx).text();
         let tab = &self.tabs[self.active];
         if let Some(page) = tab
@@ -2192,7 +2192,7 @@ impl Browser {
             .as_ref()
             .filter(|_| self.find_bar.search(!tab.home, text))
         {
-            page.find(text, backwards, restart);
+            page.find(text, backwards);
         }
         cx.notify();
     }

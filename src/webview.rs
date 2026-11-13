@@ -184,17 +184,13 @@ impl NativePage {
         self.webview.zoom(zoom).map_err(|error| error.to_string())
     }
 
-    /// Selects and scrolls to the next match; `restart` searches again from the current match's
-    /// start, as typing does. Reports `Event::Found`.
-    pub fn find(&self, text: &str, backwards: bool, restart: bool) {
+    /// Selects and scrolls to the next match, and reports `Event::Found`. WebKit starts at the
+    /// current selection and skips it only when it already is a match, so a longer or shorter
+    /// query refines the current match, in frames too, and repeating a query steps to the next.
+    pub fn find(&self, text: &str, backwards: bool) {
         use objc2::MainThreadOnly;
         use objc2_web_kit::{WKFindConfiguration, WKFindResult};
         use wry::WebViewExtMacOS;
-        if restart {
-            let _ = self
-                .webview
-                .evaluate_script("getSelection().collapseToStart()");
-        }
         let sender = self
             .failure_key
             .and_then(|key| FAILURES.with_borrow(|pages| pages.get(&key).cloned()));
