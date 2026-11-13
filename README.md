@@ -197,6 +197,8 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | `⌘,`             | Open Settings                                                   |
 | `⌘Q`             | Quit                                                            |
 
+Find in page uses WebKit's own find: case-insensitive and wrapping, including same-origin frames. Typing refines the current match; emptying the field clears it. Limitations: there is no match count and no highlight of all matches, only "Not found". A match is a normal text selection, so the page can see it change (`selectionchange`), as in Safari. `⌘F`, `⌘G` and `⌘⇧G` always open Felinaut's find bar, even on sites with a find of their own.
+
 ### Title-first address bar and history suggestions
 
 The idle address field reads like Arc's or Safari's: **icon · page title · domain**. The domain stays visible on purpose, since hiding it is what drew the criticism when Chrome trialled a domain-only bar, and the full URL is one click or `⌘L` away. Tabs show the same icon. Prefer something else? The Theme ▾ dropdown's **Address bar shows** setting offers _Page title_ (default), _Domain only_ (Safari-style) or _Full address_ (the editable URL at all times, Chrome-style); the choice is saved with the theme.
