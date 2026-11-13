@@ -97,7 +97,7 @@ pub fn init(cx: &mut App) {
 pub struct AddressInput {
     focus_handle: FocusHandle,
     content: SharedString,
-    pub placeholder: SharedString,
+    placeholder: SharedString,
     zoom: Option<(SharedString, f32)>,
     selected_range: Range<usize>,
     selection_reversed: bool,
@@ -116,10 +116,15 @@ impl EventEmitter<AddressEvent> for AddressInput {}
 
 impl AddressInput {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        Self::with_placeholder("Search or enter an address", cx)
+    }
+
+    /// An empty field that shows `placeholder` until something is typed.
+    pub fn with_placeholder(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             content: "".into(),
-            placeholder: "Search or enter an address".into(),
+            placeholder: placeholder.into(),
             zoom: None,
             selected_range: 0..0,
             selection_reversed: false,

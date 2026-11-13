@@ -555,11 +555,7 @@ impl Browser {
                 AddressEvent::ResetZoom => this.zoom(&Zoom(0), window, cx),
             },
         );
-        let find = cx.new(|cx| {
-            let mut input = AddressInput::new(cx);
-            input.placeholder = "Find in page".into();
-            input
-        });
+        let find = cx.new(|cx| AddressInput::with_placeholder("Find in page", cx));
         let find_events = [
             cx.subscribe_in(&find, window, |this, _, _: &Submit, window, cx| {
                 this.find(&Find(1), window, cx)
