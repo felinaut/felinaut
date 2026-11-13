@@ -97,6 +97,17 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(args[args.index("--entitlements") + 1], str(package.ENTITLEMENTS))
         self.assertIn("runtime", args)
 
+    def test_no_signature_lets_safari_attach_web_inspector(self):
+        # Before macOS 13.3 there is no isInspectable switch: Safari's Develop menu attaches
+        # only to apps signed with get-task-allow, and the README relies on Felinaut never
+        # claiming it.
+        with open(package.ENTITLEMENTS, "rb") as file:
+            self.assertNotIn("com.apple.security.get-task-allow", plistlib.load(file))
+        for identity in ("", "Developer ID Application: X (T)"):
+            for entitlements in (None, package.ENTITLEMENTS):
+                args = " ".join(package.codesign_args(identity, entitlements))
+                self.assertNotIn("get-task-allow", args)
+
     def test_signing_configuration_errors_use_canonical_names(self):
         for setting in ("NOTARY_PROFILE", "PROVISIONING_PROFILE"):
             settings = {

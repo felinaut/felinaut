@@ -317,7 +317,7 @@ Keep it small: no bookmarks manager, extensions, permission UI, tracker-blocker 
 - Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
 - This is an early browser shell, not a security-audited Safari replacement. WebKit's engine security updates come from macOS updates.
-- Web Inspector (**View → Developer Tools**) is opened through WebKit's private `_inspector` API (via Wry's `devtools` feature). Safari's **Develop** menu cannot attach to Felinaut pages.
+- Web Inspector (**View → Developer Tools**) is opened through WebKit's private `_inspector` API (via Wry's `devtools` feature). On macOS 13.3 and later, tabs set `isInspectable` off, so Safari's **Develop** menu cannot attach to Felinaut pages. macOS 12.0–13.2 have no such switch; there WebKit lets Safari attach only to apps signed with the `com.apple.security.get-task-allow` debugging entitlement, which Felinaut's builds never claim. This has not been tested on those versions.
 - Only macOS is configured and tested. Windows and Linux backends are not configured.
 
 ## Validate
