@@ -35,7 +35,8 @@ Usage: felinaut-ctl <command>      (start Felinaut with FELINAUT_AGENT=1)
   permissions             Show the camera or microphone request of the active tab, the
                           stored decisions of its site and what it uses now
   permissions deny|block  Refuse the request this time, or for each later time
-  permissions reset       Stop the use and forget the decisions of the active site
+  permissions reset       Stop the use, forget the decisions of the active site and
+                          reload its tabs
 
   --native                With click, type or press: send a real mouse or keyboard event.
                           Use it when a site ignores the default synthetic events.";

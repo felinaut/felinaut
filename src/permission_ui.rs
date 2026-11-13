@@ -421,7 +421,7 @@ impl Browser {
     }
 
     /// Forgets the active site's decisions and stops its use of the camera and the microphone,
-    /// in each tab that shows the site.
+    /// in each tab that shows the site. Each of these tabs loads its page again.
     pub(crate) fn reset_site_permissions(
         &mut self,
         _: &ResetSitePermissions,
@@ -433,11 +433,19 @@ impl Browser {
         }
         if let Some(origin) = self.active_origin() {
             self.permissions.revoke(&origin);
-            for tab in &self.tabs {
+            for tab in &mut self.tabs {
                 if let Some(page) = &tab.page
                     && permissions::origin_of_url(&tab.url).as_ref() == Some(&origin)
                 {
                     page.stop_capture();
+                    // WebKit can remember an answer for the life of a document, so the same
+                    // document could get a device again without a request to Felinaut. A
+                    // new document has to ask. A tab that shows a load error has no document
+                    // of the site.
+                    if tab.load_failure.is_none() {
+                        tab.error = page.reload().err();
+                        tab.loading |= tab.error.is_none();
+                    }
                 }
             }
         }
