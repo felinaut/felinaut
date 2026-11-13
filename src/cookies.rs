@@ -525,9 +525,9 @@ pub fn expiry(expires: Option<i64>, now: i64) -> String {
     let distance = match left {
         ..=0 => "expired".into(),
         1..3_600 => "in under an hour".into(),
-        3_600..172_800 => format!("in {} hours", left / 3_600),
-        172_800..63_072_000 => format!("in {} days", left / 86_400),
-        _ => format!("in {} years", left / 31_536_000),
+        3_600..172_800 => format!("in {}", plural((left / 3_600) as usize, "hour")),
+        172_800..63_072_000 => format!("in {}", plural((left / 86_400) as usize, "day")),
+        _ => format!("in {}", plural((left / 31_536_000) as usize, "year")),
     };
     format!("{date} ({distance})")
 }
@@ -1035,9 +1035,22 @@ mod tests {
             expiry(Some(now + 600), now),
             "2023-11-14 22:23 UTC (in under an hour)"
         );
+        // The singular at exactly one hour, and the last second before two.
+        assert_eq!(
+            expiry(Some(now + 3_600), now),
+            "2023-11-14 23:13 UTC (in 1 hour)"
+        );
+        assert_eq!(
+            expiry(Some(now + 7_199), now),
+            "2023-11-15 00:13 UTC (in 1 hour)"
+        );
         assert_eq!(
             expiry(Some(now + 7_200), now),
             "2023-11-15 00:13 UTC (in 2 hours)"
+        );
+        assert_eq!(
+            expiry(Some(now + 172_800), now),
+            "2023-11-16 22:13 UTC (in 2 days)"
         );
         assert_eq!(
             expiry(Some(now + 30 * 86_400), now),
