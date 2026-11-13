@@ -78,7 +78,14 @@ fn read_answers(page: &NativePage, answers: &mpsc::Sender<String>) {
     });
 }
 
-/// `shown` is false for the hidden page, whose requests WebKit may hold without an answer.
+/// `shown` is false for the hidden page.
+///
+/// The hidden page keeps "pending" as a valid result. Felinaut denies a request of a hidden
+/// page at once, but only when WebKit sends the request to the delegate. WebKit can hold the
+/// request of a page that is not on display and never send it, so Felinaut cannot make sure
+/// that the page's promise settles. The denial itself has its own check: `main` calls the
+/// delegate method of the hidden page directly (`probe_capture_for_test`) and expects one
+/// denial for each capture type. The location and notifications never reach Felinaut at all.
 fn check_answers(shown: bool, answers: &str) {
     let [media, place, notes] = answers.split(' ').collect::<Vec<_>>()[..] else {
         panic!("unexpected answers {answers:?} (shown: {shown})");
