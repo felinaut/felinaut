@@ -122,6 +122,27 @@ fn live_refresh_can_poll(started: Instant, next_try: Instant, now: Instant) -> b
     now.duration_since(started) < FETCH_TIMEOUT && now >= next_try
 }
 
+/// A live refresh never reads a page served with a certificate the user accepted despite an
+/// error: the hidden page carries the logged-in sessions, and WebKit can reuse a connection a
+/// tab trusted without asking the hidden page. Such a refresh fails and keeps cached items.
+fn live_refresh_result(
+    answer: Option<Result<Vec<live::Item>, String>>,
+    accepted_certificate: bool,
+    name: &str,
+) -> Option<Result<Vec<live::Item>, String>> {
+    if accepted_certificate {
+        return Some(Err(live_certificate_refusal(name)));
+    }
+    answer
+}
+
+fn live_certificate_refusal(name: &str) -> String {
+    format!(
+        "You accepted an invalid certificate for {name}, so its list stays as it was until \
+         Felinaut quits."
+    )
+}
+
 /// The system font with tabular figures, so counts that change keep their width.
 fn tabular_font(weight: FontWeight) -> Font {
     Font {
@@ -797,7 +818,12 @@ impl Browser {
                 .and_then(|mut answer| answer.take());
             // An API answers a lapsed session with an error rather than a sign-in page.
             signed_out |= answer.as_deref() == Some(live::SIGNED_OUT);
-            let mut done = answer.and_then(|json| live::parse_refresh(&json, integration.host));
+            let accepted_certificate = fetch.loaded && fetch.page.uses_accepted_certificate();
+            let mut done = live_refresh_result(
+                answer.and_then(|json| live::parse_refresh(&json, integration.host)),
+                accepted_certificate,
+                integration.name,
+            );
             if done.is_none()
                 && fetch.loaded
                 && live_refresh_can_poll(fetch.started, fetch.next_try, now)
@@ -847,7 +873,16 @@ impl Browser {
         else {
             return;
         };
-        match NativePage::hidden(window, self.live[index].sections[section].url) {
+        let url = self.live[index].sections[section].url;
+        if webview::has_certificate_exception(url) {
+            let name = self.live[index].integration.name;
+            let section = &mut self.live[index].sections[section];
+            section.error = Some(live_certificate_refusal(name));
+            section.last = Some(now);
+            cx.notify();
+            return;
+        }
+        match NativePage::hidden(window, url) {
             Ok(page) => {
                 self.fetch = Some(Fetch {
                     folder: index,
@@ -4324,7 +4359,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        FETCH_TIMEOUT, drop_index, live_refresh_can_poll, restore_tabs, session::SavedTab,
+        FETCH_TIMEOUT, drop_index, live_refresh_can_poll, live_refresh_result, restore_tabs,
+        session::SavedTab,
     };
     use std::time::{Duration, Instant};
 
@@ -4372,6 +4408,33 @@ mod tests {
             super::theme::settings_path(),
             profile.as_ref().map(|p| p.join("settings"))
         );
+    }
+
+    #[test]
+    fn live_refresh_refuses_a_page_with_an_accepted_certificate() {
+        let item = crate::live::Item {
+            title: "Task".into(),
+            url: "https://app.asana.com/0/1/2".into(),
+            seen: false,
+            updated: String::new(),
+            dismissed: None,
+            detail: String::new(),
+        };
+        // A normal page passes its answer, or its lack of one, through.
+        assert_eq!(live_refresh_result(None, false, "Asana"), None);
+        let answer = Some(Ok(vec![item.clone()]));
+        assert_eq!(live_refresh_result(answer.clone(), false, "Asana"), answer);
+        let error = Some(Err("rate limited".to_owned()));
+        assert_eq!(live_refresh_result(error.clone(), false, "Asana"), error);
+        // A page served with an accepted certificate fails even before it answers, and its
+        // items are never used.
+        for answer in [None, Some(Ok(vec![item])), Some(Ok(Vec::new())), error] {
+            let Some(Err(message)) = live_refresh_result(answer, true, "Asana") else {
+                panic!("an accepted certificate must fail the refresh");
+            };
+            assert!(message.contains("Asana"), "{message}");
+            assert!(!message.contains("Sign in"), "{message}");
+        }
     }
 
     #[test]

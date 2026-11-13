@@ -127,6 +127,11 @@ impl Exceptions {
             .is_some_and(|certificates| certificates.contains(certificate))
     }
 
+    /// Whether the user accepted any certificate for the `https` site of `url`.
+    pub fn covers(&self, url: &str) -> bool {
+        site(url).is_some_and(|site| self.0.contains_key(&site))
+    }
+
     /// Whether the user accepted `certificate` for any site.
     pub fn accepted(&self, certificate: &[u8]) -> bool {
         self.0
@@ -240,6 +245,29 @@ mod tests {
         assert!(!exceptions.allows("expired.badssl.com", 8443, &[1, 2, 3]));
         assert!(!exceptions.allows("self-signed.badssl.com", 443, &[1, 2, 3]));
         assert!(!exceptions.accepted(&[9]));
+    }
+
+    #[test]
+    fn exceptions_cover_the_site_whatever_its_path() {
+        let mut exceptions = Exceptions::default();
+        assert!(!exceptions.covers("https://intranet.example/"));
+        exceptions.allow("https://Intranet.example/login", vec![1]);
+        for url in [
+            "https://intranet.example/",
+            "https://INTRANET.example:443/other?x#y",
+        ] {
+            assert!(exceptions.covers(url), "{url}");
+        }
+        for url in [
+            "http://intranet.example/",
+            "https://intranet.example:8443/",
+            "https://www.intranet.example/",
+            "https://intranet.example.evil/",
+            "about:blank",
+            "",
+        ] {
+            assert!(!exceptions.covers(url), "{url}");
+        }
     }
 
     #[test]

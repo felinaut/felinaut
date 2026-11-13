@@ -133,7 +133,9 @@ impl NativePage {
                 position: wry::dpi::LogicalPosition::new(-20_000., -20_000.).into(),
                 size: wry::dpi::LogicalSize::new(1024., 768.).into(),
             })
-            .with_navigation_handler(|url| allowed_url(&url))
+            // WebKit can reuse a connection a tab trusted with an exception without asking
+            // this page, so never request a site with one; this also covers redirects and frames.
+            .with_navigation_handler(|url| allowed_url(&url) && !has_certificate_exception(&url))
             .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
             .with_on_page_load_handler(move |event, url| {
                 if matches!(event, PageLoadEvent::Finished) {
@@ -454,6 +456,12 @@ pub fn allow_certificate(url: &str, certificate: Vec<u8>) {
     EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.allow(url, certificate));
 }
 
+/// Whether the user accepted a bad certificate for the site of `url`, so the hidden page,
+/// which carries the logged-in sessions, must not load it.
+pub fn has_certificate_exception(url: &str) -> bool {
+    EXCEPTIONS.with_borrow(|exceptions| exceptions.covers(url))
+}
+
 /// Explains the Not secure mark in a sheet, which is drawn above the native pages.
 pub fn explain_not_secure(window: &gpui::Window, host: &str) {
     use objc2_app_kit::{NSAlert, NSView};
@@ -582,7 +590,8 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
         // SAFETY: WebKit passes a live challenge and completion handler on the main thread,
         // and expects the handler to be called exactly once.
         let handler = unsafe { &*handler };
-        // The hidden live-folder page has no failure key, so it never uses an exception.
+        // The hidden live-folder page has no failure key, so it never answers a challenge with
+        // an exception. That alone is not enough: see `NativePage::hidden`.
         let visible = FAILURES.with_borrow(|pages| pages.contains_key(&(webview as usize)));
         match unsafe { challenge.as_ref() }
             .filter(|_| visible)
