@@ -86,6 +86,10 @@ python3 tools/cef-probe/bundle_probe.py --help
 
 `bundle_probe.py` performs explicit, offline assembly only beneath ignored `target/`, refusing existing destinations and redirected inputs. It verifies the prepared SDK, thin arm64 executable headers, copied hashes, framework links, all five CEF helper layouts and bundled license/credits files. It preserves framework bytes/signatures and performs no signing, installation, security changes or launch. Preparation/bundling behavioral tests cover invalid and hostile inputs as well as success; helper tests cover role arguments and sandbox-bypass rejection.
 
+## Owned-helper observation support
+
+`helper_observer.py` provides a read-only observer for a future native audit run. It accepts bounded native helper-start/post-sandbox records, verifies only those PIDs using `libproc` (exact executable, parent, UID and start time), registers `kqueue` exit notifications and queries `sandbox_check` only after sandbox initialization. PID reuse, API errors, unmatched launch counts, malformed records and surviving helpers remain explicit gaps. It neither scans the process table, signals helpers nor deletes profiles. **41 offline tests pass; these tests do not establish native confinement or exit.** The current native evidence below is unchanged until this observer is integrated and run.
+
 ## Real CEF runtime probe
 
 After explicit SDK preparation:
