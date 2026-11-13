@@ -563,12 +563,25 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
         // SAFETY: WebKit passes a live challenge and completion handler on the main thread,
         // and expects the handler to be called exactly once.
         let handler = unsafe { &*handler };
-        // A Basic or Digest challenge of a visible page waits for the user. `http_auth` copies
-        // the handler and calls it later, one time.
+        // A Basic or Digest challenge of a visible page for its own origin waits for the user.
+        // An image, a frame or a fetch from another origin gets the default below. `http_auth`
+        // copies the handler and calls it later, one time.
         let key = webview as usize;
         let visible = FAILURES.with_borrow(|pages| pages.contains_key(&key));
+        // The address that the page loads, or else shows. Only this origin may ask the user.
+        // SAFETY: a property read on the live WKWebView that WebKit passes, on the main thread.
+        let url: Option<Retained<objc2_foundation::NSURL>> = unsafe { msg_send![webview, URL] };
+        let url = url
+            .and_then(|url| url.absoluteString())
+            .map(|url| url.to_string());
         if let Some(challenge) = unsafe { challenge.as_ref() }
-            && crate::http_auth::intercept(visible, key, challenge, handler)
+            && crate::http_auth::intercept(
+                visible,
+                key,
+                url.as_deref().unwrap_or_default(),
+                challenge,
+                handler,
+            )
         {
             return;
         }

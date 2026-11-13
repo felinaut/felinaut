@@ -71,6 +71,7 @@ fn visible(text: &str) -> impl Iterator<Item = char> {
 
 /// Only a page the user can see may ask, and only for Basic or Digest on the server itself.
 /// Each other challenge (a proxy, a certificate, a hidden page) keeps WebKit's own handling.
+/// The server must also be the page's own origin: see `same_origin`.
 pub fn asks_user(method: &str, proxy: bool, visible: bool) -> bool {
     visible
         && !proxy
@@ -78,6 +79,22 @@ pub fn asks_user(method: &str, proxy: bool, visible: bool) -> bool {
             method,
             "NSURLAuthenticationMethodHTTPBasic" | "NSURLAuthenticationMethodHTTPDigest"
         )
+}
+
+/// A page may ask only for its own origin: the scheme, the host and the port of the address
+/// that the tab loads or shows. An image, a frame or a fetch from another origin must not put
+/// a sign-in form in the place of the page, because the address bar names the page and not
+/// the server that asks.
+pub fn same_origin(page_url: &str, secure: bool, host: &str, port: u16) -> bool {
+    let Ok(url) = url::Url::parse(page_url) else {
+        return false;
+    };
+    url.scheme() == if secure { "https" } else { "http" }
+        && url.port_or_known_default() == Some(port)
+        && url.host_str().is_some_and(|page| {
+            // The URL has brackets around an IPv6 address; the protection space has none.
+            page.trim_matches(['[', ']']).eq_ignore_ascii_case(host)
+        })
 }
 
 struct Waiting<R> {
@@ -182,10 +199,17 @@ thread_local! {
 
 /// Takes a challenge for the user, and returns true. Returns false for a challenge that is not
 /// for the user; the caller must then call `handler` itself. `page` is the address of the
-/// WKWebView, and `visible` says whether it is a page the user can see.
+/// WKWebView, `visible` says whether it is a page the user can see, and `page_url` is the
+/// address that the page loads or shows.
 ///
 /// This runs inside a WebKit callback, so it only queues the question.
-pub fn intercept(visible: bool, page: usize, challenge: &AnyObject, handler: &Handler) -> bool {
+pub fn intercept(
+    visible: bool,
+    page: usize,
+    page_url: &str,
+    challenge: &AnyObject,
+    handler: &Handler,
+) -> bool {
     // SAFETY: property reads on a live NSURLAuthenticationChallenge and its protection space,
     // on the main thread, with the types Foundation declares. `realm` and `protocol` can be nil.
     let (method, proxy, host, port, realm, protocol, failures) = unsafe {
@@ -202,14 +226,18 @@ pub fn intercept(visible: bool, page: usize, challenge: &AnyObject, handler: &Ha
     let Ok(port) = u16::try_from(port) else {
         return false;
     };
-    if !asks_user(&method.to_string(), proxy, visible) {
+    let host = host.to_string();
+    let secure = protocol.is_some_and(|protocol| protocol.to_string() == "https");
+    if !asks_user(&method.to_string(), proxy, visible)
+        || !same_origin(page_url, secure, &host, port)
+    {
         return false;
     }
     let challenge = Challenge::new(
-        &host.to_string(),
+        &host,
         port,
         &realm.map(|realm| realm.to_string()).unwrap_or_default(),
-        protocol.is_some_and(|protocol| protocol.to_string() == "https"),
+        secure,
         failures > 0,
     );
     // The handler can be a stack block that dies when the callback returns. The copy moves it
@@ -271,7 +299,7 @@ pub fn close_page(page: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Challenge, PAGE_LIMIT, Prompts, TEXT_LIMIT, asks_user};
+    use super::{Challenge, PAGE_LIMIT, Prompts, TEXT_LIMIT, asks_user, same_origin};
     use std::{cell::Cell, rc::Rc};
 
     /// Counts its drops, as the real reply calls WebKit's handler when it drops.
@@ -307,6 +335,34 @@ mod tests {
             "",
         ] {
             assert!(!asks_user(method, false, true), "{method}");
+        }
+    }
+
+    #[test]
+    fn only_the_origin_of_the_page_asks_the_user() {
+        let page = "https://forum.example/thread?id=1#top";
+        assert!(same_origin(page, true, "forum.example", 443));
+        assert!(same_origin(page, true, "FORUM.example", 443));
+        assert!(!same_origin(page, true, "login-verify.example", 443));
+        assert!(!same_origin(page, true, "sub.forum.example", 443));
+        assert!(!same_origin(page, true, "example", 443), "a parent domain");
+        assert!(!same_origin(page, false, "forum.example", 443), "HTTP");
+        assert!(!same_origin(page, true, "forum.example", 8443), "a port");
+        assert!(!same_origin(page, false, "forum.example", 80));
+
+        let local = "http://127.0.0.1:8080/";
+        assert!(same_origin(local, false, "127.0.0.1", 8080));
+        assert!(!same_origin(local, false, "localhost", 8080));
+        assert!(same_origin("http://[::1]:8080/", false, "::1", 8080));
+        assert!(same_origin("http://example.com/", false, "example.com", 80));
+        // The user and the password in a URL are not a part of the host.
+        let user = "https://forum.example@evil.example/";
+        assert!(!same_origin(user, true, "forum.example", 443));
+        assert!(same_origin(user, true, "evil.example", 443));
+
+        for page in ["", "about:blank", "not a url", "file:///etc/hosts"] {
+            assert!(!same_origin(page, false, "", 80), "{page:?}");
+            assert!(!same_origin(page, true, "example.com", 443), "{page:?}");
         }
     }
 

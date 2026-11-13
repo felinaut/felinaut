@@ -137,6 +137,9 @@ fn main() {
     let served_downloads = download_requests.clone();
     let auth_requests = Arc::new(AtomicUsize::new(0));
     let served_auth = auth_requests.clone();
+    let cross_requests = Arc::new(AtomicUsize::new(0));
+    let served_cross = cross_requests.clone();
+    let fixture_port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for connection in listener.incoming() {
             let Ok(mut stream) = connection else {
@@ -154,6 +157,23 @@ fn main() {
                 // The server asks for a name outside the downloads folder.
                 served_downloads.fetch_add(1, Ordering::SeqCst);
                 let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"../../fixture.bin\"\r\nContent-Length: 7\r\nConnection: close\r\n\r\nfixture");
+                continue;
+            }
+            if request.starts_with("GET /embed ") {
+                // The page is on 127.0.0.1 and its image is on localhost: another origin.
+                let body = format!(
+                    "<title>EMBED</title><img src='http://localhost:{fixture_port}/cross'>"
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                continue;
+            }
+            if request.starts_with("GET /cross ") {
+                served_cross.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"Session expired\"\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
                 continue;
             }
             if request.starts_with("GET /auth") {
@@ -204,9 +224,11 @@ fn main() {
         let second_url = format!("{base}/second");
         let download_url = format!("{base}/download");
         let auth_url = format!("{base}/auth");
+        let embed_url = format!("{base}/embed");
         let other_auth_url = format!("{base}/auth-other");
         let port = url::Url::parse(&base).unwrap().port().unwrap();
         let auth_requests = auth_requests.clone();
+        let cross_requests = cross_requests.clone();
         let folder = folder.clone();
         let download_requests = download_requests.clone();
         let handle = cx.open_window(
@@ -267,14 +289,15 @@ fn main() {
                             if stage == 5 && (title != "LINK EVENTS OK" || failure.is_none()) { continue; }
                             let downloaded = downloads.iter().any(|event| matches!(event, downloads::Event::Finished { .. }));
                             if stage == 6 && !(downloaded && download_requests.load(Ordering::SeqCst) >= 2) { continue; }
+                            if stage == 7 && (title != "EMBED" || cross_requests.load(Ordering::SeqCst) == 0) { continue; }
                             // The id of the question each sign-in stage waits for.
                             let question = http_auth::waiting(key).map(|(id, _)| id);
-                            if stage == 7 && (question != Some(1) || auth_requests.load(Ordering::SeqCst) < 2) { continue; }
-                            if stage == 8 && title != "AUTH NEEDED" { continue; }
-                            if (stage == 9 && question != Some(2)) || (stage == 10 && question != Some(3)) { continue; }
-                            if stage == 11 && title != "AUTH OK" { continue; }
+                            if stage == 8 && (question != Some(1) || auth_requests.load(Ordering::SeqCst) < 2) { continue; }
+                            if stage == 9 && title != "AUTH NEEDED" { continue; }
+                            if (stage == 10 && question != Some(2)) || (stage == 11 && question != Some(3)) { continue; }
+                            if stage == 12 && title != "AUTH OK" { continue; }
                             let closing_key = closing.as_ref().and_then(NativePage::key);
-                            if stage == 12 && closing_key.and_then(http_auth::waiting).is_none() { continue; }
+                            if stage == 13 && closing_key.and_then(http_auth::waiting).is_none() { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
@@ -345,9 +368,16 @@ fn main() {
                                     assert_eq!(std::fs::read(saved).unwrap(), b"fixture");
                                     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "the hidden page saved nothing");
                                     std::fs::remove_dir_all(folder.parent().unwrap()).unwrap();
-                                    second_page.navigate(&auth_url).unwrap();
+                                    second_page.navigate(&embed_url).unwrap();
                                 }
                                 7 => {
+                                    // The image of another origin got a sign-in challenge. Give
+                                    // a wrongly taken question time to show up.
+                                    Timer::after(Duration::from_millis(500)).await;
+                                    assert_eq!(http_auth::waiting(key), None, "another origin must not ask the user");
+                                    second_page.navigate(&auth_url).unwrap();
+                                }
+                                8 => {
                                     // The hidden page's challenge came first. It took no id, so
                                     // this one is the first question.
                                     let (id, challenge) = http_auth::waiting(key).unwrap();
@@ -357,24 +387,24 @@ fn main() {
                                     assert!(!http_auth::is_waiting(id));
                                     http_auth::answer(id, None);
                                 }
-                                8 => {
+                                9 => {
                                     prompt_closed(&second_page, cx);
                                     second_page.navigate(&auth_url).unwrap();
                                 }
                                 // Typed text goes to the user name, Tab moves to the password, Enter signs in.
-                                9 => sign_in_keys(&second_page, &["u", "s", "e", "r", "tab", "n", "o", "enter"], cx).await,
-                                10 => {
+                                10 => sign_in_keys(&second_page, &["u", "s", "e", "r", "tab", "n", "o", "enter"], cx).await,
+                                11 => {
                                     let (_, challenge) = http_auth::waiting(key).unwrap();
                                     assert!(challenge.retry, "the server refused the first answer");
                                     // Tab from the password goes back to the user name.
                                     sign_in_keys(&second_page, &["tab", "p", "a", "s", "s", "tab", "u", "s", "e", "r", "enter"], cx).await;
                                 }
-                                11 => {
+                                12 => {
                                     prompt_closed(&second_page, cx);
                                     let page = cx.update(|window, _| NativePage::new(window, &other_auth_url)).unwrap();
                                     closing = Some(page.expect("create the tab to close"));
                                 }
-                                12 => {
+                                13 => {
                                     // The tab closes with its question open. WebKit raises an
                                     // exception unless the handler is called exactly one time.
                                     let (id, challenge) = closing_key.and_then(http_auth::waiting).unwrap();
@@ -383,7 +413,7 @@ fn main() {
                                     assert!(!http_auth::is_waiting(id));
                                     Timer::after(Duration::from_millis(300)).await;
                                     assert_eq!(http_auth::waiting(key), None);
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and the HTTP sign-in prompt: Escape cancels, typed text, Tab and Enter sign in after a refused answer, a closed tab cancels, and a hidden page asks nothing");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and the HTTP sign-in prompt: Escape cancels, typed text, Tab and Enter sign in after a refused answer, a closed tab cancels, and a hidden page and an image of another origin ask nothing");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;
