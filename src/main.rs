@@ -296,6 +296,7 @@ actions!(
         ShowDownloads
     ]
 );
+actions!(felinaut, [ForgetCertificateExceptions, ExplainNotSecure]);
 
 /// What ⌘⇧T needs to bring a closed tab back where it was.
 struct ClosedTab {
@@ -426,14 +427,63 @@ impl Tab {
     fn url(&self) -> &str {
         if self.home { HOME } else { &self.url }
     }
+    /// An error page without a page underneath (after Forget) goes back to Home.
     fn can_go_back(&self) -> bool {
-        !self.home && self.page.is_some()
+        !self.home && (self.page.is_some() || self.load_failure.is_some())
+    }
+    /// A tab gets its page when first shown; an error page waits for Try Again instead.
+    fn needs_page(&self) -> bool {
+        self.page.is_none() && !self.home && self.load_failure.is_none()
+    }
+    /// What Reload (Try Again on an error page) does.
+    fn reload_plan(&self) -> ReloadPlan {
+        match (&self.page, &self.load_failure) {
+            _ if self.home => ReloadPlan::Nothing,
+            // Reloading would load the page underneath the error page, not the one that failed.
+            (Some(_), Some(failure)) => ReloadPlan::Navigate(failure.url.clone()),
+            (Some(_), None) => ReloadPlan::Reload,
+            (None, Some(failure)) => ReloadPlan::Open(failure.url.clone()),
+            (None, None) => ReloadPlan::Nothing,
+        }
+    }
+    /// Forget closes a page that came with a forgotten certificate rather than hiding it, so
+    /// its scripts, connections and sound stop and neither Back nor Forward can bring it back.
+    /// `document` is the URL the page was showing. Returns the page to hide before it drops.
+    fn close_insecure_page(&mut self, document: Option<String>) -> Option<Rc<NativePage>> {
+        let page = self.page.take();
+        self.loading = false;
+        self.sound.clear();
+        self.hovered_link = None;
+        if !self.home && self.load_failure.is_none() {
+            let url = document.unwrap_or_else(|| self.url.clone());
+            self.show_failure(load_error::forgotten(&url));
+        }
+        page
     }
     fn can_go_forward(&self) -> bool {
         self.page
             .as_ref()
             .is_some_and(|page| self.home || page.can_go_forward())
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReloadPlan {
+    Nothing,
+    Reload,
+    /// Load this URL in the tab's page.
+    Navigate(String),
+    /// Load this URL in a new page: the tab has none.
+    Open(String),
+}
+
+/// Where Back from an error page goes: the document still underneath, unless its site was
+/// forgotten (`blocked`), or else Home.
+fn back_from_failure(
+    document: Option<(String, String)>,
+    blocked: impl Fn(&str) -> bool,
+) -> Option<(String, String)> {
+    document.filter(|(url, _)| !blocked(url))
 }
 
 struct Browser {
@@ -1142,7 +1192,7 @@ impl Browser {
     /// Pinned tabs restored at launch have no page until they are first shown.
     fn load_if_needed(&mut self, index: usize, window: &mut Window) {
         let tab = &mut self.tabs[index];
-        if tab.page.is_some() || tab.home {
+        if !tab.needs_page() {
             return;
         }
         match NativePage::new(window, &tab.url) {
@@ -1555,6 +1605,9 @@ impl Browser {
             .collect();
         for request in requests {
             self.handle_agent(request, window, cx);
+        }
+        if webview::take_forget_chosen() {
+            self.forget_certificate_exceptions(&ForgetCertificateExceptions, window, cx);
         }
         let mut changed = false;
         let mut address_changed = false;
@@ -2150,7 +2203,8 @@ impl Browser {
         }
         // A failed load added no history entry: going back shows the page still underneath.
         if tab.load_failure.is_some() {
-            match tab.page.as_ref().and_then(|page| page.document()) {
+            let document = tab.page.as_ref().and_then(|page| page.document());
+            match back_from_failure(document, webview::is_blocked) {
                 Some((url, title)) => {
                     tab.load_failure = None;
                     tab.url = url;
@@ -2186,19 +2240,65 @@ impl Browser {
         self.sync_address(cx);
         cx.notify();
     }
-    fn reload(&mut self, _: &Reload, _: &mut Window, cx: &mut Context<Self>) {
+    fn reload(&mut self, _: &Reload, window: &mut Window, cx: &mut Context<Self>) {
         let tab = &mut self.tabs[self.active];
-        if !tab.home
-            && let Some(page) = &tab.page
-        {
-            // Reloading would load the page underneath the error page, not the one that failed.
-            tab.error = match &tab.load_failure {
-                Some(failure) => page.navigate(&failure.url).err(),
-                None => page.reload().err(),
-            };
+        if let Some(failure) = tab.load_failure.as_ref().filter(|_| !tab.home) {
+            webview::retry(failure);
+        }
+        let result = match tab.reload_plan() {
+            ReloadPlan::Nothing => None,
+            ReloadPlan::Reload => tab.page.as_ref().map(|page| page.reload()),
+            ReloadPlan::Navigate(url) => tab.page.as_ref().map(|page| page.navigate(&url)),
+            ReloadPlan::Open(url) => {
+                Some(NativePage::new(window, &url).map(|page| tab.page = Some(Rc::new(page))))
+            }
+        };
+        if let Some(result) = result {
+            tab.error = result.err();
             tab.loading |= tab.error.is_none();
         }
         cx.notify();
+    }
+    /// Closes every page on an accepted certificate, in any tab (Home tabs, live items and
+    /// split halves included), and shows the forgotten-site page in its place.
+    fn forget_certificate_exceptions(
+        &mut self,
+        _: &ForgetCertificateExceptions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        webview::forget_certificate_exceptions();
+        let mut closed = false;
+        for tab in &mut self.tabs {
+            let Some(page) = tab.page.as_deref() else {
+                continue;
+            };
+            // Hiding is not enough: the document keeps running over the connection WebKit
+            // trusted, and Back would show it again.
+            if page.uses_accepted_certificate() {
+                let document = page.document().map(|(url, _)| url);
+                if let Some(page) = tab.close_insecure_page(document) {
+                    let _ = page.set_visible(false);
+                    let _ = page.focus_parent();
+                    closed = true;
+                }
+            }
+        }
+        // A closed page may have had the keyboard focus.
+        if closed {
+            window.focus(&self.focus);
+        }
+        self.sync_address(cx);
+        cx.notify();
+    }
+    fn explain_not_secure(
+        &mut self,
+        _: &ExplainNotSecure,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        let host = host(&self.tabs[self.active].url).unwrap_or_default();
+        webview::explain_not_secure(window, &host);
     }
     fn home(&mut self, _: &Home, window: &mut Window, cx: &mut Context<Self>) {
         let tab = &mut self.tabs[self.active];
@@ -2545,8 +2645,8 @@ impl Browser {
                         )
                         .child(
                             note(
-                                "Until Felinaut quits. Anyone on your network could read or change \
-                                 what you send, even passwords."
+                                "For this site until Felinaut quits. Anyone on your network could read \
+                                 or change what you send, including passwords."
                                     .into(),
                             )
                             .text_xs(),
@@ -3927,8 +4027,12 @@ impl Render for Browser {
         let toolbar_toggle = sidebar_width < 88.;
         let tab = &self.tabs[self.active];
         let show_chip = !tab.home && !address_focused && display != AddressDisplay::Url;
-        let not_secure =
-            !tab.home && tab.load_failure.is_none() && webview::has_certificate_exception(&tab.url);
+        let not_secure = !tab.home
+            && tab.load_failure.is_none()
+            && tab
+                .page
+                .as_deref()
+                .is_some_and(NativePage::uses_accepted_certificate);
         self.address
             .update(cx, |input, _| input.set_not_secure(not_secure));
         let back_enabled = tab.can_go_back();
@@ -3996,6 +4100,8 @@ impl Render for Browser {
             .on_action(cx.listener(Self::reopen_tab))
             .on_action(cx.listener(Self::new_live_folder))
             .on_action(cx.listener(Self::show_downloads))
+            .on_action(cx.listener(Self::forget_certificate_exceptions))
+            .on_action(cx.listener(Self::explain_not_secure))
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(
@@ -4264,6 +4370,8 @@ fn main() {
                     MenuItem::action("Forward", Forward),
                     MenuItem::action("Reload", Reload),
                     MenuItem::action("Home", Home),
+                    MenuItem::separator(),
+                    MenuItem::action("Forget Certificate Exceptions", ForgetCertificateExceptions),
                 ],
             },
             Menu {
@@ -4335,6 +4443,94 @@ mod tests {
         assert_eq!(tab.title, "expired.badssl.com");
         tab.show_failure(failed("https://expired.badssl.com/"));
         assert_eq!(tab.url, "https://expired.badssl.com/");
+    }
+
+    fn web_tab(url: &str) -> super::Tab {
+        let mut tab = super::Tab::new(1);
+        tab.start_load(url.into());
+        tab.loading = false;
+        tab
+    }
+
+    #[test]
+    fn forget_closes_the_page_so_back_cannot_bring_it_back() {
+        use super::{ReloadPlan, back_from_failure, load_error::Kind};
+        let mut tab = web_tab("https://wiki.corp.example/inbox");
+        tab.loading = true;
+        tab.hovered_link = Some("https://wiki.corp.example/x".into());
+        let page = tab.close_insecure_page(Some("https://wiki.corp.example/inbox#2".into()));
+        assert!(page.is_none() && tab.page.is_none());
+        assert!(!tab.loading && tab.hovered_link.is_none());
+        let failure = tab.load_failure.clone().unwrap();
+        assert_eq!(failure.kind, Kind::Forgotten);
+        assert_eq!(failure.url, "https://wiki.corp.example/inbox#2");
+        assert_eq!(tab.url, failure.url);
+        // No page is made again behind the error page; Try Again opens a new one.
+        assert!(!tab.needs_page());
+        assert_eq!(tab.reload_plan(), ReloadPlan::Open(failure.url.clone()));
+        // Back has no document underneath any more, so it goes Home.
+        assert!(tab.can_go_back());
+        assert_eq!(back_from_failure(None, |_| false), None);
+        // Nor does Back show a forgotten site's document that is still underneath.
+        let document = Some(("https://wiki.corp.example/".into(), "Wiki".into()));
+        let blocked = |url: &str| url.starts_with("https://wiki.corp.example/");
+        assert_eq!(back_from_failure(document.clone(), blocked), None);
+        assert_eq!(back_from_failure(document.clone(), |_| false), document);
+    }
+
+    #[test]
+    fn forget_closes_home_live_pinned_and_split_tabs_without_changing_them() {
+        // A Home tab whose hidden page held the site stays Home, with no error page.
+        let mut home = web_tab("https://wiki.corp.example/");
+        home.home = true;
+        home.close_insecure_page(Some("https://wiki.corp.example/".into()));
+        assert!(home.home && home.load_failure.is_none() && home.page.is_none());
+        assert!(!home.needs_page() && !home.can_go_back());
+        assert_eq!(home.reload_plan(), super::ReloadPlan::Nothing);
+        // Live items, pinned tabs and split halves keep their place.
+        let mut tab = web_tab("https://wiki.corp.example/");
+        tab.live = Some("https://wiki.corp.example/".into());
+        tab.pinned = Some("https://wiki.corp.example/".into());
+        tab.split = Some(7);
+        tab.close_insecure_page(None);
+        assert_eq!(tab.live.as_deref(), Some("https://wiki.corp.example/"));
+        assert_eq!(tab.pinned.as_deref(), Some("https://wiki.corp.example/"));
+        assert_eq!(tab.split, Some(7));
+        // Without a document URL, the tab's own URL is shown.
+        assert_eq!(
+            tab.load_failure.as_ref().unwrap().url,
+            "https://wiki.corp.example/"
+        );
+    }
+
+    #[test]
+    fn forget_keeps_an_error_page_that_was_already_shown() {
+        let mut tab = web_tab("https://typed.example/");
+        tab.show_failure(failed("https://typed.example/"));
+        tab.start_load("https://next.example/".into());
+        tab.close_insecure_page(Some("https://wiki.corp.example/".into()));
+        let failure = tab.load_failure.as_ref().unwrap();
+        assert_eq!(failure.kind, super::load_error::Kind::HostNotFound);
+        assert!(!tab.loading);
+        assert_eq!(
+            tab.reload_plan(),
+            super::ReloadPlan::Open("https://typed.example/".into())
+        );
+        // Closing again changes nothing.
+        tab.close_insecure_page(None);
+        assert_eq!(
+            tab.load_failure.as_ref().unwrap().url,
+            "https://typed.example/"
+        );
+    }
+
+    #[test]
+    fn a_tab_without_a_page_or_error_gets_one_when_shown() {
+        let tab = web_tab("https://a.example/");
+        assert!(tab.needs_page());
+        assert_eq!(tab.reload_plan(), super::ReloadPlan::Nothing);
+        assert!(!tab.can_go_back());
+        assert!(!super::Tab::new(2).needs_page());
     }
 
     #[test]
