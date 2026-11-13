@@ -85,7 +85,10 @@ impl NativePage {
             .with_visible(false)
             .with_focused(false)
             .with_navigation_handler(move |url| {
-                match EXCEPTIONS.with_borrow(|exceptions| navigation(exceptions, &url, true)) {
+                let main_frame = MAIN_FRAME.get();
+                let decision =
+                    EXCEPTIONS.with_borrow(|exceptions| navigation(exceptions, &url, main_frame));
+                match decision {
                     Navigation::Allow => true,
                     Navigation::Refuse => false,
                     Navigation::Report(failure) => {
@@ -466,6 +469,18 @@ thread_local! {
     static FAILURES: RefCell<HashMap<usize, Sender<Event>>> = RefCell::default();
     static EXCEPTIONS: RefCell<Exceptions> = RefCell::default();
     static FORGET_CHOSEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether the navigation Wry's policy handler is deciding targets a main frame. Wry's
+    /// handler gets only the URL; `watch_failures` sets this around it.
+    static MAIN_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    #[cfg(test)]
+    static SUBFRAME_DECISIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many frame (not main-frame) navigations the policy hook has seen, for the native test.
+#[cfg(test)]
+#[allow(dead_code, reason = "Used by the opt-in native webview test")]
+pub fn subframe_decisions() -> usize {
+    SUBFRAME_DECISIONS.get()
 }
 
 pub fn allow_certificate(url: &str, certificate: Vec<u8>) {
@@ -636,6 +651,59 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
         }
     }
 
+    type PolicyHandler = block2::Block<dyn Fn(isize, *mut AnyObject)>;
+    type PolicyCallback = unsafe extern "C-unwind" fn(
+        *mut AnyObject,
+        Sel,
+        *mut AnyObject,
+        *mut AnyObject,
+        *mut AnyObject,
+        *mut PolicyHandler,
+    );
+    /// WebKit prefers this variant when the delegate has it. It notes whether the main frame
+    /// navigates, then lets Wry's own method decide, and hands its policy on with the same
+    /// preferences.
+    unsafe extern "C-unwind" fn decide(
+        delegate: *mut AnyObject,
+        _: Sel,
+        webview: *mut AnyObject,
+        action: *mut AnyObject,
+        preferences: *mut AnyObject,
+        handler: *mut PolicyHandler,
+    ) {
+        // SAFETY: WebKit passes a live delegate, web view, navigation action, preferences and
+        // completion handler on the main thread. The handler is copied (retained) so that it
+        // outlives this call if Wry ever answers later; Wry calls `forward` exactly once.
+        let handler = unsafe { &*handler }.copy();
+        let main_frame = unsafe { action.as_ref() }.is_none_or(|action| {
+            // SAFETY: `targetFrame` is a nullable WKFrameInfo; `isMainFrame` returns a BOOL.
+            let frame: Option<Retained<AnyObject>> = unsafe { msg_send![action, targetFrame] };
+            frame.is_none_or(|frame| unsafe { msg_send![&*frame, isMainFrame] })
+        });
+        // SAFETY: a live WKWebpagePreferences or null; retained for as long as `forward` lives.
+        let preferences = unsafe { Retained::retain(preferences) };
+        let forward = block2::RcBlock::new(move |policy: isize| {
+            let preferences = preferences
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |p| Retained::as_ptr(p).cast_mut());
+            handler.call((policy, preferences));
+        });
+        #[cfg(test)]
+        SUBFRAME_DECISIONS.set(SUBFRAME_DECISIONS.get() + usize::from(!main_frame));
+        let outer = MAIN_FRAME.replace(main_frame);
+        // SAFETY: Wry's delegate implements this selector with these argument types (objects,
+        // then a block taking WKNavigationActionPolicy, an NSInteger), on the main thread.
+        let _: () = unsafe {
+            msg_send![
+                delegate,
+                webView: webview,
+                decidePolicyForNavigationAction: action,
+                decisionHandler: &*forward
+            ]
+        };
+        MAIN_FRAME.set(outer);
+    }
+
     let view = webview.webview();
     // SAFETY: a property read on a live WKWebView, on the main thread. Wry keeps the delegate
     // alive (WKWebView only holds it weakly) for as long as the WebView.
@@ -645,7 +713,7 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     // SAFETY: `class` is Wry's registered delegate class. Adding a method only succeeds if the
     // class lacks it, so Wry's own methods are never replaced and later pages add nothing. Each
     // function matches its type encoding: void, self, _cmd, then three objects (`@`), the last
-    // one a block (`@?`) for the challenge.
+    // one a block (`@?`) for the challenge, or four with a block last for the policy.
     unsafe {
         let class = class as *const _ as *mut _;
         let failed = std::mem::transmute::<Callback, Imp>(failed);
@@ -660,6 +728,12 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
             sel!(webView:didReceiveAuthenticationChallenge:completionHandler:),
             std::mem::transmute::<ChallengeCallback, Imp>(challenge),
             c"v@:@@@?".as_ptr(),
+        );
+        objc2::ffi::class_addMethod(
+            class,
+            sel!(webView:decidePolicyForNavigationAction:preferences:decisionHandler:),
+            std::mem::transmute::<PolicyCallback, Imp>(decide),
+            c"v@:@@@@?".as_ptr(),
         );
     }
     // WebKit caches which methods a delegate implements when it is set, so set it again.
@@ -877,7 +951,8 @@ enum Navigation {
 }
 
 /// The navigation policy. Forgotten sites are refused before any request, because WebKit
-/// would reuse the connection it trusted; only a page the user sees (`reports`) says so.
+/// would reuse the connection it trusted. Only a visible page's main frame (`reports`) shows the
+/// error page: a frame on a forgotten site stays empty rather than taking over the tab.
 fn navigation(exceptions: &Exceptions, url: &str, reports: bool) -> Navigation {
     if !allowed_url(url) {
         Navigation::Refuse
@@ -1019,7 +1094,7 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        // The hidden live-folder page refuses too, without an error page.
+        // A frame and the hidden live-folder page refuse too, without an error page.
         assert_eq!(
             navigation(&exceptions, "https://wiki.corp.example/a", false),
             Navigation::Refuse
