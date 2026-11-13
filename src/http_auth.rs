@@ -109,6 +109,8 @@ struct Waiting<R> {
 pub struct Prompts<R> {
     last_id: u64,
     waiting: Vec<Waiting<R>>,
+    /// The pages where the user said no. They ask nothing more until their next navigation.
+    refused: Vec<usize>,
 }
 
 impl<R> Prompts<R> {
@@ -116,6 +118,7 @@ impl<R> Prompts<R> {
         Self {
             last_id: 0,
             waiting: Vec::new(),
+            refused: Vec::new(),
         }
     }
 
@@ -151,8 +154,32 @@ impl<R> Prompts<R> {
         Some(self.waiting.remove(index).reply)
     }
 
-    /// Removes each question of a page.
+    /// The user said no to a question. Removes each question of its page, and the page asks
+    /// nothing more until `allow` or `take_page`. A server can offer more than one method, and
+    /// WebKit then asks one more time for the same request after a refusal.
+    pub fn refuse(&mut self, id: u64) -> Vec<R> {
+        let Some(page) = self.waiting.iter().find(|item| item.id == id) else {
+            return Vec::new();
+        };
+        let page = page.page;
+        let replies = self.take_page(page);
+        self.refused.push(page);
+        replies
+    }
+
+    pub fn is_refused(&self, page: usize) -> bool {
+        self.refused.contains(&page)
+    }
+
+    /// A page starts a navigation: it may ask again.
+    pub fn allow(&mut self, page: usize) {
+        self.refused.retain(|refused| *refused != page);
+    }
+
+    /// Removes each question of a page: the page went away or shows a new document. The page
+    /// may ask again.
     pub fn take_page(&mut self, page: usize) -> Vec<R> {
+        self.allow(page);
         self.waiting
             .extract_if(.., |item| item.page == page)
             .map(|item| item.reply)
@@ -233,6 +260,11 @@ pub fn intercept(
     {
         return false;
     }
+    if PROMPTS.with_borrow(|prompts| prompts.is_refused(page)) {
+        // The user said no for this page. The request continues without a credential.
+        handler.call((REJECT_PROTECTION_SPACE, std::ptr::null_mut()));
+        return true;
+    }
     let challenge = Challenge::new(
         &host,
         port,
@@ -263,31 +295,38 @@ pub fn is_waiting(id: u64) -> bool {
     PROMPTS.with_borrow(|prompts| prompts.contains(id))
 }
 
-/// Answers a question with a user name and a password. Without them the user said no: the
-/// request continues without a credential and the page shows the server's own 401 text.
+/// Answers a question with a user name and a password. Without them the user said no: each
+/// open request of the page continues without a credential, the page shows the server's own
+/// 401 text, and the page asks nothing more until its next navigation.
 /// An id that was answered or closed before does nothing.
 pub fn answer(id: u64, credential: Option<(&str, &str)>) {
-    // Take the reply out first. The handler must not run while the list is borrowed.
+    // Take the replies out first. A handler must not run while the list is borrowed.
+    let Some((user, password)) = credential else {
+        for reply in PROMPTS.with_borrow_mut(|prompts| prompts.refuse(id)) {
+            reply.send(REJECT_PROTECTION_SPACE, std::ptr::null_mut());
+        }
+        return;
+    };
     let Some(reply) = PROMPTS.with_borrow_mut(|prompts| prompts.take(id)) else {
         return;
     };
-    match credential {
-        Some((user, password)) => {
-            // SAFETY: a class method of NSURLCredential with two live strings and a valid
-            // persistence value, on the main thread. `Retained` keeps the credential alive
-            // for the call; WebKit retains what it needs.
-            let credential: Retained<AnyObject> = unsafe {
-                msg_send![
-                    class!(NSURLCredential),
-                    credentialWithUser: &*NSString::from_str(user),
-                    password: &*NSString::from_str(password),
-                    persistence: FOR_SESSION,
-                ]
-            };
-            reply.send(USE_CREDENTIAL, Retained::as_ptr(&credential).cast_mut());
-        }
-        None => reply.send(REJECT_PROTECTION_SPACE, std::ptr::null_mut()),
-    }
+    // SAFETY: a class method of NSURLCredential with two live strings and a valid
+    // persistence value, on the main thread. `Retained` keeps the credential alive
+    // for the call; WebKit retains what it needs.
+    let credential: Retained<AnyObject> = unsafe {
+        msg_send![
+            class!(NSURLCredential),
+            credentialWithUser: &*NSString::from_str(user),
+            password: &*NSString::from_str(password),
+            persistence: FOR_SESSION,
+        ]
+    };
+    reply.send(USE_CREDENTIAL, Retained::as_ptr(&credential).cast_mut());
+}
+
+/// A page starts a navigation. After a Cancel it may ask again.
+pub fn navigation_started(page: usize) {
+    PROMPTS.with_borrow_mut(|prompts| prompts.allow(page));
 }
 
 /// Cancels each open question of a page: the page went away or shows a new document.
@@ -442,6 +481,41 @@ mod tests {
         // The list goes away with a question still open.
         drop(prompts);
         assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn a_refused_page_asks_nothing_more_until_its_next_navigation() {
+        let calls = Rc::new(Cell::new(0));
+        let reply = || Reply(calls.clone());
+        let mut prompts = Prompts::new();
+        let first = prompts.push(1, challenge("Digest"), reply()).ok().unwrap();
+        let second = prompts.push(1, challenge("b"), reply()).ok().unwrap();
+        let other = prompts.push(2, challenge("c"), reply()).ok().unwrap();
+        assert!(!prompts.is_refused(1));
+
+        // Cancel: the caller gets each reply of the page, and only of that page.
+        assert_eq!(prompts.refuse(first).len(), 2);
+        assert_eq!(calls.get(), 2);
+        assert!(prompts.is_refused(1) && !prompts.is_refused(2));
+        assert!(!prompts.contains(second) && prompts.contains(other));
+        assert!(prompts.refuse(first).is_empty(), "a second cancel");
+        assert!(prompts.refuse(99).is_empty(), "an unknown id");
+        assert!(!prompts.is_refused(99));
+
+        // A new navigation, a new document or a closed tab ends the refusal.
+        prompts.allow(1);
+        assert!(!prompts.is_refused(1));
+        let again = prompts.push(1, challenge("d"), reply()).ok().unwrap();
+        drop(prompts.refuse(again));
+        assert!(prompts.is_refused(1));
+        assert!(prompts.take_page(1).is_empty());
+        assert!(!prompts.is_refused(1));
+
+        // An accepted answer refuses nothing.
+        assert!(prompts.take(other).is_some());
+        assert!(!prompts.is_refused(2));
+        prompts.allow(3);
+        assert_eq!(calls.get(), 4);
     }
 
     #[test]

@@ -63,6 +63,7 @@ impl NativePage {
         // The address of the WKWebView, known only after the build.
         let page_key = std::rc::Rc::new(std::cell::Cell::new(0));
         let committed = page_key.clone();
+        let navigated = page_key.clone();
         let mut builder = WebViewBuilder::new();
         if agent_enabled() {
             builder =
@@ -88,7 +89,11 @@ impl NativePage {
             })
             .with_visible(false)
             .with_focused(false)
-            .with_navigation_handler(|url| allowed_url(&url))
+            .with_navigation_handler(move |url| {
+                // After a Cancel of the sign-in prompt, a new navigation may ask again.
+                crate::http_auth::navigation_started(navigated.get());
+                allowed_url(&url)
+            })
             .with_new_window_req_handler(move |url, _| {
                 if allowed_url(&url) {
                     let _ = sender.send(Event::Open(url));
