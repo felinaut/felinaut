@@ -9,8 +9,8 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Div, FontWeight, KeyBinding, MouseButton, Stateful, Window, actions, div,
-    prelude::*, px, rgb,
+    App, Context, Div, FontWeight, KeyBinding, KeyDownEvent, MouseButton, Stateful, Window,
+    actions, div, prelude::*, px, rgb,
 };
 
 use crate::{
@@ -121,6 +121,12 @@ impl Selection {
     /// again, so the click that moved the keys can still choose.
     fn focus(&mut self) {
         self.index = None;
+    }
+
+    /// Any other key on the bar, such as Space or a letter: the wait starts again, so a run
+    /// of keys that has nothing to do with the bar cannot end in an allow either.
+    fn key(&mut self, now: Instant) {
+        self.since = now;
     }
 
     /// Tab or an arrow key. The wait for an allow choice starts again.
@@ -334,6 +340,12 @@ impl Browser {
                         Some(choice) => this.decide(choice, window, cx),
                         // An early Return cleared the selection: show that.
                         None => cx.notify(),
+                    }
+                }))
+                // GPUI gives a key to these listeners only when no binding above handled it.
+                .on_key_down(cx.listener(|this, _: &KeyDownEvent, _, _| {
+                    if let Some(prompt) = &mut this.permission_prompt {
+                        prompt.selection.key(Instant::now());
                     }
                 }))
                 .on_mouse_down(
@@ -668,6 +680,28 @@ mod tests {
         // After the focus, the earliest allow by keys is one wait after the next key.
         keys.step(false, at(late));
         assert_eq!(keys.confirm(at(late + 1)), Some(Choice::NotNow));
+    }
+
+    #[test]
+    fn any_key_on_the_bar_starts_the_wait_again() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let late = 10 * ALLOW_DELAY.as_millis() as u64;
+        // An allow choice was selected long ago. Keys that have no binding on the bar, such
+        // as ← ← Space for a game or a video, arrive just before a Return.
+        let mut keys = Selection::new(start);
+        keys.step(true, at(0));
+        keys.step(true, at(0));
+        keys.step(true, at(0));
+        assert_eq!(CHOICES[keys.index.unwrap()].0, Choice::Once);
+        keys.key(at(late));
+        assert_eq!(keys.confirm(at(late + 1)), None);
+        // The early confirm cleared the selection, as for a selection key.
+        assert_eq!(keys.index, None);
+        // The refusals still count at once after any key.
+        keys.step(true, at(late + 2));
+        keys.key(at(late + 3));
+        assert_eq!(keys.confirm(at(late + 4)), Some(Choice::NotNow));
     }
 
     #[test]
