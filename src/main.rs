@@ -1667,6 +1667,9 @@ impl Browser {
             window.focus(&self.focus);
             self.sync_address(cx);
         }
+        if page_focused {
+            self.page_took_keys(window);
+        }
         for (url, activate) in open {
             self.open_link_tab(&url, activate, window, cx);
         }

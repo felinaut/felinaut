@@ -104,6 +104,10 @@ fn site_button(
 struct Selection {
     index: Option<usize>,
     since: Instant,
+    /// Whether the user moved the keys to the bar, and the page has not taken them back.
+    /// WebKit passes each key that a page does not handle on to the window, and that key
+    /// reaches the bar if GPUI still has the bar focused. Such a key must not answer.
+    keys: bool,
 }
 
 impl Selection {
@@ -111,6 +115,7 @@ impl Selection {
         Self {
             index: None,
             since: now,
+            keys: false,
         }
     }
 
@@ -121,6 +126,13 @@ impl Selection {
     /// again, so the click that moved the keys can still choose.
     fn focus(&mut self) {
         self.index = None;
+        self.keys = true;
+    }
+
+    /// A click in the page or a new request: the keys are the page's again.
+    fn release(&mut self) {
+        self.index = None;
+        self.keys = false;
     }
 
     /// Any other key on the bar, such as Space or a letter: the wait starts again, so a run
@@ -131,18 +143,21 @@ impl Selection {
 
     /// Tab or an arrow key. The wait for an allow choice starts again.
     fn step(&mut self, forward: bool, now: Instant) {
-        self.index = Some(step(self.index, forward));
         self.since = now;
+        if self.keys {
+            self.index = Some(step(self.index, forward));
+        }
     }
 
     /// Return: the selected choice, if it counts now. A Return that comes too early clears
     /// the selection and starts the wait again, so a second Return cannot confirm it.
     fn confirm(&mut self, now: Instant) -> Option<Choice> {
-        let choice = CHOICES[self.index?].0;
+        let choice = CHOICES[self.index.filter(|_| self.keys)?].0;
         if choice.counts(now.duration_since(self.since)) {
             return Some(choice);
         }
-        *self = Self::new(now);
+        self.index = None;
+        self.since = now;
         None
     }
 }
@@ -206,8 +221,9 @@ impl Browser {
             changed = true;
             // A new bar never takes the keys: they stay with the page, so a key that was
             // meant for the page cannot answer. The user moves to the bar with a click or
-            // with ⌘⇧P. The keys return to the page when the bar goes away.
-            if next.is_none() && self.permission_focus.is_focused(window) {
+            // with ⌘⇧P. The keys return to the page when the bar goes away, and also when
+            // it shows the next request: that one waits for its own ⌘⇧P or click.
+            if self.permission_focus.is_focused(window) {
                 window.focus(&self.focus);
                 let tab = &self.tabs[self.active];
                 if let Some(page) = tab.page.as_ref().filter(|_| !tab.home) {
@@ -265,6 +281,17 @@ impl Browser {
         if let Some(prompt) = &mut self.permission_prompt {
             prompt.selection.step(forward, Instant::now());
             cx.notify();
+        }
+    }
+
+    /// A click in a page on display gave it the keys. GPUI must not keep the bar focused, or
+    /// keys that the page does not handle would come on to the bar.
+    pub(crate) fn page_took_keys(&mut self, window: &mut Window) {
+        if let Some(prompt) = &mut self.permission_prompt {
+            prompt.selection.release();
+        }
+        if self.permission_focus.is_focused(window) {
+            window.focus(&self.focus);
         }
     }
 
@@ -630,10 +657,12 @@ mod tests {
 
         // Return alone confirms nothing, at any time.
         let mut keys = Selection::new(start);
+        keys.focus();
         assert_eq!(keys.confirm(at(late)), None);
 
         // ← ← and a confirm: the selection is the safe end, so the answer is a refusal.
         let mut keys = Selection::new(start);
+        keys.focus();
         keys.step(false, at(late));
         keys.step(false, at(late + 1));
         assert_eq!(keys.confirm(at(late + 2)), Some(Choice::NotNow));
@@ -642,6 +671,7 @@ mod tests {
         // clears the selection, so one more confirm does nothing either.
         for steps in [3, 4] {
             let mut keys = Selection::new(start);
+            keys.focus();
             for _ in 0..steps {
                 keys.step(true, at(late));
             }
@@ -653,6 +683,7 @@ mod tests {
 
         // Each key press starts the wait again, also when the bar is old.
         let mut keys = Selection::new(start);
+        keys.focus();
         keys.step(true, at(0));
         keys.step(true, at(0));
         keys.step(true, at(late));
@@ -690,6 +721,7 @@ mod tests {
         // An allow choice was selected long ago. Keys that have no binding on the bar, such
         // as ← ← Space for a game or a video, arrive just before a Return.
         let mut keys = Selection::new(start);
+        keys.focus();
         keys.step(true, at(0));
         keys.step(true, at(0));
         keys.step(true, at(0));
@@ -705,9 +737,49 @@ mod tests {
     }
 
     #[test]
+    fn keys_that_reach_the_bar_while_the_page_has_them_never_answer() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let late = 10 * ALLOW_DELAY.as_millis() as u64;
+        let mut keys = Selection::new(start);
+        // A new bar does not hold the keys. Keys that the page passes on select nothing,
+        // but they still start the wait.
+        for _ in 0..4 {
+            keys.step(true, at(late));
+        }
+        assert_eq!(keys.index, None);
+        assert_eq!(keys.since, at(late));
+        assert_eq!(keys.confirm(at(2 * late)), None);
+        // The user moves the keys to the bar and selects Allow Once, then clicks the page.
+        keys.focus();
+        for _ in 0..3 {
+            keys.step(true, at(2 * late));
+        }
+        assert_eq!(CHOICES[keys.index.unwrap()].0, Choice::Once);
+        keys.release();
+        assert_eq!(keys.index, None);
+        // The page's → → → and a Return long after: nothing is selected or confirmed.
+        for _ in 0..3 {
+            keys.step(true, at(3 * late));
+        }
+        assert_eq!(keys.index, None);
+        assert_eq!(keys.confirm(at(4 * late)), None);
+        // An early Return keeps the keys on the bar; only the selection goes.
+        keys.focus();
+        keys.step(true, at(4 * late));
+        keys.step(true, at(4 * late));
+        keys.step(true, at(4 * late));
+        assert_eq!(keys.confirm(at(4 * late + 1)), None);
+        assert!(keys.keys);
+        keys.step(true, at(4 * late + 2));
+        assert_eq!(keys.confirm(at(4 * late + 3)), Some(Choice::NotNow));
+    }
+
+    #[test]
     fn a_selected_allow_choice_counts_after_the_wait() {
         let start = Instant::now();
         let mut keys = Selection::new(start);
+        keys.focus();
         for _ in 0..3 {
             keys.step(true, start);
         }
@@ -716,6 +788,7 @@ mod tests {
         assert_eq!(keys.confirm(start + ALLOW_DELAY), Some(Choice::Always));
         // The refusals count at once.
         let mut keys = Selection::new(start);
+        keys.focus();
         keys.step(true, start);
         keys.step(true, start);
         assert_eq!(keys.confirm(start), Some(Choice::Never));
