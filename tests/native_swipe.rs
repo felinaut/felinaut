@@ -247,21 +247,23 @@ fn main() {
             let chrome = target.global(f64::from(CHROME) / 2., 250.);
             let page = target.global(f64::from(CHROME) + 250., 250.);
             let enabled = NSEvent::isSwipeTrackingFromScrollEventsEnabled();
-            // WebKit's own swipe goes the other way, and would take a second step.
+            // WebKit's own swipe would take a second step for the same gesture.
             assert!(!target.page_swipes(), "WebKit's back/forward swipe is off");
-            // Forward, then back: one step each, however long the fingers move.
+            // Forward, then back: one step each, when the fingers lift.
             target.gesture(chrome, &[(-20, 0); 12]);
             target.gesture(chrome, &[(20, 0); 12]);
             // None of these may navigate.
             target.gesture(chrome, &[(0, -20); 12]);
             target.gesture(chrome, &[(-20, -20); 12]);
             target.gesture(chrome, &[(-10, 0); 3]);
+            // Out and back again cancels.
+            target.gesture(chrome, &[(-40, 0), (-40, 0), (-40, 0), (35, 0), (35, 0), (35, 0)]);
             target.post(chrome, -40, 0, 0, MOMENTUM_BEGIN);
             for _ in 0..10 {
                 target.post(chrome, -40, 0, 0, MOMENTUM_CONTINUE);
             }
             target.post(chrome, 0, 0, 0, MOMENTUM_END);
-            // Over a page too: the same direction as the first swipe.
+            // Over a page too, when the page has nothing to scroll sideways.
             target.gesture(page, &[(-20, 0); 12]);
             target.post(chrome, 0, 0, BEGAN, 0);
             target.post(chrome, -20, 0, CHANGED, 0);
@@ -270,13 +272,58 @@ fn main() {
             // Proves the queue was read to here.
             target.gesture(chrome, &[(-20, 0); 12]);
             Timer::after(Duration::from_millis(800)).await;
+            let steps_seen = steps.clone();
             let steps = steps.borrow().clone();
             if enabled {
-                assert!(
-                    matches!(steps.as_slice(), [first, second, page, last]
-                        if first != second && page == first && last == first),
-                    "expected one step per real swipe, got {steps:?}"
+                assert_eq!(
+                    steps,
+                    [Step::Forward, Step::Back, Step::Forward, Step::Forward],
+                    "expected one step per real swipe: content pulled left goes forward"
                 );
+                // The page comes first, in real WebKit: a swipe during which the page scrolled
+                // sideways, or handled the wheel event itself, does not navigate.
+                let page_view = handle
+                    .update(cx, |view, _, _| view.page.clone())
+                    .expect("page");
+                let count = || steps_seen.borrow().len();
+                page_view
+                    .evaluate_for_test(
+                        "document.body.innerHTML = '<div id=\"s\" style=\"overflow:auto;width:200px\">\
+                         <div style=\"width:2000px;height:50px\"></div></div>';",
+                    )
+                    .expect("scroller");
+                for (script, expected, what) in [
+                    (
+                        "const s = document.getElementById('s');\
+                         s.dispatchEvent(new WheelEvent('wheel', {deltaX: 40, bubbles: true}));\
+                         s.scrollLeft += 100;",
+                        0,
+                        "the page scrolled sideways",
+                    ),
+                    (
+                        "addEventListener('wheel', (e) => e.preventDefault(), {passive: false});\
+                         document.body.dispatchEvent(new WheelEvent('wheel',\
+                           {deltaX: 40, bubbles: true, cancelable: true}));",
+                        0,
+                        "the page handled the wheel event",
+                    ),
+                    (
+                        "document.body.dispatchEvent(new WheelEvent('wheel',\
+                           {deltaX: 40, bubbles: true, cancelable: false}));",
+                        1,
+                        "the page had no use for the scroll",
+                    ),
+                ] {
+                    let before = count();
+                    target.post(page, 0, 0, BEGAN, 0);
+                    target.post(page, 80, 0, CHANGED, 0);
+                    Timer::after(Duration::from_millis(200)).await;
+                    page_view.evaluate_for_test(script).expect("script");
+                    Timer::after(Duration::from_millis(500)).await;
+                    target.post(page, 0, 0, ENDED, 0);
+                    Timer::after(Duration::from_millis(300)).await;
+                    assert_eq!(count() - before, expected, "{what}");
+                }
                 println!("Native swipe test passed.");
             } else {
                 assert!(steps.is_empty(), "swipes are off in System Settings, got {steps:?}");

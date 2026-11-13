@@ -67,8 +67,13 @@ impl NativePage {
             .with_initialization_script_for_main_only(include_str!("link_interactions.js"), false)
             .with_initialization_script_for_main_only(include_str!("audio_control.js"), false)
             .with_initialization_script_for_main_only(include_str!("page_icon.js"), true)
+            .with_initialization_script_for_main_only(include_str!("swipe_scroll.js"), true)
             .with_ipc_handler(move |request| {
                 let body = request.body();
+                if body == crate::swipe::PAGE_SCROLLED {
+                    page_scrolled();
+                    return;
+                }
                 let event = parse_link_event(body)
                     .or_else(|| parse_icon_event(body))
                     .or_else(|| {
@@ -824,11 +829,10 @@ fn swipe_event(event: &objc2_app_kit::NSEvent) -> bool {
                     dy: event.scrollingDeltaY(),
                     phase,
                     momentum: event.momentumPhase() != NSEventPhase::None,
-                    natural: event.isDirectionInvertedFromDevice(),
                     allowed,
                 })
             }
-            NSEventType::Swipe => swipe_step(event.deltaX(), event.deltaY(), natural_scrolling()),
+            NSEventType::Swipe => swipe_step(event.deltaX(), event.deltaY()),
             _ => None,
         };
         step.is_some_and(|step| watch.sender.send(step).is_ok())
@@ -844,14 +848,20 @@ fn swipe_event(event: &objc2_app_kit::NSEvent) -> bool {
     event.r#type() == NSEventType::Swipe
 }
 
-/// Whether natural scrolling is on, for swipe events, which do not say. It is the default when
-/// the user never changed it.
-#[cfg(target_os = "macos")]
-fn natural_scrolling() -> bool {
-    use objc2_foundation::{NSUserDefaults, ns_string};
-    let defaults = NSUserDefaults::standardUserDefaults();
-    let key = ns_string!("com.apple.swipescrolldirection");
-    defaults.objectForKey(key).is_none() || defaults.boolForKey(key)
+/// A page reported that the sideways scroll under way was its own, so the swipe does not also
+/// navigate. Pages are untrusted: all one can do with this is keep its own swipe from
+/// navigating, as a page that handles wheel events can in any browser.
+fn page_scrolled() {
+    #[cfg(target_os = "macos")]
+    SWIPES.with(|watch| {
+        // The page's message arrives from the run loop, never from inside the monitor; should
+        // that ever change, dropping the report is better than a panic.
+        if let Ok(mut watch) = watch.try_borrow_mut()
+            && let Some(watch) = watch.as_mut()
+        {
+            watch.tracker.page_scrolled();
+        }
+    });
 }
 
 /// Agent control is opt-in. The new setting takes precedence, including an explicit disable.
