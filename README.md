@@ -358,6 +358,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.
 - `src/settings.rs`: the Settings window (`⌘,`): search engine, website language and full screen.
+- `src/full_screen.rs`: `⌃⌘F`, either native full screen or filling the current desktop, per window.
 - `src/language.rs`: the website language choice and how it reaches WebKit at launch.
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.

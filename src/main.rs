@@ -7,6 +7,7 @@ mod brand;
 mod download_panel;
 mod downloads;
 mod engine;
+mod full_screen;
 mod history;
 mod icons;
 mod input;
@@ -632,7 +633,10 @@ impl Browser {
             // Native full screen and filling the screen both resize the window.
             if window.is_window_active()
                 && let Some(menus) = cx.get_menus().and_then(|menus| {
-                    full_screen_menus(menus, window.is_fullscreen() || webview::is_filled(window))
+                    full_screen_menus(
+                        menus,
+                        window.is_fullscreen() || full_screen::is_filled(window),
+                    )
                 })
             {
                 cx.set_menus(menus);
@@ -659,7 +663,7 @@ impl Browser {
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
             // Brings back the menu bar and Dock if the window fills the screen.
-            webview::fill_screen(window, cx, false, false);
+            full_screen::closed(window);
             // Otherwise the dropdown outlives us and the app never quits.
             suggestions::close(cx);
             let _ = weak.update(cx, |this, _| {
@@ -4050,9 +4054,7 @@ impl Render for Browser {
             .on_action(|_: &ToggleFullScreen, window, cx| {
                 let fill = !cx.global::<ThemeSettings>().native_full_screen;
                 let animate = theme::motion_allowed(cx);
-                if window.is_fullscreen() || !webview::fill_screen(window, cx, fill, animate) {
-                    window.toggle_fullscreen()
-                }
+                full_screen::toggle(window, cx, fill, animate);
             })
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
