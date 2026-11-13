@@ -14,6 +14,9 @@ mod downloads;
 #[path = "../src/icons.rs"]
 mod icons;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/identity.rs"]
+mod identity;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/load_error.rs"]
 mod load_error;
 #[allow(dead_code)]

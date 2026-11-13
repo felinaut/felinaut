@@ -136,6 +136,19 @@ CI passes its single computed value as **`FELINAUT_RELEASE_VERSION`** to both na
 
 About also shows a 12-character Git hash, embedded at compile time. `build.rs` watches Git's HEAD, current branch reference, packed references, and the release-version environment setting so subsequent builds refresh metadata. Source archives without Git metadata, or builds without Git installed, display `unknown` instead of a hash. There are no runtime Git calls. The hash identifies the source commit, not uncommitted local edits; it is not a clean-working-tree guarantee.
 
+## Browser identity
+
+Pages see Felinaut as the Safari installed on the Mac, which uses the same system WebKit engine. The user agent is WebKit's own (`Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)`), followed by `Version/<version> Safari/605.1.15`. The version is the one Safari itself sends: `major.minor`, plus the patch level when there is one (`Version/26.6.2` for Safari 26.6.2).
+
+- **Where the version comes from:** `/Applications/Safari.app/Contents/Info.plist`, read once at launch, before the first window opens (at most 256 KB). If that file can't be read, the macOS version gives an approximate one: the same version from macOS 26 on, and the macOS major version plus three for macOS 11 to 15 (Safari 14 to 18). It is approximate because Safari can be updated separately from macOS.
+- **Where it applies:** every page Felinaut opens, including the hidden pages that refresh live folders.
+
+**Why:** without the Safari tokens, sites treat Felinaut as an unknown embedded web view. Google, for example, serves an old, stripped-down results page with no **Sign in** button.
+
+**What doesn't change:** Safari-only features such as Apple Pay and passkeys still need Apple's entitlements (see Passkeys below). Sites may offer them and then find them unavailable. The code is in `src/identity.rs`.
+
+**Embedded-browser checks are bypassed too.** Some sign-in flows, Google's among them, deliberately look for embedded web views and refuse or reroute them. Felinaut no longer looks like one, so those flows now run in a setup the site does not officially support: they may work, or break in ways the site does not expect.
+
 ## Passkeys
 
 **Today:** passwords, one-time codes and every other sign-in that runs inside the page work. Passkeys do not: WebKit refuses WebAuthn in an embedded `WKWebView` unless the app carries Apple's restricted browser entitlement. Measured in a dev-signed Felinaut build on macOS 26: `navigator.credentials` and `PublicKeyCredential` exist on https://webauthn.io, but `isUserVerifyingPlatformAuthenticatorAvailable()` returns `false` and both `create()` and `get()` reject immediately with `NotAllowedError: The request is not allowed by the user agent or the platform in the current context`. No passkey sheet appears. There is no JavaScript workaround: the passkey UI and the iCloud Keychain access belong to WebKit's own process.
@@ -342,6 +355,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/main.rs`: GPUI window, tabs and navigation controls.
 - `src/input.rs`: address input adapted from Zed's Apache-2.0 GPUI input example.
 - `src/engine.rs`: address-to-URL/search resolution and the fixed list of search engines.
+- `src/identity.rs`: the Safari-compatible user agent every page sends.
 - `src/history.rs`: on-disk visit store, fuzzy matcher and frecency ranking.
 - `src/suggestions.rs`: the native, non-focusing history dropdown under the address bar.
 - `src/icons.rs`, `src/page_icon.js`: site icons handed over by the page as validated PNGs, stored per host, with monogram fallback.

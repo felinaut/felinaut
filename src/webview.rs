@@ -9,6 +9,7 @@ use gpui::{Bounds, Pixels};
 use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
 use crate::audio::{AudioReport, TabAudio, parse_report};
+use crate::identity;
 use crate::load_error::{Exceptions, LoadFailure};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,7 +59,7 @@ impl NativePage {
         let title_sender = sender.clone();
         let link_sender = sender.clone();
         let failure_sender = sender.clone();
-        let mut builder = WebViewBuilder::new();
+        let mut builder = WebViewBuilder::new().with_user_agent(identity::user_agent());
         if agent_enabled() {
             builder =
                 builder.with_initialization_script_for_main_only(include_str!("agent.js"), true);
@@ -126,6 +127,7 @@ impl NativePage {
         check_url(url)?;
         let (sender, events) = mpsc::channel();
         let webview = WebViewBuilder::new()
+            .with_user_agent(identity::user_agent())
             .with_visible(false)
             .with_focused(false)
             // A real viewport: rows that never get a layout may render empty.
