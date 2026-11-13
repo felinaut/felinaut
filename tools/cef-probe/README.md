@@ -90,6 +90,10 @@ python3 tools/cef-probe/bundle_probe.py --help
 
 Every native run now integrates `helper_observer.py`. It accepts bounded native helper-start/post-sandbox records, verifies only those PIDs using `libproc` (exact executable, parent, UID and start time), registers `kqueue` exit notifications and queries `sandbox_check` only after sandbox initialization. PID reuse, API errors, unmatched launch counts, malformed records and surviving helpers remain explicit gaps. It neither scans the process table, signals helpers nor deletes profiles. **41 offline observer tests pass**, complemented by the native evidence below. Helper records are emitted as one bounded OS write; a concurrent-process unit test checks record integrity.
 
+## Coexistence transition model
+
+`src/coexistence_policy.rs` and `fixtures/coexistence.html` define the next native experiment's fixed sequence: both engines ready, same-origin cookie/localStorage separation, native input WebKit → CEF → WebKit, retained CEF input and both viewports resized to 600 CSS pixels. The pure model rejects invalid, untrusted, wrong-engine and out-of-order reports, tolerates accepted duplicates without advancing, and issues each action once. **21 behavioral unit tests pass.** This model/fixture checkpoint alone does not prove native WKWebView/CEF coexistence or expose a browser engine picker.
+
 ## Real CEF runtime probe
 
 After explicit SDK preparation:

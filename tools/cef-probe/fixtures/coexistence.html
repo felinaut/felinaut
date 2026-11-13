@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title></title>
+        <style>
+            body {
+                margin: 0;
+                background: #f7f6ff;
+                color: #151b35;
+                font:
+                    18px system-ui,
+                    sans-serif;
+            }
+            h1 {
+                position: absolute;
+                left: 32px;
+                top: 20px;
+                margin: 0;
+                font-size: 28px;
+            }
+            p {
+                position: absolute;
+                left: 32px;
+                right: 32px;
+                top: 66px;
+                margin: 0;
+                font-size: 15px;
+            }
+            label {
+                position: absolute;
+                left: 32px;
+                top: 103px;
+            }
+            input {
+                position: absolute;
+                left: 32px;
+                top: 130px;
+                width: 340px;
+                height: 40px;
+                box-sizing: border-box;
+                padding: 6px;
+                font: 18px system-ui;
+                border: 2px solid #65759c;
+                border-radius: 8px;
+            }
+            button {
+                position: absolute;
+                left: 32px;
+                top: 200px;
+                width: 210px;
+                height: 40px;
+                border: 0;
+                border-radius: 8px;
+                background: #27375e;
+                color: white;
+                font: 18px system-ui;
+            }
+            output {
+                position: absolute;
+                left: 32px;
+                top: 270px;
+                right: 32px;
+            }
+            aside {
+                position: absolute;
+                left: 32px;
+                right: 32px;
+                bottom: 24px;
+                color: #52617e;
+                font-size: 14px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1 id="role">Engine coexistence probe</h1>
+        <p>Same-origin fixture · native input and isolated storage</p>
+        <label for="probe-input">Test input</label>
+        <input
+            id="probe-input"
+            autocomplete="off"
+            spellcheck="false"
+            maxlength="24"
+            aria-label="Test input"
+        />
+        <button id="verify">Verify native input</button>
+        <output id="result">Waiting for native text and pointer events…</output>
+        <aside>
+            No accounts, remote assets, filesystem bridge or application
+            commands.
+        </aside>
+        <script>
+            (() => {
+                "use strict";
+                const role =
+                    location.pathname === "/cef"
+                        ? "cef"
+                        : location.pathname === "/webkit"
+                          ? "webkit"
+                          : "invalid";
+                const label =
+                    role === "cef" ? "CEF · Chromium" : "WebKit · WKWebView";
+                const text = "Hello from Felinaut";
+                const returnText = text + " Meow";
+                const storageKey = "felinaut-coexistence";
+                const cookieKey = "felinaut_coexistence";
+                const field = document.getElementById("probe-input");
+                const result = document.getElementById("result");
+                let verified = false;
+                let initialEmpty = false;
+
+                document.getElementById("role").textContent =
+                    role === "invalid" ? "Invalid fixture path" : label;
+
+                function cookieValues() {
+                    return document.cookie
+                        .split(";")
+                        .map((part) => part.trim())
+                        .filter((part) => part.startsWith(cookieKey + "="))
+                        .map((part) => part.slice(cookieKey.length + 1));
+                }
+
+                // Both roles deliberately use the SAME keys, origin and Path=/.
+                // Reading after both writes detects accidentally shared stores.
+                try {
+                    initialEmpty =
+                        localStorage.getItem(storageKey) === null &&
+                        cookieValues().length === 0;
+                    if (role !== "invalid") {
+                        localStorage.setItem(storageKey, role);
+                        document.cookie =
+                            cookieKey +
+                            "=" +
+                            role +
+                            "; Path=/; SameSite=Strict";
+                    }
+                } catch {
+                    initialEmpty = false;
+                }
+                document.documentElement.dataset.initialEmpty =
+                    String(initialEmpty);
+
+                function isolated() {
+                    try {
+                        const cookies = cookieValues();
+                        return (
+                            role !== "invalid" &&
+                            initialEmpty &&
+                            localStorage.getItem(storageKey) === role &&
+                            cookies.length === 1 &&
+                            cookies[0] === role
+                        );
+                    } catch {
+                        return false;
+                    }
+                }
+
+                function publish(phase, trusted = verified) {
+                    document.title = [
+                        "COEX",
+                        role,
+                        phase,
+                        innerWidth,
+                        isolated() ? "ok" : "bad",
+                        field.value,
+                        String(trusted),
+                    ].join(":");
+                }
+
+                // Native code evaluates only this fixed storage-report call.
+                // No IPC/native bridge, arbitrary script or command dispatcher.
+                window.probe = Object.freeze({
+                    initialEmpty,
+                    report(phase) {
+                        if (phase !== "storage") {
+                            throw new TypeError(
+                                "Only storage reports can be requested",
+                            );
+                        }
+                        publish("storage");
+                    },
+                });
+
+                field.addEventListener("focus", (event) => {
+                    publish("focus", event.isTrusted);
+                });
+                document.addEventListener("pointerup", (event) => {
+                    if (
+                        event.target === field &&
+                        document.activeElement === field
+                    ) {
+                        publish("focus", event.isTrusted);
+                    }
+                });
+                field.addEventListener("input", (event) => {
+                    verified = false;
+                    publish("typing", event.isTrusted);
+                });
+                document
+                    .getElementById("verify")
+                    .addEventListener("click", (event) => {
+                        verified =
+                            event.isTrusted &&
+                            (field.value === text ||
+                                (role === "webkit" &&
+                                    field.value === returnText));
+                        result.textContent = verified
+                            ? label +
+                              ": " +
+                              field.value +
+                              " · trusted pointer event"
+                            : label + ": native input check failed";
+                        publish("input", event.isTrusted);
+                    });
+                addEventListener("resize", () => {
+                    if (verified) publish("resize");
+                });
+                publish("ready");
+            })();
+        </script>
+    </body>
+</html>
