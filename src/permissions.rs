@@ -823,6 +823,55 @@ mod tests {
     }
 
     #[test]
+    fn ipv6_and_loopback_origins_survive_a_round_trip() {
+        let origins = [
+            "http://127.0.0.1",
+            "http://127.0.0.1:8080",
+            "http://[::1]",
+            "http://[::1]:8080",
+            "http://app.localhost:3000",
+            "http://localhost",
+            "https://[2001:db8::1]",
+            "https://[2001:db8::1]:8443",
+        ];
+        let mut permissions = Permissions::default();
+        for (index, origin) in origins.into_iter().enumerate() {
+            // Each origin is in the form that `origin` makes from WebKit's parts.
+            assert_eq!(origin_of_url(origin).as_deref(), Some(origin));
+            let decision = [Decision::Allow, Decision::Deny][index % 2];
+            permissions.remember(origin, BOTH, decision);
+        }
+        let text = serialize(&permissions.entries);
+        let parsed = parse(&text);
+        assert_eq!(parsed.len(), 2 * origins.len());
+        assert_eq!(parsed, permissions.entries);
+        assert_eq!(serialize(&parsed), text);
+
+        // WebKit gives an IPv6 host without brackets. The key is the same as the stored one.
+        assert_eq!(origin("http", "::1", 8080).as_deref(), Some(origins[3]));
+        assert_eq!(
+            origin("https", "2001:DB8::1", 443).as_deref(),
+            Some(origins[6])
+        );
+
+        // Another spelling of an address, a plain HTTP address that is not loopback and a
+        // broken bracket are not in the exact form: such a line never becomes a decision.
+        for line in [
+            "allow\tcamera\thttp://[0:0:0:0:0:0:0:1]",
+            "allow\tcamera\thttp://[::1]:80",
+            "allow\tcamera\thttp://::1",
+            "allow\tcamera\thttp://[::1",
+            "allow\tcamera\thttp://[2001:db8::1]",
+            "allow\tcamera\thttp://[::ffff:192.168.1.10]",
+            "allow\tcamera\thttp://192.168.1.10",
+            "allow\tcamera\thttp://127.0.0.1.example.com",
+            "allow\tcamera\thttp://LOCALHOST",
+        ] {
+            assert!(parse(line).is_empty(), "{line}");
+        }
+    }
+
+    #[test]
     fn malformed_lines_are_skipped_and_never_become_a_grant() {
         let text = "# comment\n\
             allow\tcamera\thttps://good.example\n\
