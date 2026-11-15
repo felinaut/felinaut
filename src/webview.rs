@@ -6,9 +6,16 @@ use std::ffi::c_void;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use gpui::{Bounds, Pixels};
+use objc2::{
+    msg_send,
+    rc::Retained,
+    runtime::{AnyObject, Sel},
+    sel,
+};
 use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
 use crate::audio::{AudioReport, TabAudio, parse_report};
+use crate::identity;
 use crate::load_error::{Exceptions, LoadFailure};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,6 +36,13 @@ pub enum Event {
     Failed(LoadFailure),
     /// A load ended without finishing: cancelled, or failed after the page was shown.
     Stopped,
+    /// Whether the last `find` matched.
+    Found(bool),
+    /// The page got a find shortcut and did not take it: 0 is ⌘F, 1 is ⌘G and -1 is ⇧⌘G.
+    FindKey(i8),
+    /// A frame or resource of the page was trusted with a certificate the user accepted.
+    /// Connections WebKit reuses without a challenge are not reported.
+    UsedException,
 }
 
 /// One persistent native child view per tab; hiding it does not discard its history or document.
@@ -38,6 +52,9 @@ pub struct NativePage {
     events: Receiver<Event>,
     last_url: RefCell<String>,
     failure_key: Option<usize>,
+    /// A tab page's own view, sized to the page area: a docked Web Inspector stays in it, and
+    /// hides with its tab.
+    container: Option<Retained<objc2_app_kit::NSView>>,
 }
 
 impl Drop for NativePage {
@@ -45,6 +62,9 @@ impl Drop for NativePage {
         if let Some(key) = self.failure_key {
             FAILURES.with_borrow_mut(|pages| pages.remove(&key));
             crate::downloads::native::detach(key);
+        }
+        if let Some(container) = &self.container {
+            container.removeFromSuperview();
         }
     }
 }
@@ -58,12 +78,16 @@ impl NativePage {
         let title_sender = sender.clone();
         let link_sender = sender.clone();
         let failure_sender = sender.clone();
-        let mut builder = WebViewBuilder::new();
+        let blocked_sender = sender.clone();
+        let mut builder = WebViewBuilder::new().with_user_agent(identity::user_agent());
         if agent_enabled() {
             builder =
                 builder.with_initialization_script_for_main_only(include_str!("agent.js"), true);
         }
         let webview = builder
+            .with_devtools(true)
+            // In each frame: the keys go to the frame that has the focus.
+            .with_initialization_script(include_str!("find_keys.js"))
             .with_initialization_script_for_main_only(include_str!("link_interactions.js"), false)
             .with_initialization_script_for_main_only(include_str!("audio_control.js"), false)
             .with_initialization_script_for_main_only(include_str!("page_icon.js"), true)
@@ -76,6 +100,7 @@ impl NativePage {
                 }
                 let event = parse_link_event(body)
                     .or_else(|| parse_icon_event(body))
+                    .or_else(|| parse_find_key(body))
                     .or_else(|| {
                         (body.len() <= 64)
                             .then(|| parse_report(body))
@@ -88,7 +113,19 @@ impl NativePage {
             })
             .with_visible(false)
             .with_focused(false)
-            .with_navigation_handler(|url| allowed_url(&url))
+            .with_navigation_handler(move |url| {
+                let main_frame = MAIN_FRAME.get();
+                let decision =
+                    EXCEPTIONS.with_borrow(|exceptions| navigation(exceptions, &url, main_frame));
+                match decision {
+                    Navigation::Allow => true,
+                    Navigation::Refuse => false,
+                    Navigation::Report(failure) => {
+                        let _ = blocked_sender.send(Event::Failed(failure));
+                        false
+                    }
+                }
+            })
             .with_new_window_req_handler(move |url, _| {
                 if allowed_url(&url) {
                     let _ = sender.send(Event::Open(url));
@@ -114,14 +151,24 @@ impl NativePage {
         let failure_key = watch_failures(&webview, failure_sender);
         {
             use wry::WebViewExtMacOS;
-            crate::downloads::native::attach(&webview.webview(), failure_key.is_some());
+            let view = webview.webview();
+            crate::downloads::native::attach(&view, failure_key.is_some());
+            // Keep the in-app inspector but stop Safari's Develop menu attaching from outside.
+            // SAFETY: a live WKWebView on the main thread; the setter exists on macOS 13.3+.
+            unsafe {
+                if msg_send![&*view, respondsToSelector: objc2::sel!(setInspectable:)] {
+                    let () = msg_send![&*view, setInspectable: false];
+                }
+            }
         }
+        let container = contain(&webview);
 
         Ok(Self {
             webview,
             events,
             last_url: RefCell::new(String::new()),
             failure_key,
+            container,
         })
     }
 
@@ -131,14 +178,23 @@ impl NativePage {
         check_url(url)?;
         let (sender, events) = mpsc::channel();
         let webview = WebViewBuilder::new()
+            .with_user_agent(identity::user_agent())
             .with_visible(false)
             .with_focused(false)
+            .with_devtools(false)
             // A real viewport: rows that never get a layout may render empty.
             .with_bounds(wry::Rect {
                 position: wry::dpi::LogicalPosition::new(-20_000., -20_000.).into(),
                 size: wry::dpi::LogicalSize::new(1024., 768.).into(),
             })
-            .with_navigation_handler(|url| allowed_url(&url))
+            // WebKit can reuse a connection a tab trusted with an exception without asking
+            // this page, so never request a site with one; this also covers redirects and frames.
+            .with_navigation_handler(|url| {
+                EXCEPTIONS.with_borrow(|exceptions| {
+                    navigation(exceptions, &url, false) == Navigation::Allow
+                        && !exceptions.covers(&url)
+                })
+            })
             .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
             .with_on_page_load_handler(move |event, url| {
                 if matches!(event, PageLoadEvent::Finished) {
@@ -158,6 +214,7 @@ impl NativePage {
             events,
             last_url: RefCell::new(String::new()),
             failure_key: None,
+            container: None,
         })
     }
 
@@ -185,6 +242,163 @@ impl NativePage {
 
     pub fn set_zoom(&self, zoom: f64) -> Result<(), String> {
         self.webview.zoom(zoom).map_err(|error| error.to_string())
+    }
+
+    /// Selects and scrolls to the next match, and reports `Event::Found`. WebKit starts at the
+    /// current selection and skips it only when it already is a match, so a longer or shorter
+    /// query refines the current match, in frames too, and repeating a query steps to the next.
+    pub fn find(&self, text: &str, backwards: bool) {
+        use objc2::MainThreadOnly;
+        use objc2_web_kit::{WKFindConfiguration, WKFindResult};
+        use wry::WebViewExtMacOS;
+        let sender = self
+            .failure_key
+            .and_then(|key| FAILURES.with_borrow(|pages| pages.get(&key).cloned()));
+        let block = block2::RcBlock::new(move |result: std::ptr::NonNull<WKFindResult>| {
+            // SAFETY: WebKit passes a live result on the main thread.
+            let found = unsafe { result.as_ref().matchFound() };
+            if let Some(sender) = &sender {
+                let _ = sender.send(Event::Found(found));
+            }
+        });
+        let webview = self.webview.webview();
+        // SAFETY: a live WKWebView on the main thread; WebKit copies the block.
+        unsafe {
+            let configuration = WKFindConfiguration::new(webview.mtm());
+            configuration.setBackwards(backwards);
+            webview.findString_withConfiguration_completionHandler(
+                &objc2_foundation::NSString::from_str(text),
+                Some(&configuration),
+                &block,
+            );
+        }
+    }
+
+    /// Clears the selection that the last match left, in the page and its frames. The script
+    /// runs in WebKit's client world, where the page's own scripts can neither replace the
+    /// functions it calls nor see it run; the page can still observe `selectionchange`.
+    pub fn deselect(&self) {
+        use objc2::MainThreadOnly;
+        use objc2_web_kit::WKContentWorld;
+        use wry::WebViewExtMacOS;
+        let webview = self.webview.webview();
+        // SAFETY: a live WKWebView on the main thread; no frame means the main frame, and no
+        // completion handler means the result is dropped.
+        unsafe {
+            webview.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+                &objc2_foundation::NSString::from_str(DESELECT),
+                None,
+                &WKContentWorld::defaultClientWorld(webview.mtm()),
+                None,
+            );
+        }
+    }
+
+    /// Opens WebKit's Web Inspector where it was last (docked in the page or in its own
+    /// window), or closes it if open.
+    pub fn toggle_devtools(&self) {
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // SAFETY: a live WKWebView on the main thread.
+        if let Some(inspector) = unsafe { inspector_of(&view) } {
+            // SAFETY: the page's own `_WKInspector`, on the main thread.
+            unsafe { toggle_inspector(&inspector) };
+        }
+    }
+
+    /// The page's `isInspectable` (macOS 13.3+): whether Safari's Develop menu may attach.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+    pub fn inspectable_for_test(&self) -> Option<bool> {
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // SAFETY: a live WKWebView on the main thread; the getter is checked first.
+        responds(&view, sel!(isInspectable)).then(|| unsafe { msg_send![&*view, isInspectable] })
+    }
+
+    /// Whether WebKit's developer extras (Inspect Element, the inspector) are on.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+    pub fn developer_extras_for_test(&self) -> bool {
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // SAFETY: a live WKWebView's configuration and preferences, on the main thread.
+        unsafe {
+            let configuration: Retained<AnyObject> = msg_send![&*view, configuration];
+            let preferences: Retained<AnyObject> = msg_send![&*configuration, preferences];
+            assert!(responds(&preferences, sel!(_developerExtrasEnabled)));
+            msg_send![&*preferences, _developerExtrasEnabled]
+        }
+    }
+
+    /// The tab page's container view and where the WKWebView sits in it.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+    pub fn container_for_test(&self) -> Option<ContainerForTest> {
+        use wry::WebViewExtMacOS;
+        let container = self.container.as_ref()?;
+        let view = self.webview.webview();
+        // SAFETY: views this page owns, on the main thread.
+        let parent = unsafe { container.superview() }?;
+        let frame = container.frame();
+        Some(ContainerForTest {
+            hidden: container.isHidden(),
+            frame: (
+                frame.origin.x,
+                frame.origin.y,
+                frame.size.width,
+                frame.size.height,
+            ),
+            parent_height: parent.frame().size.height,
+            parent_flipped: parent.isFlipped(),
+            holds_page: unsafe { view.superview() }.as_deref() == Some(&**container),
+            page_hidden: view.isHidden(),
+            page_fills: view.frame() == container.bounds(),
+        })
+    }
+
+    /// The page's Web Inspector, once WebKit has made one.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+    pub fn inspector_for_test(&self) -> Option<InspectorForTest> {
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // SAFETY: a live WKWebView and its `_WKInspector`, on the main thread.
+        unsafe {
+            let inspector = inspector_of(&view)?;
+            let page: Option<Retained<objc2_app_kit::NSView>> =
+                msg_send![&*inspector, inspectorWebView];
+            let in_container = match (&page, &self.container) {
+                (Some(page), Some(container)) => page.isDescendantOf(container),
+                _ => false,
+            };
+            Some(InspectorForTest {
+                visible: msg_send![&*inspector, isVisible],
+                detached: inspector_is_detached(&inspector),
+                front: msg_send![&*inspector, isFront],
+                in_container,
+                window_class: page
+                    .and_then(|page| page.window())
+                    .map(|window| window.class().name().to_string_lossy().into_owned()),
+            })
+        }
+    }
+
+    /// Docks (`attach`) or detaches the open Web Inspector.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+    pub fn dock_inspector_for_test(&self, docked: bool) {
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // SAFETY: a live WKWebView and its `_WKInspector`, on the main thread.
+        unsafe {
+            let inspector = inspector_of(&view).expect("an inspector");
+            if docked {
+                let () = msg_send![&*inspector, attach];
+            } else {
+                let () = msg_send![&*inspector, detach];
+            }
+        }
     }
 
     pub fn navigate(&self, url: &str) -> Result<(), String> {
@@ -221,6 +435,21 @@ impl NativePage {
         unsafe { self.webview.webview().isLoading() }
     }
 
+    /// Whether the page came with a certificate the user accepted, even over a reused connection.
+    pub fn uses_accepted_certificate(&self) -> bool {
+        self.served_certificate()
+            .is_some_and(|leaf| EXCEPTIONS.with_borrow(|exceptions| exceptions.accepted(&leaf)))
+    }
+
+    fn served_certificate(&self) -> Option<Vec<u8>> {
+        use wry::WebViewExtMacOS;
+        // SAFETY: a property read on a live WKWebView owned by this page, on the main thread;
+        // the trust (or null) belongs to the view and is only read before this returns.
+        let trust: *mut SecTrust =
+            unsafe { objc2::msg_send![&*self.webview.webview(), serverTrust] };
+        leaf_certificate(trust)
+    }
+
     /// The URL and title on display; none after a failed first load.
     pub fn document(&self) -> Option<(String, String)> {
         use wry::WebViewExtMacOS;
@@ -233,6 +462,10 @@ impl NativePage {
     }
 
     pub fn set_visible(&self, visible: bool) -> Result<(), String> {
+        if let Some(container) = &self.container {
+            container.setHidden(!visible);
+            return Ok(());
+        }
         self.webview
             .set_visible(visible)
             .map_err(|error| error.to_string())
@@ -250,6 +483,18 @@ impl NativePage {
 
     /// Bounds are window-relative logical pixels, as supplied by the GPUI canvas.
     pub fn set_bounds(&self, bounds: Bounds<Pixels>) -> Result<(), String> {
+        if let Some(container) = &self.container {
+            // SAFETY: a view this page owns, on the main thread.
+            let parent = unsafe { container.superview() }.ok_or("The page has no parent view")?;
+            let (x, y) = (f64::from(bounds.origin.x), f64::from(bounds.origin.y));
+            let (width, height) = (f64::from(bounds.size.width), f64::from(bounds.size.height));
+            let y = container_y(y, height, parent.frame().size.height, parent.isFlipped());
+            container.setFrame(objc2_foundation::NSRect::new(
+                objc2_foundation::NSPoint::new(x, y),
+                objc2_foundation::NSSize::new(width, height),
+            ));
+            return Ok(());
+        }
         self.webview
             .set_bounds(wry::Rect {
                 position: wry::dpi::LogicalPosition::new(
@@ -355,7 +600,7 @@ impl NativePage {
         let (modifiers, name) = native_modifiers(key);
         let (code, characters) = native_key(name).ok_or_else(|| format!("Unknown key: {key}"))?;
         // One character has key code 0, and a shortcut reads the key code.
-        if !modifiers.is_empty() && name.chars().count() == 1 {
+        if !modifiers.is_empty() && code == 0 {
             return Err(format!("Modifiers need a named key: {key}"));
         }
         let view = self.webview.webview();
@@ -442,14 +687,85 @@ thread_local! {
     /// Each page's event channel, by its WKWebView's address.
     static FAILURES: RefCell<HashMap<usize, Sender<Event>>> = RefCell::default();
     static EXCEPTIONS: RefCell<Exceptions> = RefCell::default();
+    static FORGET_CHOSEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether the navigation Wry's policy handler is deciding targets a main frame. Wry's
+    /// handler gets only the URL; `watch_failures` sets this around it.
+    static MAIN_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    #[cfg(test)]
+    static SUBFRAME_DECISIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many frame (not main-frame) navigations the policy hook has seen, for the native test.
+#[cfg(test)]
+#[allow(dead_code, reason = "Used by the opt-in native webview test")]
+pub fn subframe_decisions() -> usize {
+    SUBFRAME_DECISIONS.get()
 }
 
 pub fn allow_certificate(url: &str, certificate: Vec<u8>) {
     EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.allow(url, certificate));
 }
 
+pub fn is_blocked(url: &str) -> bool {
+    EXCEPTIONS.with_borrow(|exceptions| exceptions.blocked(url))
+}
+
+/// Try Again on an error page: lifts a forgotten site's block, trusting no certificate.
+pub fn retry(failure: &LoadFailure) {
+    EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.retry(failure));
+}
+
+pub fn forget_certificate_exceptions() {
+    EXCEPTIONS.with_borrow_mut(Exceptions::forget);
+}
+
+/// Blocks the site of a page that Forget closed. See `Exceptions::block`.
+pub fn block_site(url: &str) {
+    EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.block(url));
+}
+
+/// Whether the user accepted a bad certificate for the site of `url`, so the hidden page,
+/// which carries the logged-in sessions, must not load it.
 pub fn has_certificate_exception(url: &str) -> bool {
     EXCEPTIONS.with_borrow(|exceptions| exceptions.covers(url))
+}
+
+/// Explains the Not secure mark in a sheet, which is drawn above the native pages.
+pub fn explain_not_secure(window: &gpui::Window, host: &str) {
+    use objc2_app_kit::{NSAlert, NSAlertSecondButtonReturn, NSView};
+    use objc2_foundation::{NSString, ns_string};
+    use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let (RawWindowHandle::AppKit(handle), Some(mtm)) =
+        (handle.as_raw(), objc2::MainThreadMarker::new())
+    else {
+        return;
+    };
+    // SAFETY: GPUI hands out its live content view, and we are on the main thread.
+    let view: &NSView = unsafe { handle.ns_view.cast().as_ref() };
+    let Some(ns_window) = view.window() else {
+        return;
+    };
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(ns_string!("This connection isn't private"));
+    alert.setInformativeText(&NSString::from_str(&format!(
+        "You chose to trust an invalid certificate for {host}, in all tabs, until \
+         Felinaut quits. Anyone on your network could read or change what you send, including \
+         passwords."
+    )));
+    alert.addButtonWithTitle(ns_string!("Keep"));
+    alert.addButtonWithTitle(ns_string!("Forget Certificate Exceptions"));
+    // AppKit calls this on the main thread; `take_forget_chosen` hands it to the UI drain.
+    let chosen = block2::RcBlock::new(|response| {
+        FORGET_CHOSEN.set(response == NSAlertSecondButtonReturn);
+    });
+    alert.beginSheetModalForWindow_completionHandler(&ns_window, Some(&chosen));
+}
+
+pub fn take_forget_chosen() -> bool {
+    FORGET_CHOSEN.take()
 }
 
 /// `SecTrustRef`'s pointee, so `msg_send!` can check the Objective-C type encoding.
@@ -545,19 +861,86 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     unsafe extern "C-unwind" fn challenge(
         _: *mut AnyObject,
         _: Sel,
-        _: *mut AnyObject,
+        webview: *mut AnyObject,
         challenge: *mut AnyObject,
         handler: *mut Handler,
     ) {
         // SAFETY: WebKit passes a live challenge and completion handler on the main thread,
         // and expects the handler to be called exactly once.
         let handler = unsafe { &*handler };
-        match unsafe { challenge.as_ref() }.and_then(accepted_credential) {
-            // NSURLSessionAuthChallengeUseCredential
-            Some(credential) => handler.call((0, Retained::as_ptr(&credential).cast_mut())),
+        // The hidden live-folder page has no failure key, so it never answers a challenge with
+        // an exception. That alone is not enough: see `NativePage::hidden`.
+        let visible = FAILURES.with_borrow(|pages| pages.contains_key(&(webview as usize)));
+        match unsafe { challenge.as_ref() }
+            .filter(|_| visible)
+            .and_then(accepted_credential)
+        {
+            Some(credential) => {
+                // The page's `serverTrust` is its main frame's; tell the tab about the rest.
+                FAILURES.with_borrow(|pages| {
+                    if let Some(sender) = pages.get(&(webview as usize)) {
+                        let _ = sender.send(Event::UsedException);
+                    }
+                });
+                // NSURLSessionAuthChallengeUseCredential
+                handler.call((0, Retained::as_ptr(&credential).cast_mut()));
+            }
             // NSURLSessionAuthChallengePerformDefaultHandling
             None => handler.call((1, std::ptr::null_mut())),
         }
+    }
+
+    type PolicyHandler = block2::Block<dyn Fn(isize, *mut AnyObject)>;
+    type PolicyCallback = unsafe extern "C-unwind" fn(
+        *mut AnyObject,
+        Sel,
+        *mut AnyObject,
+        *mut AnyObject,
+        *mut AnyObject,
+        *mut PolicyHandler,
+    );
+    /// WebKit prefers this variant when the delegate has it. It notes whether the main frame
+    /// navigates, then lets Wry's own method decide, and hands its policy on with the same
+    /// preferences.
+    unsafe extern "C-unwind" fn decide(
+        delegate: *mut AnyObject,
+        _: Sel,
+        webview: *mut AnyObject,
+        action: *mut AnyObject,
+        preferences: *mut AnyObject,
+        handler: *mut PolicyHandler,
+    ) {
+        // SAFETY: WebKit passes a live delegate, web view, navigation action, preferences and
+        // completion handler on the main thread. The handler is copied (retained) so that it
+        // outlives this call if Wry ever answers later; Wry calls `forward` exactly once.
+        let handler = unsafe { &*handler }.copy();
+        let main_frame = targets_main_frame(unsafe { action.as_ref() }.and_then(|action| {
+            // SAFETY: `targetFrame` is a nullable WKFrameInfo; `isMainFrame` returns a BOOL.
+            let frame: Option<Retained<AnyObject>> = unsafe { msg_send![action, targetFrame] };
+            frame.map(|frame| unsafe { msg_send![&*frame, isMainFrame] })
+        }));
+        // SAFETY: a live WKWebpagePreferences or null; retained for as long as `forward` lives.
+        let preferences = unsafe { Retained::retain(preferences) };
+        let forward = block2::RcBlock::new(move |policy: isize| {
+            let preferences = preferences
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |p| Retained::as_ptr(p).cast_mut());
+            handler.call((policy, preferences));
+        });
+        #[cfg(test)]
+        SUBFRAME_DECISIONS.set(SUBFRAME_DECISIONS.get() + usize::from(!main_frame));
+        let outer = MAIN_FRAME.replace(main_frame);
+        // SAFETY: Wry's delegate implements this selector with these argument types (objects,
+        // then a block taking WKNavigationActionPolicy, an NSInteger), on the main thread.
+        let _: () = unsafe {
+            msg_send![
+                delegate,
+                webView: webview,
+                decidePolicyForNavigationAction: action,
+                decisionHandler: &*forward
+            ]
+        };
+        MAIN_FRAME.set(outer);
     }
 
     let view = webview.webview();
@@ -569,7 +952,7 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     // SAFETY: `class` is Wry's registered delegate class. Adding a method only succeeds if the
     // class lacks it, so Wry's own methods are never replaced and later pages add nothing. Each
     // function matches its type encoding: void, self, _cmd, then three objects (`@`), the last
-    // one a block (`@?`) for the challenge.
+    // one a block (`@?`) for the challenge, or four with a block last for the policy.
     unsafe {
         let class = class as *const _ as *mut _;
         let failed = std::mem::transmute::<Callback, Imp>(failed);
@@ -584,6 +967,12 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
             sel!(webView:didReceiveAuthenticationChallenge:completionHandler:),
             std::mem::transmute::<ChallengeCallback, Imp>(challenge),
             c"v@:@@@?".as_ptr(),
+        );
+        objc2::ffi::class_addMethod(
+            class,
+            sel!(webView:decidePolicyForNavigationAction:preferences:decisionHandler:),
+            std::mem::transmute::<PolicyCallback, Imp>(decide),
+            c"v@:@@@@?".as_ptr(),
         );
     }
     // WebKit caches which methods a delegate implements when it is set, so set it again.
@@ -612,8 +1001,7 @@ fn report_failure(key: usize, error: Option<&objc2_foundation::NSError>, provisi
             &url,
             &error.localizedDescription().to_string(),
         )?;
-        // A bad date, issuer or name can be overridden; a failed handshake cannot.
-        if domain == "NSURLErrorDomain" && (-1204..=-1201).contains(&code) {
+        if crate::load_error::offers_override(&domain, code, &url) {
             failure.certificate = info
                 .objectForKey(objc2_foundation::ns_string!(
                     "NSURLErrorFailingURLPeerTrustErrorKey"
@@ -631,6 +1019,17 @@ fn report_failure(key: usize, error: Option<&objc2_foundation::NSError>, provisi
 }
 
 /// The content bridge has no privileged commands: only link status and web-tab requests.
+/// A find shortcut that the page did not take, from `find_keys.js`. A page can send this
+/// message itself; it only opens the find bar.
+fn parse_find_key(message: &str) -> Option<Event> {
+    match message.strip_prefix("felifox-find:")? {
+        "0" => Some(Event::FindKey(0)),
+        "1" => Some(Event::FindKey(1)),
+        "-1" => Some(Event::FindKey(-1)),
+        _ => None,
+    }
+}
+
 fn parse_link_event(message: &str) -> Option<Event> {
     if message.len() > 8_256 {
         return None;
@@ -664,11 +1063,22 @@ fn parse_icon_event(message: &str) -> Option<Event> {
     crate::icons::png_from_data_url(message.strip_prefix("felifox-icon:")?).map(Event::Icon)
 }
 
-/// Gives Command+arrow keys to the focused page. AppKit offers each Command key to GPUI as a
-/// key equivalent first, and the text input context of GPUI consumes the arrows. Thus WebKit
-/// did not move the caret to the start or the end of a line. Call this once, on the main thread.
+/// Whether the focused page gets a key before GPUI. `command`, `control` and `option` are the
+/// modifiers of the key.
+/// - Command+arrows (key codes 123 to 126): the text input context of GPUI consumes them, thus
+///   WebKit did not move the caret to the start or the end of a line.
+/// - ⌘F, ⌘G and ⇧⌘G (key codes 3 and 5): a page can have a find of its own. WebKit does not
+///   give a key that the page ignored back to AppKit, so `find_keys.js` reports that key
+///   (`Event::FindKey`), and the find bar opens then.
+fn page_gets_key_first(key_code: u16, command: bool, control: bool, option: bool) -> bool {
+    command
+        && ((123..=126).contains(&key_code) || (matches!(key_code, 3 | 5) && !control && !option))
+}
+
+/// Gives the keys of `page_gets_key_first` to the focused page. AppKit offers each Command key
+/// to GPUI as a key equivalent first. Call this once, on the main thread.
 #[cfg(target_os = "macos")]
-pub fn forward_command_arrows() {
+pub fn forward_page_keys() {
     use objc2::{ClassType, runtime::NSObjectProtocol};
     use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
     let handler = block2::RcBlock::new(|event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
@@ -677,10 +1087,13 @@ pub fn forward_command_arrows() {
         let Some(mtm) = objc2::MainThreadMarker::new() else {
             return event.as_ptr();
         };
-        // Key codes 123 to 126 are the arrows.
-        if (123..=126).contains(&key.keyCode())
-            && key.modifierFlags().contains(NSEventModifierFlags::Command)
-            && let Some(responder) = key.window(mtm).and_then(|window| window.firstResponder())
+        let flags = key.modifierFlags();
+        if page_gets_key_first(
+            key.keyCode(),
+            flags.contains(NSEventModifierFlags::Command),
+            flags.contains(NSEventModifierFlags::Control),
+            flags.contains(NSEventModifierFlags::Option),
+        ) && let Some(responder) = key.window(mtm).and_then(|window| window.firstResponder())
             && responder.isKindOfClass(objc2_web_kit::WKWebView::class())
         {
             responder.keyDown(key);
@@ -864,6 +1277,181 @@ fn page_scrolled() {
     });
 }
 
+/// Moves a tab's page into its own view, sized to the page area: a docked Web Inspector
+/// splits its page's parent view, which would otherwise be the whole window.
+fn contain(webview: &WebView) -> Option<Retained<objc2_app_kit::NSView>> {
+    use objc2::MainThreadOnly;
+    use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
+    use wry::WebViewExtMacOS;
+    let view = webview.webview();
+    // SAFETY: the page's live view, on the main thread.
+    let parent = unsafe { view.superview() }?;
+    let container =
+        NSView::initWithFrame(NSView::alloc(objc2::MainThreadMarker::new()?), view.frame());
+    container.setHidden(true);
+    parent.addSubview(&container);
+    view.removeFromSuperview();
+    container.addSubview(&view);
+    view.setFrame(container.bounds());
+    view.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    );
+    view.setHidden(false);
+    Some(container)
+}
+
+/// A top-left `y` in the container's parent view, which is bottom-left unless flipped.
+fn container_y(y: f64, height: f64, parent_height: f64, flipped: bool) -> f64 {
+    if flipped {
+        y
+    } else {
+        parent_height - y - height
+    }
+}
+
+/// Whether `object` implements `selector`, so private WebKit API can be skipped if it is gone.
+fn responds(object: &AnyObject, selector: Sel) -> bool {
+    // SAFETY: `respondsToSelector:` is NSObject protocol API and has no side effects.
+    unsafe { msg_send![object, respondsToSelector: selector] }
+}
+
+/// A page's private `_WKInspector`, as Wry's `open_devtools` uses it. `None` if WebKit no
+/// longer has the selector, or returns nil (as it does once the page has closed).
+///
+/// SAFETY: `view` is a live WKWebView (or any object), used on the main thread.
+unsafe fn inspector_of(view: &AnyObject) -> Option<Retained<AnyObject>> {
+    if !responds(view, sel!(_inspector)) {
+        return None;
+    }
+    // SAFETY: the caller's guarantee; the selector exists and returns an object or nil.
+    unsafe { msg_send![view, _inspector] }
+}
+
+/// A tab page's container, for the opt-in native test.
+#[cfg(test)]
+#[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+#[derive(Debug)]
+pub struct ContainerForTest {
+    pub hidden: bool,
+    /// x, y, width, height in the parent view's own coordinates.
+    pub frame: (f64, f64, f64, f64),
+    pub parent_height: f64,
+    pub parent_flipped: bool,
+    /// The WKWebView is the container's subview...
+    pub holds_page: bool,
+    /// ...is not hidden itself (the container hides it)...
+    pub page_hidden: bool,
+    /// ...and fills the container.
+    pub page_fills: bool,
+}
+
+/// A page's Web Inspector, for the opt-in native test.
+#[cfg(test)]
+#[allow(dead_code, reason = "Used by the opt-in native Web Inspector test")]
+#[derive(Clone, Debug)]
+pub struct InspectorForTest {
+    pub visible: bool,
+    pub detached: bool,
+    pub front: bool,
+    /// The inspector's own page is docked inside the tab's container, not the whole window.
+    pub in_container: bool,
+    /// The class of the window the inspector's own page is in, if any.
+    pub window_class: Option<String>,
+}
+
+/// What ⌥⌘I does to a page's inspector.
+#[derive(Debug, PartialEq)]
+enum InspectorToggle {
+    /// Open it, or bring a detached one in front.
+    Show,
+    Close,
+}
+
+/// A docked inspector, or a detached one already in front, closes; a detached inspector behind
+/// other windows comes to the front instead; a hidden one opens.
+fn inspector_toggle(visible: bool, detached: bool, front: bool) -> InspectorToggle {
+    if visible && (!detached || front) {
+        InspectorToggle::Close
+    } else {
+        InspectorToggle::Show
+    }
+}
+
+/// Shows a hidden inspector (or brings a detached one behind other windows to the front) and
+/// closes a visible one. Selectors missing from a future WebKit are skipped instead of raising
+/// an Objective-C exception.
+///
+/// SAFETY: `inspector` is a `_WKInspector` (or any object), used on the main thread.
+unsafe fn toggle_inspector(inspector: &AnyObject) {
+    if !responds(inspector, sel!(isVisible)) {
+        return;
+    }
+    // SAFETY: the caller's guarantee; each selector is checked before it is sent.
+    unsafe {
+        let visible: bool = msg_send![inspector, isVisible];
+        let detached = visible && inspector_is_detached(inspector);
+        // `isFront` is only meaningful for a detached inspector; without it, close as before.
+        let front =
+            detached && (!responds(inspector, sel!(isFront)) || msg_send![inspector, isFront]);
+        match inspector_toggle(visible, detached, front) {
+            InspectorToggle::Close if responds(inspector, sel!(close)) => {
+                let () = msg_send![inspector, close];
+            }
+            // WebKit's `show` brings an inspector that is already open to the front.
+            InspectorToggle::Show if responds(inspector, sel!(show)) => {
+                let () = msg_send![inspector, show];
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether an inspector's own page sits in WebKit's detached inspector window rather than
+/// docked in the inspected page's window.
+///
+/// SAFETY: `inspector` is a `_WKInspector` (or any object), used on the main thread.
+unsafe fn inspector_is_detached(inspector: &AnyObject) -> bool {
+    if !responds(inspector, sel!(inspectorWebView)) {
+        return false;
+    }
+    // SAFETY: the caller's guarantee; both selectors are checked and may return nil.
+    unsafe {
+        let page: Option<Retained<AnyObject>> = msg_send![inspector, inspectorWebView];
+        let Some(page) = page.filter(|page| responds(page, sel!(window))) else {
+            return false;
+        };
+        let window: Option<Retained<AnyObject>> = msg_send![&*page, window];
+        window.is_some_and(|window| is_inspector_window(reported_class_name(&window)))
+    }
+}
+
+/// Closes the app's key window if it is a detached Web Inspector.
+pub fn close_key_window() {
+    if let Some(mtm) = objc2::MainThreadMarker::new()
+        && let Some(window) = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow()
+        && is_inspector_window(reported_class_name(&window))
+    {
+        window.performClose(None);
+    }
+}
+
+/// An object's class as it reports it (`-class`). That hides the subclass Key-Value Observing
+/// swaps in (`NSKVONotifying_…`), which `object_getClass` returns: AppKit observes its
+/// windows, so a detached inspector's window is really an `NSKVONotifying__WKInspectorWindow`.
+fn reported_class_name(object: &AnyObject) -> &'static [u8] {
+    // SAFETY: `-class` is NSObject protocol API, returns a class and has no side effects.
+    let class: &'static objc2::runtime::AnyClass = unsafe { msg_send![object, class] };
+    class.name().to_bytes()
+}
+
+/// Whether a window class is WebKit's detached Web Inspector window. A positive match: GPUI's
+/// browser and Settings windows (`GPUIWindow`), its focusing popups (`GPUIPanel`) and WebKit's
+/// other windows must not be closed behind their owners' backs. Should WebKit rename the class,
+/// ⌘W and ⌥⌘I just stop closing a detached inspector; its own close button still works.
+fn is_inspector_window(class: &[u8]) -> bool {
+    class == b"_WKInspectorWindow"
+}
+
 /// Agent control is opt-in. The new setting takes precedence, including an explicit disable.
 /// Keep the legacy name for existing local automation without enabling either by default.
 pub fn agent_enabled() -> bool {
@@ -915,6 +1503,9 @@ fn native_key(key: &str) -> Option<(u16, String)> {
         "End" => (119, '\u{f72b}'),
         "PageUp" => (116, '\u{f72c}'),
         "PageDown" => (121, '\u{f72d}'),
+        // The find shortcuts read the key code.
+        "f" => (3, 'f'),
+        "g" => (5, 'g'),
         // ponytail: one character has key code 0, thus `event.code` is always "KeyA".
         // Add a layout table if a site reads `code`, or for modifiers with a character.
         _ => {
@@ -958,6 +1549,42 @@ pub fn pointer(_: &gpui::Window) -> Option<gpui::Point<f32>> {
     None
 }
 
+/// Empties the selection of a window and of its frames; cross-origin frames throw and are skipped.
+const DESELECT: &str = "(function deselect(w) { \
+    try { w.getSelection().removeAllRanges(); } catch (_) {} \
+    try { for (let i = 0; i < w.frames.length; i++) deselect(w.frames[i]); } catch (_) {} \
+})(window)";
+
+#[derive(Debug, PartialEq, Eq)]
+enum Navigation {
+    Allow,
+    Refuse,
+    /// Refuse, and show this error page in the tab.
+    Report(LoadFailure),
+}
+
+/// The navigation policy. Forgotten sites are refused before any request, because WebKit
+/// would reuse the connection it trusted. Only a visible page's main frame (`reports`) shows the
+/// error page: a frame on a forgotten site stays empty rather than taking over the tab.
+fn navigation(exceptions: &Exceptions, url: &str, reports: bool) -> Navigation {
+    if !allowed_url(url) {
+        Navigation::Refuse
+    } else if !exceptions.blocked(url) {
+        Navigation::Allow
+    } else if reports {
+        Navigation::Report(crate::load_error::forgotten(url))
+    } else {
+        Navigation::Refuse
+    }
+}
+
+/// Whether a navigation reports a refused site to its tab. `target_frame` is `isMainFrame` of
+/// the target frame. A navigation with no target frame is a new window (`target=_blank`,
+/// `window.open`): it must not replace the page of the tab that opened it with an error page.
+fn targets_main_frame(target_frame: Option<bool>) -> bool {
+    target_frame.unwrap_or(false)
+}
+
 fn allowed_url(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {
         scheme.eq_ignore_ascii_case("http")
@@ -976,6 +1603,171 @@ fn check_url(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_new_window_navigation_does_not_report_to_the_tab_that_opened_it() {
+        assert!(super::targets_main_frame(Some(true)));
+        assert!(!super::targets_main_frame(Some(false)), "a frame");
+        assert!(!super::targets_main_frame(None), "a new window");
+    }
+
+    #[test]
+    fn only_a_detached_inspector_window_closes_on_the_fallback() {
+        // ⌘W or ⌥⌘I in a detached inspector closes just that window.
+        assert!(super::is_inspector_window(b"_WKInspectorWindow"));
+        // Browser and Settings windows, and GPUI's focusing popups (downloads list, volume
+        // popover, dropdowns), keep their own close handling.
+        assert!(!super::is_inspector_window(b"GPUIWindow"));
+        assert!(!super::is_inspector_window(b"GPUIPanel"));
+        // Nor any other AppKit window, such as WebKit's element full screen window.
+        assert!(!super::is_inspector_window(b"NSWindow"));
+        assert!(!super::is_inspector_window(b"WKFullScreenWindow"));
+        assert!(!super::is_inspector_window(b""));
+    }
+
+    objc2::define_class!(
+        /// A page whose inspector is gone: `_inspector` returns nil, as for a closed page.
+        #[unsafe(super(objc2::runtime::NSObject))]
+        #[name = "FelinautTestClosedPage"]
+        struct ClosedPage;
+
+        impl ClosedPage {
+            #[unsafe(method(_inspector))]
+            fn inspector(&self) -> *mut objc2::runtime::AnyObject {
+                std::ptr::null_mut()
+            }
+        }
+    );
+
+    objc2::define_class!(
+        /// An inspector that reports itself visible but has lost its `close`.
+        #[unsafe(super(objc2::runtime::NSObject))]
+        #[name = "FelinautTestPartialInspector"]
+        struct PartialInspector;
+
+        impl PartialInspector {
+            #[unsafe(method(isVisible))]
+            fn is_visible(&self) -> objc2::runtime::Bool {
+                objc2::runtime::Bool::YES
+            }
+        }
+    );
+
+    objc2::define_class!(
+        /// Something with a `level` property for Key-Value Observing.
+        #[unsafe(super(objc2::runtime::NSObject))]
+        #[name = "FelinautTestObserved"]
+        struct Observed;
+
+        impl Observed {
+            #[unsafe(method(level))]
+            fn level(&self) -> isize {
+                0
+            }
+
+            #[unsafe(method(setLevel:))]
+            fn set_level(&self, _: isize) {}
+        }
+    );
+
+    objc2::define_class!(
+        #[unsafe(super(objc2::runtime::NSObject))]
+        #[name = "FelinautTestObserver"]
+        struct Observer;
+
+        impl Observer {
+            #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
+            fn observe(
+                &self,
+                _: *mut objc2::runtime::AnyObject,
+                _: *mut objc2::runtime::AnyObject,
+                _: *mut objc2::runtime::AnyObject,
+                _: *mut std::ffi::c_void,
+            ) {
+            }
+        }
+    );
+
+    #[test]
+    fn a_key_value_observed_window_is_still_recognised_by_its_class() {
+        use objc2::msg_send;
+        let observed = new_object::<Observed>();
+        let observer = new_object::<Observer>();
+        let key = objc2_foundation::NSString::from_str("level");
+        // SAFETY: plain NSObject subclasses; the observer is removed before either is dropped.
+        unsafe {
+            let () = msg_send![&*observed, addObserver: &*observer, forKeyPath: &*key, options: 0usize, context: std::ptr::null_mut::<std::ffi::c_void>()];
+            // AppKit observes its windows the same way, which swaps in a KVO subclass.
+            assert!(
+                observed
+                    .class()
+                    .name()
+                    .to_bytes()
+                    .starts_with(b"NSKVONotifying_")
+            );
+            assert_eq!(
+                super::reported_class_name(&observed),
+                b"FelinautTestObserved"
+            );
+            let () = msg_send![&*observed, removeObserver: &*observer, forKeyPath: &*key];
+        }
+    }
+
+    fn new_object<T: objc2::ClassType>() -> objc2::rc::Retained<objc2::runtime::AnyObject> {
+        // SAFETY: `new` on an NSObject subclass with no extra state.
+        unsafe { objc2::msg_send![T::class(), new] }
+    }
+
+    #[test]
+    fn a_nil_or_missing_inspector_is_none_instead_of_a_panic() {
+        // SAFETY: plain NSObject subclasses; none needs the main thread.
+        unsafe {
+            assert!(super::inspector_of(&new_object::<ClosedPage>()).is_none());
+            assert!(super::inspector_of(&new_object::<objc2::runtime::NSObject>()).is_none());
+        }
+    }
+
+    #[test]
+    fn toggling_skips_inspector_selectors_webkit_no_longer_has() {
+        // Without the guards these raise "unrecognized selector" and abort.
+        // SAFETY: plain NSObject subclasses; none needs the main thread.
+        unsafe {
+            super::toggle_inspector(&new_object::<objc2::runtime::NSObject>());
+            super::toggle_inspector(&new_object::<PartialInspector>());
+        }
+    }
+
+    #[test]
+    fn the_inspector_toggle_brings_a_detached_inspector_behind_others_to_the_front() {
+        use super::{InspectorToggle::*, inspector_toggle};
+        // (visible, detached, front)
+        assert_eq!(
+            inspector_toggle(false, false, false),
+            Show,
+            "a closed inspector opens"
+        );
+        assert_eq!(
+            inspector_toggle(true, false, false),
+            Close,
+            "a docked inspector closes"
+        );
+        assert_eq!(
+            inspector_toggle(true, true, true),
+            Close,
+            "a detached one in front closes"
+        );
+        assert_eq!(
+            inspector_toggle(true, true, false),
+            Show,
+            "a detached one behind other windows comes to the front"
+        );
+    }
+
+    #[test]
+    fn container_y_flips_only_for_an_unflipped_parent() {
+        assert_eq!(super::container_y(40., 300., 800., true), 40.);
+        assert_eq!(super::container_y(40., 300., 800., false), 460.);
+    }
+
     #[test]
     fn renamed_agent_flag_preserves_opt_in_and_honors_explicit_disable() {
         use std::ffi::OsStr;
@@ -1054,6 +1846,53 @@ mod tests {
     }
 
     #[test]
+    fn a_find_key_message_is_one_of_three_steps() {
+        use super::{Event, parse_find_key};
+        for (message, step) in [
+            ("felifox-find:0", 0),
+            ("felifox-find:1", 1),
+            ("felifox-find:-1", -1),
+        ] {
+            assert!(matches!(parse_find_key(message), Some(Event::FindKey(s)) if s == step));
+        }
+        for message in [
+            "felifox-find:",
+            "felifox-find:2",
+            "felifox-find:-2",
+            "felifox-find:1 ",
+            "felifox-find:01",
+            "felifox-link:1",
+            "",
+        ] {
+            assert!(parse_find_key(message).is_none(), "{message:?}");
+        }
+    }
+
+    #[test]
+    fn the_page_gets_command_arrows_and_the_find_keys_first() {
+        use super::page_gets_key_first as first;
+        for arrow in 123..=126 {
+            assert!(first(arrow, true, false, false), "{arrow}");
+            assert!(
+                !first(arrow, false, false, false),
+                "{arrow} without Command"
+            );
+        }
+        // ⌘F, ⌘G (and ⇧⌘G: Shift is not a parameter).
+        for code in [3, 5] {
+            assert!(first(code, true, false, false), "{code}");
+            assert!(!first(code, false, false, false), "a plain letter");
+            // ⌃⌘F is full screen and ⌥⌘F is not a find key: they stay with the browser.
+            assert!(!first(code, true, true, false), "{code} with Control");
+            assert!(!first(code, true, false, true), "{code} with Option");
+        }
+        // Other shortcuts of the browser, such as ⌘T (17), ⌘W (13) and ⌘L (37).
+        for code in [17, 13, 37, 0] {
+            assert!(!first(code, true, false, false), "{code}");
+        }
+    }
+
+    #[test]
     fn native_keys_are_named_keys_or_one_character() {
         use super::native_key;
         assert_eq!(native_key("Enter"), Some((36, "\r".into())));
@@ -1067,6 +1906,54 @@ mod tests {
         assert_eq!(super::native_modifiers("+"), (Flags::empty(), "+"));
         assert_eq!(super::native_modifiers("Alt+"), (Flags::empty(), "Alt+"));
         assert_eq!(native_key(""), None);
+    }
+
+    #[test]
+    fn refuses_forgotten_sites_before_any_request() {
+        use super::{Navigation, navigation};
+        use crate::load_error::{Exceptions, Kind};
+        let mut exceptions = Exceptions::default();
+        assert_eq!(
+            navigation(&exceptions, "https://wiki.corp.example/", true),
+            Navigation::Allow
+        );
+        exceptions.allow("https://wiki.corp.example/", vec![1]);
+        exceptions.forget();
+        match navigation(&exceptions, "https://wiki.corp.example/a", true) {
+            Navigation::Report(failure) => {
+                assert_eq!(failure.kind, Kind::Forgotten);
+                assert_eq!(failure.url, "https://wiki.corp.example/a");
+            }
+            other => panic!("{other:?}"),
+        }
+        // A frame and the hidden live-folder page refuse too, without an error page.
+        assert_eq!(
+            navigation(&exceptions, "https://wiki.corp.example/a", false),
+            Navigation::Refuse
+        );
+        for reports in [true, false] {
+            for url in [
+                "https://other.example/",
+                "http://wiki.corp.example/",
+                "about:blank",
+            ] {
+                assert_eq!(
+                    navigation(&exceptions, url, reports),
+                    Navigation::Allow,
+                    "{url}"
+                );
+            }
+            assert_eq!(
+                navigation(&exceptions, "file:///etc/passwd", reports),
+                Navigation::Refuse
+            );
+        }
+        // Try Again lifts the block.
+        exceptions.retry(&crate::load_error::forgotten("https://wiki.corp.example/"));
+        assert_eq!(
+            navigation(&exceptions, "https://wiki.corp.example/a", false),
+            Navigation::Allow
+        );
     }
 
     #[test]

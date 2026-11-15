@@ -136,6 +136,19 @@ CI passes its single computed value as **`FELINAUT_RELEASE_VERSION`** to both na
 
 About also shows a 12-character Git hash, embedded at compile time. `build.rs` watches Git's HEAD, current branch reference, packed references, and the release-version environment setting so subsequent builds refresh metadata. Source archives without Git metadata, or builds without Git installed, display `unknown` instead of a hash. There are no runtime Git calls. The hash identifies the source commit, not uncommitted local edits; it is not a clean-working-tree guarantee.
 
+## Browser identity
+
+Pages see Felinaut as the Safari installed on the Mac, which uses the same system WebKit engine. The user agent is WebKit's own (`Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)`), followed by `Version/<version> Safari/605.1.15`. The version is the one Safari itself sends: `major.minor`, plus the patch level when there is one (`Version/26.6.2` for Safari 26.6.2).
+
+- **Where the version comes from:** `/Applications/Safari.app/Contents/Info.plist`, read once at launch, before the first window opens (at most 256 KB). If that file can't be read, the macOS version gives an approximate one: the same version from macOS 26 on, and the macOS major version plus three for macOS 11 to 15 (Safari 14 to 18). It is approximate because Safari can be updated separately from macOS.
+- **Where it applies:** every page Felinaut opens, including the hidden pages that refresh live folders.
+
+**Why:** without the Safari tokens, sites treat Felinaut as an unknown embedded web view. Google, for example, serves an old, stripped-down results page with no **Sign in** button.
+
+**What doesn't change:** Safari-only features such as Apple Pay and passkeys still need Apple's entitlements (see Passkeys below). Sites may offer them and then find them unavailable. The code is in `src/identity.rs`.
+
+**Embedded-browser checks are bypassed too.** Some sign-in flows, Google's among them, deliberately look for embedded web views and refuse or reroute them. Felinaut no longer looks like one, so those flows now run in a setup the site does not officially support: they may work, or break in ways the site does not expect.
+
 ## Passkeys
 
 **Today:** passwords, one-time codes and every other sign-in that runs inside the page work. Passkeys do not: WebKit refuses WebAuthn in an embedded `WKWebView` unless the app carries Apple's restricted browser entitlement. Measured in a dev-signed Felinaut build on macOS 26: `navigator.credentials` and `PublicKeyCredential` exist on https://webauthn.io, but `isUserVerifyingPlatformAuthenticatorAvailable()` returns `false` and both `create()` and `get()` reject immediately with `NotAllowedError: The request is not allowed by the user agent or the platform in the current context`. No passkey sheet appears. There is no JavaScript workaround: the passkey UI and the iCloud Keychain access belong to WebKit's own process.
@@ -169,7 +182,7 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 - **Swipe back and forward** on the trackpad, as in Chrome: swipe sideways with two fingers anywhere in the window (over a web page, the sidebar, the toolbar or the New Tab page), or with three fingers. With natural scrolling, fingers moving right go one page back in the current tab and fingers moving left go one page forward; with natural scrolling off, the directions swap, as they do for scrolling. Each swipe works exactly like the toolbar's back and forward buttons and `⌘[` / `⌘]`, so going back from a tab's first web page shows Home. A two-finger swipe navigates when you lift your fingers, if they ended up far enough sideways; coming back toward where you started cancels it. Mostly vertical scrolls, short swipes and momentum after the fingers lift never navigate. The page comes first: a swipe that scrolled something sideways in the page, or that the page handled itself (a map, a carousel), does not navigate; one at the edge of what scrolls does. Pages inside frames from other sites cannot report this, so a sideways swipe over such a frame can scroll it and navigate. The gestures follow **System Settings → Trackpad → More Gestures → Swipe between pages**: two-finger swipes need _Scroll left or right with two fingers_ (or _two or three fingers_), three-finger swipes need _Swipe with three fingers_ (or _two or three fingers_); with it off, swipes do not navigate. There is no arrow or page-slide animation while swiping, and WebKit's own back/forward swipe stays off.
 - **Live folders** in the sidebar, Arc-style, from premade integrations. The **Live folders** header is always there: click it (**Edit**, or **File → New Live Folder…**) to add or remove an integration and choose its lists. **GitHub** shows your open pull requests in **Review requests**, **My pull requests** and **Mentions**; **Asana** shows **Due this week** (overdue included, soonest first) and **My tasks** (incomplete tasks assigned to you, first workspace only). Each list can be turned off; disabling all lists shows a settings hint and pauses refreshes. Asana is read from its own API (`app.asana.com/api/1.0`), which accepts the web session on a page load; GitHub from its pull request pages. Asana follows pagination before filtering and sorting (My tasks is most recently modified first), bounded to 8 task pages, 2 MiB of response/state data and 18 seconds. If that limit is reached or a refresh fails, cached items remain and the list shows an error rather than a partial result; API errors such as rate limits and permission failures do not pretend you are signed out. There is no token: the lists load in a hidden, offscreen webview that shares WebKit's storage, so they use the sessions you are signed in to in Felinaut. When a folder is added, its first refresh checks the sign-in. If the site asks you to sign in, the folder shows **Sign in to GitHub** (or Asana); click it to sign in in a normal tab, and the folder fills in as soon as that tab loads the site again. **Items are tabs that live in the folder**: click one to show it (it stays in the folder, highlighted like a selected tab), and close it with its × or `⌘W`. A closed item stays away until the site reports an update to it, then it returns with a dot. Missing timestamps preserve its last known update and dismissal; a first timestamp establishes a baseline, not an update. Explicitly reopening an item through agent control restores its sidebar entries. Merged and closed pull requests leave the folder, and so do their tabs (the one you are looking at stays, as an ordinary tab). New and updated pull requests (any activity GitHub reports: comments, reviews, pushes, CI) carry a dot until you open them; the folder's badge counts them, and so does a collapsed section's. Click the folder or a section to collapse it. Right-click the folder for **Refresh**, **Mark All as Seen** and **Remove**. Lists refresh every 5 minutes, one at a time and only while the window is active; at most 50 items each, only links on the site's own host. Kept in `live.tsv` under Application Support; item tabs are not restored after a restart. Agent control can drive them too: `felinaut-ctl live`, `live add github|asana`, `live open 0 0 1`, `live close 0 0 1`, `live refresh 0`, `live remove 0`.
 - Back, forward, reload and home; native page titles and URLs update the chrome.
-- **Error page:** when a page cannot load (offline, unknown site, refused or lost connection, timeout, certificate problem, redirect loop, or a port WebKit blocks such as `:1`), the tab shows what went wrong, the address and WebKit's error code instead of an endless spinner. **Try Again** or `⌘R` loads that address again, and Back returns to the page you were on (or Home). For an expired, self-signed, untrusted or wrong-name certificate, **Visit this site anyway** accepts that exact certificate for that site until Felinaut quits (nothing is saved); the toolbar then shows **⚠ Not secure**. Unlike Chrome, this cannot be refused for HSTS sites, because WebKit does not expose that list. A cancelled load shows nothing, and one that becomes a download goes to the downloads list (see below); a load that fails after the page appeared only stops the spinner.
+- **Error page:** when a page cannot load (offline, unknown site, refused or lost connection, timeout, certificate problem, redirect loop, or a port WebKit blocks such as `:1`), the tab shows what went wrong, the address and WebKit's error code instead of an endless spinner. **Try Again** or `⌘R` loads that address again, and Back returns to the page you were on (or Home). For an expired, self-signed, untrusted or wrong-name certificate, **Visit this site anyway** accepts that exact certificate for that site, in all tabs, until Felinaut quits (nothing is saved); the toolbar then shows **⚠ Not secure**. Live folders never use an exception: their hidden page does not load a site that has one (including after a redirect), and a refresh whose page still came with an accepted certificate fails and keeps the list as it was. WebKit can reuse a connection a tab trusted without asking again, so a script or image that the hidden page loads from such a site may still come over it. Any page served with an accepted certificate is marked, in every tab, and so is a page whose frame, script or image WebKit trusted with an exception; a resource that came over a connection WebKit reused without asking is not detected. Click that mark for an explanation with a **Forget Certificate Exceptions** button, or choose **Navigate → Forget Certificate Exceptions**, to forget every exception and close every page that used one, in any tab: its scripts, sound and back/forward history go with it, the tab shows the error page for a forgotten site (a New Tab stays a New Tab), and Back returns to Home (a page still served with an accepted certificate stays marked). Until you try a forgotten site again, Felinaut refuses to load it, before any request, in every tab and in the hidden live-folder page (whose refresh then times out with an error); its error page shows no WebKit error code, since WebKit never tried, and offers no **Visit this site anyway**. **Try Again** connects again without trusting the old certificate, so a certificate that is still invalid needs a new decision. A frame from a forgotten site stays empty instead of taking over its tab. Limits: Forget cannot close the connections WebKit already trusted, and WebKit does not ask before loading subresources, so images or scripts that other sites load from a forgotten host still load over such a connection, and **Try Again** over one loads the page without a new question (it stays marked **⚠ Not secure**). The link is not offered for a short bundled list of major HTTPS-only (HSTS) sites and the preloaded `.app`, `.dev`, `.bank`, `.page` and `.new` domains; this is a subset, not Chromium's full preload list, because WebKit does not expose it. A site that is not on that list can still be overridden even if it sent an HSTS header earlier. A cancelled load shows nothing, and one that becomes a download goes to the downloads list (see below); a load that fails after the page appeared only stops the spinner.
 - Hovering web links displays their destination in the status bar; leaving clears it.
 - Cmd-click opens a link in a background tab; Cmd-Shift-click opens it in the foreground. New Tab quick links support the same modifiers.
 - Right-click a web link for **Open Link in New Tab** (background). The document-local menu supports Enter, Escape, and outside-click dismissal; non-link right clicks keep WebKit's normal menu.
@@ -184,12 +197,15 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | `⌘W`             | Close active tab                                                |
 | `⌘⇧T`            | Reopen the last closed tab (back in its split view if possible) |
 | `⌘L`             | Focus address and select all                                    |
+| `⌘F`             | Find in page; `↩` / `⌘G` next match, `⇧↩` / `⌘⇧G` previous, `Esc` closes |
+| `⌘⇧C`            | Copy the page's link without tracking parameters                |
 | `⌘R`             | Reload                                                          |
 | `⌘+` / `⌘-`      | Zoom in / out; the address bar shows the level, click it to reset |
 | `⌘[` / `⌘]`      | Back / forward                                                  |
 | `⌘⇧H`            | Home                                                            |
 | `⌘⇧M`            | Mute / unmute active tab                                        |
 | `⌘⇧J`            | Show / hide the downloads list                                  |
+| `⌥⌘I`            | Web Inspector for the active page (also **Inspect Element**)    |
 | `⌘S`             | Show / hide the tab sidebar (remembered)                        |
 | `⌘D`             | Pin / unpin active tab                                          |
 | `⌘1`–`⌘8` / `⌘9` | Go to tab 1–8 / last tab                                        |
@@ -197,6 +213,29 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | Swipe → / ←      | Back / forward with natural scrolling (see above)              |
 | `⌘,`             | Open Settings                                                   |
 | `⌘Q`             | Quit                                                            |
+
+Find in page uses WebKit's own find: case-insensitive and wrapping, including same-origin frames. Typing refines the current match; emptying the field clears it. Limitations: there is no match count and no highlight of all matches, only "Not found". A match is a normal text selection, so the page can see it change (`selectionchange`), as in Safari. While a page has the keyboard focus, `⌘F`, `⌘G` and `⌘⇧G` go to the page first: a site with a find of its own (one that prevents the default action of the key) keeps them, and Felinaut's find bar opens only when the page does not take the key. **Edit → Find…** always opens Felinaut's find bar. Limitations: a page that does not answer cannot open the find bar with the keys (use the menu), and a page can open the find bar itself, which moves the keyboard focus to it. The find bar is not shown on Home or on an error page.
+### Copy Clean Link
+
+`⌘⇧C` (or **Edit → Copy Clean Link**) copies the active page's address without tracking. A small pop-up under the toolbar confirms it ("Link copied · Tracking removed" only when something was actually removed, otherwise "No tracking found", and then the address is copied exactly as it was). It disappears after about 1.6 seconds, never takes keyboard focus, and lets clicks through to the page.
+
+**Removed everywhere:**
+- Campaign parameters: `utm_*`, `mtm_*`, `hsa_*` and Matomo's `pk_campaign`, `pk_kwd`, `pk_source` and similar (listed exactly, because sites use other `pk_` names for themselves).
+- Ad click IDs such as `fbclid`, `gclid`, `msclkid`, `ttclid` and `twclid`.
+- Email and analytics IDs such as `mc_eid`, `_hsenc` and `_ga`.
+- Text-highlight fragments (`#:~:text=…`).
+
+**Removed only where they track:**
+- **YouTube** (including `m.` and `music.`): `si`, `feature` and `pp`.
+- **Spotify:** `si`.
+- **Google search pages:** `ved`, `ei`, `sei`, `oq` and similar.
+- **Amazon** (any of its hosts, such as `www.`, `m.` and `smile.`): `ref` paths and parameters, `pd_rd_*`, `pf_rd_*`, `qid` and `sr`.
+
+Google and Amazon rules apply only on their own domains, which are listed explicitly (`google.de`, `google.co.uk`, `amazon.fr`, `amazon.com.br` and so on), so `amazon.github.io` or `google.example.io` are left alone.
+
+Everything else stays in its original order and encoding, so the link opens the same page. For example, GitHub's `?ref=main` is kept. New Tab and other non-web pages have no link to copy. The rules are in `src/clean_link.rs`.
+
+**Not covered:** query strings inside hash routes (`#/page?utm_source=…`) are kept, Google's `/url?q=…` redirect links are not unwrapped, and while a page is still loading ⌘⇧C copies the address from before any redirect.
 
 ### Title-first address bar and history suggestions
 
@@ -318,6 +357,7 @@ Keep it small: no bookmarks manager, extensions, permission UI, tracker-blocker 
 - Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
 - This is an early browser shell, not a security-audited Safari replacement. WebKit's engine security updates come from macOS updates.
+- Web Inspector (**View → Developer Tools**) is opened through WebKit's private `_inspector` API (via Wry's `devtools` feature). On macOS 13.3 and later, tabs set `isInspectable` off, so Safari's **Develop** menu cannot attach to Felinaut pages. macOS 12.0–13.2 have no such switch; there WebKit lets Safari attach only to apps signed with the `com.apple.security.get-task-allow` debugging entitlement, which Felinaut's builds never claim. This has not been tested on those versions.
 - Only macOS is configured and tested. Windows and Linux backends are not configured.
 
 ## Validate
@@ -335,6 +375,8 @@ FELINAUT_NATIVE_TEST=1 cargo test --test brand_ui
 FELINAUT_NATIVE_TEST=1 cargo test --test native_audio
 # Back/forward swipes: synthetic trackpad gestures over a temporary window's chrome and page:
 FELINAUT_NATIVE_TEST=1 cargo test --test native_swipe
+# Certificate exceptions against loopback HTTPS (needs /usr/bin/openssl and python3):
+FELINAUT_NATIVE_TEST=1 cargo test --test native_certificate
 ```
 
 Add `-F gpui/runtime_shaders` to these commands on machines without full Xcode.
@@ -346,6 +388,8 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/main.rs`: GPUI window, tabs and navigation controls.
 - `src/input.rs`: address input adapted from Zed's Apache-2.0 GPUI input example.
 - `src/engine.rs`: address-to-URL/search resolution and the fixed list of search engines.
+- `src/identity.rs`: the Safari-compatible user agent every page sends.
+- `src/clean_link.rs`, `src/link_toast.rs`: the tracking-free link copied by `⌘⇧C` and its confirmation pop-up.
 - `src/history.rs`: on-disk visit store, fuzzy matcher and frecency ranking.
 - `src/suggestions.rs`: the native, non-focusing history dropdown under the address bar.
 - `src/icons.rs`, `src/page_icon.js`: site icons handed over by the page as validated PNGs, stored per host, with monogram fallback.
@@ -365,5 +409,6 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.
 - `tests/native_audio.rs`: opt-in WebKit check of audio routing, cross-origin fallback and reset.
 - `tests/native_swipe.rs`: opt-in check of the back/forward swipe monitor with synthetic trackpad gestures.
+- `tests/native_certificate.rs`: opt-in WebKit check of certificate exceptions against two loopback HTTPS servers with a throwaway self-signed certificate (needs `/usr/bin/openssl` and `python3`): the error carries the certificate, an accepted one loads and is marked in two tabs, the hidden live-folder page refuses the site, and an image that used an exception is reported.
 
 Felinaut source is MIT licensed. Dependencies retain their own licenses, including GPUI (Apache-2.0) and Wry (Apache-2.0 OR MIT).

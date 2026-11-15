@@ -39,6 +39,7 @@ FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_webview
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test brand_ui
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_audio
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_swipe
+FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_certificate
 ```
 
 Never claim native tests ran just because the default skipped harness exited successfully. Use the browser-control skill (`felifox-ctl`, the retained skill identifier; its executable is now `felinaut-ctl`) when validating the real browser; do not operate logged-in services or mutate user data unnecessarily.
