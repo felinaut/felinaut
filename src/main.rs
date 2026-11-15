@@ -1702,6 +1702,7 @@ impl Browser {
         let mut finished = Vec::new();
         let mut page_focused = false;
         let mut focused_tab = None;
+        let mut find_key = None;
         // A result that arrives after the bar closed or the query was emptied is out of date.
         let find_current = self.find_bar.current(self.find.read(cx).text());
         let visible_partner = self.partner(self.active);
@@ -1771,8 +1772,17 @@ impl Browser {
                         self.find_bar
                             .found(index == self.active && find_current, found);
                     }
+                    // Only the page that the user sees can open the find bar.
+                    Event::FindKey(step) => {
+                        if index == self.active {
+                            find_key = Some(step);
+                        }
+                    }
                 }
             }
+        }
+        if let Some(step) = find_key {
+            self.find(&Find(step), window, cx);
         }
         if page_focused && self.find.read(cx).focus_handle(cx).is_focused(window) {
             window.focus(&self.focus);
@@ -4571,7 +4581,7 @@ fn main() {
         cx.set_global(settings::LaunchLanguage(launch_language));
         input::init(cx);
         #[cfg(target_os = "macos")]
-        webview::forward_command_arrows();
+        webview::forward_page_keys();
         cx.bind_keys([
             KeyBinding::new("cmd-t", NewTab, None),
             KeyBinding::new("cmd-w", CloseTab, None),

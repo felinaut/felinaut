@@ -209,6 +209,7 @@ fn main() {
     let passed = Rc::new(Cell::new(false));
     let result = passed.clone();
     Application::new().run(move |cx| {
+        webview::forward_page_keys();
         let first_url = format!("{base}/first");
         let second_url = format!("{base}/second");
         let download_url = format!("{base}/download");
@@ -445,7 +446,27 @@ fn main() {
                                     second_page.deselect();
                                     assert_eq!(read(&second_page, SELECTION).await, "", "the last match in the page is deselected");
                                     assert_eq!(read(&second_page, "String(!!top.findTouched)").await, "false", "the page never sees the find bar edit its selection");
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and find in page: refining letter by letter, inside a frame, and clearing the match");
+                                    // The find shortcut goes to the page first. A page that takes ⌘F keeps
+                                    // it: no report. This page does not take ⌘G and ⇧⌘G: one report each.
+                                    read(&second_page, "addEventListener('keydown', e => { if (e.metaKey && e.key === 'f') { e.preventDefault(); document.title = 'PAGE FIND'; } }); 'ok'").await;
+                                    cx.update(|window, cx| { cx.activate(true); window.activate_window(); }).unwrap();
+                                    second_page.drain_events();
+                                    second_page.native_key("Meta+f").unwrap();
+                                    let deadline = Instant::now() + Duration::from_secs(5);
+                                    while read(&second_page, "document.title").await != "PAGE FIND" {
+                                        assert!(Instant::now() < deadline, "the page never got ⌘F");
+                                        Timer::after(Duration::from_millis(50)).await;
+                                    }
+                                    second_page.native_key("Meta+g").unwrap();
+                                    second_page.native_key("Meta+Shift+g").unwrap();
+                                    let mut keys = Vec::new();
+                                    while keys.len() < 2 {
+                                        assert!(Instant::now() < deadline + Duration::from_secs(5), "the page did not report the keys it left: {keys:?}");
+                                        Timer::after(Duration::from_millis(50)).await;
+                                        keys.extend(second_page.drain_events().into_iter().filter_map(|event| match event { Event::FindKey(step) => Some(step), _ => None }));
+                                    }
+                                    assert_eq!(keys, [1, -1], "⌘F that the page took makes no report; ⌘G and ⇧⌘G make one each");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and find in page: refining letter by letter, inside a frame, clearing the match, and the find shortcut that a page can take");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;

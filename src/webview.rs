@@ -38,6 +38,8 @@ pub enum Event {
     Stopped,
     /// Whether the last `find` matched.
     Found(bool),
+    /// The page got a find shortcut and did not take it: 0 is ⌘F, 1 is ⌘G and -1 is ⇧⌘G.
+    FindKey(i8),
     /// A frame or resource of the page was trusted with a certificate the user accepted.
     /// Connections WebKit reuses without a challenge are not reported.
     UsedException,
@@ -84,6 +86,8 @@ impl NativePage {
         }
         let webview = builder
             .with_devtools(true)
+            // In each frame: the keys go to the frame that has the focus.
+            .with_initialization_script(include_str!("find_keys.js"))
             .with_initialization_script_for_main_only(include_str!("link_interactions.js"), false)
             .with_initialization_script_for_main_only(include_str!("audio_control.js"), false)
             .with_initialization_script_for_main_only(include_str!("page_icon.js"), true)
@@ -91,6 +95,7 @@ impl NativePage {
                 let body = request.body();
                 let event = parse_link_event(body)
                     .or_else(|| parse_icon_event(body))
+                    .or_else(|| parse_find_key(body))
                     .or_else(|| {
                         (body.len() <= 64)
                             .then(|| parse_report(body))
@@ -590,7 +595,7 @@ impl NativePage {
         let (modifiers, name) = native_modifiers(key);
         let (code, characters) = native_key(name).ok_or_else(|| format!("Unknown key: {key}"))?;
         // One character has key code 0, and a shortcut reads the key code.
-        if !modifiers.is_empty() && name.chars().count() == 1 {
+        if !modifiers.is_empty() && code == 0 {
             return Err(format!("Modifiers need a named key: {key}"));
         }
         let view = self.webview.webview();
@@ -1009,6 +1014,17 @@ fn report_failure(key: usize, error: Option<&objc2_foundation::NSError>, provisi
 }
 
 /// The content bridge has no privileged commands: only link status and web-tab requests.
+/// A find shortcut that the page did not take, from `find_keys.js`. A page can send this
+/// message itself; it only opens the find bar.
+fn parse_find_key(message: &str) -> Option<Event> {
+    match message.strip_prefix("felifox-find:")? {
+        "0" => Some(Event::FindKey(0)),
+        "1" => Some(Event::FindKey(1)),
+        "-1" => Some(Event::FindKey(-1)),
+        _ => None,
+    }
+}
+
 fn parse_link_event(message: &str) -> Option<Event> {
     if message.len() > 8_256 {
         return None;
@@ -1042,11 +1058,22 @@ fn parse_icon_event(message: &str) -> Option<Event> {
     crate::icons::png_from_data_url(message.strip_prefix("felifox-icon:")?).map(Event::Icon)
 }
 
-/// Gives Command+arrow keys to the focused page. AppKit offers each Command key to GPUI as a
-/// key equivalent first, and the text input context of GPUI consumes the arrows. Thus WebKit
-/// did not move the caret to the start or the end of a line. Call this once, on the main thread.
+/// Whether the focused page gets a key before GPUI. `command`, `control` and `option` are the
+/// modifiers of the key.
+/// - Command+arrows (key codes 123 to 126): the text input context of GPUI consumes them, thus
+///   WebKit did not move the caret to the start or the end of a line.
+/// - ⌘F, ⌘G and ⇧⌘G (key codes 3 and 5): a page can have a find of its own. WebKit does not
+///   give a key that the page ignored back to AppKit, so `find_keys.js` reports that key
+///   (`Event::FindKey`), and the find bar opens then.
+fn page_gets_key_first(key_code: u16, command: bool, control: bool, option: bool) -> bool {
+    command
+        && ((123..=126).contains(&key_code) || (matches!(key_code, 3 | 5) && !control && !option))
+}
+
+/// Gives the keys of `page_gets_key_first` to the focused page. AppKit offers each Command key
+/// to GPUI as a key equivalent first. Call this once, on the main thread.
 #[cfg(target_os = "macos")]
-pub fn forward_command_arrows() {
+pub fn forward_page_keys() {
     use objc2::{ClassType, runtime::NSObjectProtocol};
     use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
     let handler = block2::RcBlock::new(|event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
@@ -1055,10 +1082,13 @@ pub fn forward_command_arrows() {
         let Some(mtm) = objc2::MainThreadMarker::new() else {
             return event.as_ptr();
         };
-        // Key codes 123 to 126 are the arrows.
-        if (123..=126).contains(&key.keyCode())
-            && key.modifierFlags().contains(NSEventModifierFlags::Command)
-            && let Some(responder) = key.window(mtm).and_then(|window| window.firstResponder())
+        let flags = key.modifierFlags();
+        if page_gets_key_first(
+            key.keyCode(),
+            flags.contains(NSEventModifierFlags::Command),
+            flags.contains(NSEventModifierFlags::Control),
+            flags.contains(NSEventModifierFlags::Option),
+        ) && let Some(responder) = key.window(mtm).and_then(|window| window.firstResponder())
             && responder.isKindOfClass(objc2_web_kit::WKWebView::class())
         {
             responder.keyDown(key);
@@ -1299,6 +1329,9 @@ fn native_key(key: &str) -> Option<(u16, String)> {
         "End" => (119, '\u{f72b}'),
         "PageUp" => (116, '\u{f72c}'),
         "PageDown" => (121, '\u{f72d}'),
+        // The find shortcuts read the key code.
+        "f" => (3, 'f'),
+        "g" => (5, 'g'),
         // ponytail: one character has key code 0, thus `event.code` is always "KeyA".
         // Add a layout table if a site reads `code`, or for modifiers with a character.
         _ => {
@@ -1635,6 +1668,53 @@ mod tests {
             "felifox-link:hover:https://example.com",
         ] {
             assert_eq!(parse_icon_event(message), None, "{message}");
+        }
+    }
+
+    #[test]
+    fn a_find_key_message_is_one_of_three_steps() {
+        use super::{Event, parse_find_key};
+        for (message, step) in [
+            ("felifox-find:0", 0),
+            ("felifox-find:1", 1),
+            ("felifox-find:-1", -1),
+        ] {
+            assert!(matches!(parse_find_key(message), Some(Event::FindKey(s)) if s == step));
+        }
+        for message in [
+            "felifox-find:",
+            "felifox-find:2",
+            "felifox-find:-2",
+            "felifox-find:1 ",
+            "felifox-find:01",
+            "felifox-link:1",
+            "",
+        ] {
+            assert!(parse_find_key(message).is_none(), "{message:?}");
+        }
+    }
+
+    #[test]
+    fn the_page_gets_command_arrows_and_the_find_keys_first() {
+        use super::page_gets_key_first as first;
+        for arrow in 123..=126 {
+            assert!(first(arrow, true, false, false), "{arrow}");
+            assert!(
+                !first(arrow, false, false, false),
+                "{arrow} without Command"
+            );
+        }
+        // ⌘F, ⌘G (and ⇧⌘G: Shift is not a parameter).
+        for code in [3, 5] {
+            assert!(first(code, true, false, false), "{code}");
+            assert!(!first(code, false, false, false), "a plain letter");
+            // ⌃⌘F is full screen and ⌥⌘F is not a find key: they stay with the browser.
+            assert!(!first(code, true, true, false), "{code} with Control");
+            assert!(!first(code, true, false, true), "{code} with Option");
+        }
+        // Other shortcuts of the browser, such as ⌘T (17), ⌘W (13) and ⌘L (37).
+        for code in [17, 13, 37, 0] {
+            assert!(!first(code, true, false, false), "{code}");
         }
     }
 
