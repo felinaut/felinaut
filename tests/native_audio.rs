@@ -19,6 +19,9 @@ mod identity;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/load_error.rs"]
 mod load_error;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/permissions.rs"]
+mod permissions;
 #[allow(dead_code)]
 #[path = "../src/swipe.rs"]
 mod swipe;
