@@ -10,6 +10,7 @@ mod downloads;
 mod engine;
 mod history;
 mod icons;
+mod identity;
 mod input;
 mod language;
 mod link_toast;
@@ -4339,6 +4340,8 @@ fn main() {
     // Before anything reads the locale: WebKit takes the preferred languages from here.
     let launch_language = ThemeSettings::load().language;
     language::apply(launch_language);
+    // Reads Safari's version now, so creating the first page does not wait on the disk.
+    identity::user_agent();
     let handoff = Rc::new(RefCell::new(UrlHandoff::default()));
     let opener = handoff.clone();
     let app = Application::new().with_assets(brand::BrandAssets);
