@@ -756,13 +756,15 @@ fn main() {
                                 }
                                 21 => {
                                     // The load fails before a document commits, with the prompt
-                                    // open: WebKit blocks port 1.
+                                    // open: the host does not resolve. A blocked port is not
+                                    // usable here: on macOS 26.5 WebKit shows about:blank for
+                                    // port 1 and reports no failure.
                                     cx.update(|window, cx| {
                                         assert!(auth_prompt::sync(&second_page, true, &browser, window, cx));
                                         window.refresh();
                                     }).unwrap();
                                     page_failed = false;
-                                    second_page.navigate("http://127.0.0.1:1/").unwrap();
+                                    second_page.navigate("http://felifox.invalid/").unwrap();
                                 }
                                 22 => {
                                     // The failed load cancelled the question and its prompt.
