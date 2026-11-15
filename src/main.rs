@@ -2345,8 +2345,12 @@ impl Browser {
             };
             // Hiding is not enough: the document keeps running over the connection WebKit
             // trusted, and Back would show it again.
-            if page.uses_accepted_certificate() {
+            // A load of a forgotten site that did not commit yet has no certificate to show.
+            let pending = tab.loading && webview::is_blocked(&tab.url);
+            if page.uses_accepted_certificate() || pending {
                 let document = page.document().map(|(url, _)| url);
+                // After Try Again the site has no exception, so `forget` did not block it.
+                webview::block_site(document.as_deref().unwrap_or(&tab.url));
                 if let Some(page) = tab.close_insecure_page(document) {
                     let _ = page.set_visible(false);
                     let _ = page.focus_parent();

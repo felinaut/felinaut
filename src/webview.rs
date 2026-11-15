@@ -655,6 +655,11 @@ pub fn forget_certificate_exceptions() {
     EXCEPTIONS.with_borrow_mut(Exceptions::forget);
 }
 
+/// Blocks the site of a page that Forget closed. See `Exceptions::block`.
+pub fn block_site(url: &str) {
+    EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.block(url));
+}
+
 /// Whether the user accepted a bad certificate for the site of `url`, so the hidden page,
 /// which carries the logged-in sessions, must not load it.
 pub fn has_certificate_exception(url: &str) -> bool {

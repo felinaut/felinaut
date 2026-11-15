@@ -176,6 +176,12 @@ impl Exceptions {
             .extend(self.allowed.drain().map(|(site, _)| site));
     }
 
+    /// Blocks the site of `url`. Forget uses this for each page it closes: after Try Again a
+    /// site has no exception left, but WebKit can still serve it over the old connection.
+    pub fn block(&mut self, url: &str) {
+        self.forgotten.extend(site(url));
+    }
+
     /// Try Again on a forgotten site's page lifts its block without trusting any certificate:
     /// a new connection asks about the certificate the site serves now.
     pub fn retry(&mut self, failure: &LoadFailure) {
@@ -365,6 +371,24 @@ mod tests {
         assert!(!exceptions.blocked("https://self-signed.badssl.com/"));
         assert!(exceptions.allows("self-signed.badssl.com", 443, &[6]));
         assert!(!exceptions.allows("self-signed.badssl.com", 443, &[4]));
+    }
+
+    #[test]
+    fn a_second_forget_blocks_a_site_that_was_tried_again() {
+        let mut exceptions = Exceptions::default();
+        exceptions.allow("https://expired.badssl.com/", vec![1]);
+        exceptions.forget();
+        exceptions.retry(&forgotten("https://expired.badssl.com/"));
+        // The site has no exception now, so `forget` alone does not block it again.
+        exceptions.forget();
+        assert!(!exceptions.blocked("https://expired.badssl.com/"));
+        // Forget blocks the site of each page it closes.
+        exceptions.block("https://EXPIRED.badssl.com/page");
+        assert!(exceptions.blocked("https://expired.badssl.com/"));
+        // Only an `https` site can be blocked.
+        exceptions.block("http://plain.example/");
+        exceptions.block("not a url");
+        assert!(!exceptions.blocked("http://plain.example/"));
     }
 
     #[test]
