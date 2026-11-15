@@ -21,6 +21,9 @@ mod http_auth;
 #[path = "../src/icons.rs"]
 mod icons;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/identity.rs"]
+mod identity;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/input.rs"]
 mod input;
 #[allow(dead_code, unused_imports)]
@@ -29,6 +32,9 @@ mod language;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/load_error.rs"]
 mod load_error;
+#[allow(dead_code)]
+#[path = "../src/swipe.rs"]
+mod swipe;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/theme.rs"]
 mod theme;
@@ -37,13 +43,16 @@ mod theme;
 mod webview;
 
 use gpui::{prelude::*, *};
+
+// `input.rs` sends this action from the Not secure mark of the address bar.
+actions!(felinaut, [ExplainNotSecure]);
 use std::{
     cell::Cell,
     io::{Read, Write},
     net::TcpListener,
     rc::Rc,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -129,6 +138,56 @@ fn prompt_closed(page: &NativePage, browser: &FocusHandle, cx: &mut AsyncWindowC
     .unwrap();
 }
 
+/// Page scripts that notice, and would break, a find bar that edits the selection from the
+/// page's own JavaScript world.
+const FIND_OVERRIDES: &str = "<script>Selection.prototype.collapseToStart = Selection.prototype.removeAllRanges = function () { top.findTouched = true; };</script>";
+
+/// Reads `frame-or-element-id:text` of the selection in the page or its frames, or "".
+const SELECTION: &str = "(() => { for (const w of [window, ...Array.from(document.querySelectorAll('iframe'), f => f.contentWindow)]) { const s = w.getSelection(); if (s && s.rangeCount && !s.isCollapsed) return s.anchorNode.parentElement.id + ':' + s; } return ''; })()";
+
+/// Runs `page.find`, then returns whether it matched and what is selected.
+async fn find_step(page: &NativePage, text: &str, backwards: bool) -> (bool, String) {
+    page.find(text, backwards);
+    (wait_found(page).await, read(page, SELECTION).await)
+}
+
+async fn wait_found(page: &NativePage) -> bool {
+    let start = Instant::now();
+    loop {
+        Timer::after(Duration::from_millis(20)).await;
+        if let Some(found) = page
+            .drain_events()
+            .into_iter()
+            .find_map(|event| match event {
+                Event::Found(found) => Some(found),
+                _ => None,
+            })
+        {
+            return found;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "no find result");
+    }
+}
+
+async fn read(page: &NativePage, script: &str) -> String {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    page.evaluate(script, move |value| {
+        let _ = sender.send(value);
+    })
+    .unwrap();
+    let start = Instant::now();
+    loop {
+        Timer::after(Duration::from_millis(20)).await;
+        if let Ok(value) = receiver.try_recv() {
+            return value.trim_matches('"').to_string();
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "no readback of {script:?}"
+        );
+    }
+}
+
 fn main() {
     if std::env::var_os("FELINAUT_NATIVE_TEST")
         .or_else(|| std::env::var_os("FELIFOX_NATIVE_TEST"))
@@ -157,6 +216,10 @@ fn main() {
     let image_requests = Arc::new(AtomicUsize::new(0));
     let served_images = image_requests.clone();
     let fixture_port = listener.local_addr().unwrap().port();
+    // `(source, user agent)`: the User-Agent header of every request, keyed by its path, and
+    // `navigator.userAgent` as the page reports it.
+    let user_agents = Arc::new(Mutex::new(Vec::new()));
+    let seen_agents = user_agents.clone();
     std::thread::spawn(move || {
         for connection in listener.incoming() {
             let Ok(mut stream) = connection else {
@@ -170,6 +233,23 @@ fn main() {
                 continue;
             };
             let request = String::from_utf8_lossy(&request[..count]);
+            let path = request
+                .strip_prefix("GET ")
+                .and_then(|rest| rest.split(['?', ' ']).next())
+                .unwrap_or("?")
+                .to_string();
+            let header = request
+                .lines()
+                .find_map(|line| line.strip_prefix("User-Agent: "))
+                .map(|agent| (path, agent.to_string()));
+            let reported = request
+                .strip_prefix("GET /agent?")
+                .and_then(|rest| rest.split(' ').next())
+                .map(|query| ("navigator.userAgent".to_string(), query.replace("%20", " ")));
+            seen_agents
+                .lock()
+                .unwrap()
+                .extend(header.into_iter().chain(reported));
             if request.starts_with("GET /download ") {
                 // The server asks for a name outside the downloads folder.
                 served_downloads.fetch_add(1, Ordering::SeqCst);
@@ -183,6 +263,28 @@ fn main() {
                 );
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                continue;
+            }
+            // Find fixtures: the page replaces the Selection methods that the find bar relies on,
+            // and a same-origin frame holds words that appear nowhere else.
+            let fixture = if request.starts_with("GET /find ") {
+                Some(format!(
+                    "<p id=m1>tap</p><p id=m2>tab</p><p id=m3>table</p><iframe src='/frame'></iframe>{FIND_OVERRIDES}"
+                ))
+            } else if request.starts_with("GET /frame ") {
+                Some(format!(
+                    "<p id=f1>zebra</p><p id=f2>zebu</p><p id=f3>zebus</p>{FIND_OVERRIDES}"
+                ))
+            } else {
+                None
+            };
+            if let Some(body) = fixture {
+                let body = format!("<!doctype html><meta charset=utf-8><title>Find</title>{body}");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = stream.write_all(response.as_bytes());
@@ -244,10 +346,10 @@ fn main() {
             let script = if second {
                 "document.title = localStorage.getItem('felifox-smoke') === 'yes' ? 'JS SECOND' : 'STORAGE FAILED';"
             } else {
-                "localStorage.setItem('felifox-smoke', 'yes'); document.title = 'JS FIRST';"
+                "fetch('/agent?' + navigator.userAgent); localStorage.setItem('felifox-smoke', 'yes'); document.title = 'JS FIRST';"
             };
             let body = format!(
-                "<!doctype html><meta charset=utf-8><title>Waiting</title><style>body{{background:#edf0ff;color:#101324}}</style><h1 id=result>JavaScript test</h1><a id=testlink href='/link-destination'><span id=linkchild>Test link</span></a><script>{script}document.querySelector('#result').textContent = document.title;</script>"
+                "<!doctype html><meta charset=utf-8><title>Waiting</title><style>body{{background:#edf0ff;color:#101324}}</style><h1 id=result>JavaScript test</h1><a id=testlink href='/link-destination'><span id=linkchild>Test link</span></a><iframe src='/frame'></iframe><script>{script}document.querySelector('#result').textContent = document.title;</script>"
             );
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
@@ -262,6 +364,7 @@ fn main() {
     Application::new().run(move |cx| {
         cx.set_global(theme::ThemeSettings::default());
         input::init(cx);
+        webview::forward_page_keys();
         let first_url = format!("{base}/first");
         let second_url = format!("{base}/second");
         let download_url = format!("{base}/download");
@@ -273,8 +376,10 @@ fn main() {
         let auth_requests = auth_requests.clone();
         let cross_requests = cross_requests.clone();
         let image_requests = image_requests.clone();
+        let find_url = format!("{base}/find");
         let folder = folder.clone();
         let download_requests = download_requests.clone();
+        let user_agents = user_agents.clone();
         let handle = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(800.), px(600.)), cx))),
@@ -292,6 +397,16 @@ fn main() {
                 let hidden = NativePage::hidden(window, &download_url).expect("create hidden page");
                 // A page the user never sees meets a sign-in challenge; it must not ask.
                 let hidden_auth = NativePage::hidden(window, &auth_url).expect("create hidden sign-in page");
+                // Tabs keep the in-app inspector, but Safari's Develop menu can't attach to them;
+                // the hidden live-folder page has no inspector at all.
+                for tab in [&*page, &second_tab, &*failed_tab] {
+                    assert_eq!(tab.inspectable_for_test(), Some(false), "a tab must not be inspectable from Safari");
+                    assert!(tab.developer_extras_for_test(), "tabs keep Inspect Element");
+                    assert!(tab.container_for_test().is_some_and(|c| c.holds_page), "each tab page sits in its own container");
+                }
+                assert!(!hidden.developer_extras_for_test(), "the hidden live-folder page has developer extras off");
+                assert_eq!(hidden.inspectable_for_test(), Some(false));
+                assert!(hidden.container_for_test().is_none(), "the hidden page needs no container");
                 page.focus().unwrap();
                 page.focus_parent().unwrap();
                 let second_page = page.clone();
@@ -312,6 +427,7 @@ fn main() {
                         let mut downloads = Vec::new();
                         let key = second_page.key().expect("a visible page has a key");
                         let mut closing = None;
+                        let mut found = Vec::new();
                         loop {
                             Timer::after(Duration::from_millis(50)).await;
                             downloads.extend(downloads::native::drain());
@@ -330,32 +446,36 @@ fn main() {
                                     Event::Hover(None) => hover_cleared = true,
                                     Event::OpenInBackground(url) if url.ends_with("/link-destination") => background_opens += 1,
                                     Event::Open(url) if url.ends_with("/link-destination") => foreground_open = true,
+                                    Event::Found(value) => found.push(value),
                                     _ => {},
                                 }
                             }
-                            assert!(start.elapsed() < Duration::from_secs(20), "native test timed out at stage {stage}; title={title:?}");
-                            if stage <= 4 && !finished { continue; }
+                            assert!(start.elapsed() < Duration::from_secs(40), "native test timed out at stage {stage}; title={title:?}");
+                            if (stage <= 4 || stage == 8) && !finished { continue; }
                             if stage == 5 && (title != "LINK EVENTS OK" || failure.is_none()) { continue; }
                             let downloaded = downloads.iter().any(|event| matches!(event, downloads::Event::Finished { .. }));
                             if stage == 6 && !(downloaded && download_requests.load(Ordering::SeqCst) >= 2) { continue; }
-                            if stage == 7 && (title != "EMBED" || cross_requests.load(Ordering::SeqCst) == 0) { continue; }
+                            if stage == 7 && found.len() < 3 { continue; }
+                            if stage == 9 && (title != "EMBED" || cross_requests.load(Ordering::SeqCst) == 0) { continue; }
                             // The id of the question each sign-in stage waits for.
                             let question = http_auth::waiting(key).map(|(id, _)| id);
-                            if stage == 8 && (question != Some(1) || auth_requests.load(Ordering::SeqCst) < 2) { continue; }
-                            if stage == 9 && title != "AUTH NEEDED" { continue; }
-                            if (stage == 10 && question != Some(2)) || (stage == 11 && question != Some(3)) { continue; }
-                            if stage == 12 && title != "AUTH OK" { continue; }
+                            if stage == 10 && (question != Some(1) || auth_requests.load(Ordering::SeqCst) < 2) { continue; }
+                            if stage == 11 && title != "AUTH NEEDED" { continue; }
+                            if (stage == 12 && question != Some(2)) || (stage == 13 && question != Some(3)) { continue; }
+                            if stage == 14 && title != "AUTH OK" { continue; }
                             let closing_key = closing.as_ref().and_then(NativePage::key);
-                            if (stage == 13 || stage == 15) && question.is_none() { continue; }
-                            if stage == 14 && (title != "AUTH NEEDED" || image_requests.load(Ordering::SeqCst) == 0) { continue; }
-                            if stage == 16 && title != "JS FIRST" { continue; }
-                            if (stage == 17 || stage == 19) && question.is_none() { continue; }
-                            if stage == 18 && title != "AUTH NEEDED" { continue; }
-                            if stage == 20 && !page_failed { continue; }
-                            if stage == 21 && closing_key.and_then(http_auth::waiting).is_none() { continue; }
+                            if (stage == 15 || stage == 17) && question.is_none() { continue; }
+                            if stage == 16 && (title != "AUTH NEEDED" || image_requests.load(Ordering::SeqCst) == 0) { continue; }
+                            if stage == 18 && title != "JS FIRST" { continue; }
+                            if (stage == 19 || stage == 21) && question.is_none() { continue; }
+                            if stage == 20 && title != "AUTH NEEDED" { continue; }
+                            if stage == 22 && !page_failed { continue; }
+                            if stage == 23 && closing_key.and_then(http_auth::waiting).is_none() { continue; }
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
+                                    // The policy hook tells a frame apart from the main frame and still lets the page load.
+                                    assert!(webview::subframe_decisions() >= 1, "frame navigations reach the policy as frames");
                                     second_page.navigate(&second_url).unwrap();
                                 }
                                 1 => {
@@ -374,9 +494,18 @@ fn main() {
                                 }
                                 4 => {
                                     assert_eq!(title, "JS SECOND");
+                                    // Visibility and bounds act on the tab's container, which carries the page.
                                     second_page.set_visible(false).unwrap();
+                                    let hidden_tab = second_page.container_for_test().unwrap();
+                                    assert!(hidden_tab.hidden && !hidden_tab.page_hidden, "{hidden_tab:?}");
                                     second_page.set_bounds(Bounds::new(point(px(10.), px(20.)), size(px(640.), px(400.)))).unwrap();
+                                    let moved = second_page.container_for_test().unwrap();
+                                    let top = if moved.parent_flipped { 20. } else { moved.parent_height - 20. - 400. };
+                                    assert_eq!(moved.frame, (10., top, 640., 400.), "{moved:?}");
+                                    assert!(moved.holds_page && moved.page_fills, "{moved:?}");
                                     second_page.set_visible(true).unwrap();
+                                    let shown = second_page.container_for_test().unwrap();
+                                    assert!(!shown.hidden && !shown.page_hidden, "{shown:?}");
                                     second_page.evaluate_for_test(r#"
                                         (() => {
                                           const child = document.getElementById('linkchild');
@@ -423,16 +552,117 @@ fn main() {
                                     assert_eq!(std::fs::read(saved).unwrap(), b"fixture");
                                     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "the hidden page saved nothing");
                                     std::fs::remove_dir_all(folder.parent().unwrap()).unwrap();
-                                    second_page.navigate(&embed_url).unwrap();
+                                    // The visible page's requests, its `navigator.userAgent` and the hidden
+                                    // page's request all carry one Safari-compatible User-Agent.
+                                    let agents = user_agents.lock().unwrap().clone();
+                                    let agent = identity::user_agent();
+                                    let (webkit, safari) = agent.split_once(" Version/").unwrap_or_else(|| panic!("no Safari part: {agent:?}"));
+                                    assert!(webkit.starts_with("Mozilla/5.0 (Macintosh; ") && webkit.ends_with(" (KHTML, like Gecko)"), "{agent:?}");
+                                    let version = safari.strip_suffix(" Safari/605.1.15").unwrap_or_else(|| panic!("no Safari token: {agent:?}"));
+                                    assert!(version.split('.').all(|part| part.parse::<u16>().is_ok()), "{agent:?}");
+                                    assert!(!agent.to_lowercase().contains("feli"), "{agent:?}");
+                                    let sent = |source: &str| agents.iter().filter(|(from, _)| from == source).count();
+                                    assert!(sent("/first") >= 1, "the visible page's request sent no User-Agent: {agents:?}");
+                                    assert!(sent("navigator.userAgent") >= 1, "the page never reported navigator.userAgent: {agents:?}");
+                                    assert!(sent("/download") >= 2, "expected the visible and the hidden page's downloads: {agents:?}");
+                                    assert!(agents.iter().all(|(_, other)| other == agent), "expected {agent:?} everywhere: {agents:?}");
+
+                                    // Web Inspector: docked inside the tab's container, then detached.
+                                    macro_rules! wait_for {
+                                        ($what:literal, $ready:expr) => {{
+                                            let deadline = Instant::now() + Duration::from_secs(10);
+                                            loop {
+                                                let state = second_page.inspector_for_test();
+                                                if state.as_ref().is_some_and($ready) { break; }
+                                                assert!(Instant::now() < deadline, concat!("Web Inspector never ", $what, ": {:?}"), state);
+                                                Timer::after(Duration::from_millis(50)).await;
+                                            }
+                                        }};
+                                    }
+                                    second_page.toggle_devtools();
+                                    wait_for!("opened", |s| s.visible);
+                                    second_page.dock_inspector_for_test(true);
+                                    wait_for!("docked in the tab", |s| s.visible && !s.detached && s.in_container);
+                                    second_page.toggle_devtools();
+                                    wait_for!("closed when docked", |s| !s.visible);
+                                    second_page.toggle_devtools();
+                                    wait_for!("reopened", |s| s.visible);
+                                    second_page.dock_inspector_for_test(false);
+                                    wait_for!("detached", |s| s.visible && s.detached && !s.in_container);
+                                    // With the browser window in front, ⌥⌘I brings the inspector back. Window
+                                    // order and main-window status need the app active, which other apps
+                                    // may have taken since launch.
+                                    cx.update(|window, cx| { cx.activate(true); window.activate_window(); }).unwrap();
+                                    wait_for!("went behind the browser window", |s| s.visible && !s.front);
+                                    second_page.toggle_devtools();
+                                    wait_for!("came to the front", |s| s.visible && s.front);
+                                    second_page.toggle_devtools();
+                                    wait_for!("closed when in front", |s| !s.visible);
+                                    second_page.find("test link", false);
+                                    second_page.find("TEST", true);
+                                    second_page.find("no such words", false);
                                 }
                                 7 => {
+                                    assert_eq!(found, [true, true, false], "find matches case-insensitively and reports misses");
+                                    second_page.navigate(&find_url).unwrap();
+                                }
+                                8 => {
+                                    // Typing letter by letter refines the current match instead of
+                                    // jumping past it; repeating the query (⌘G, ⇧⌘G) steps.
+                                    for (text, backwards, selected) in [
+                                        ("t", false, "m1:t"),
+                                        ("ta", false, "m1:ta"),
+                                        ("tab", false, "m2:tab"),
+                                        ("tab", false, "m3:tab"),
+                                        ("tab", true, "m2:tab"),
+                                        ("tabl", false, "m3:tabl"),
+                                        ("tab", false, "m3:tab"),
+                                        // The same inside a same-origin frame.
+                                        ("z", false, "f1:z"),
+                                        ("ze", false, "f1:ze"),
+                                        ("zebu", false, "f2:zebu"),
+                                        ("zebu", false, "f3:zebu"),
+                                        ("zebus", false, "f3:zebus"),
+                                    ] {
+                                        assert_eq!(find_step(&second_page, text, backwards).await, (true, selected.to_string()), "finding {text:?}, backwards: {backwards}");
+                                    }
+                                    // Emptying the query clears the match, here inside the frame.
+                                    second_page.deselect();
+                                    assert_eq!(read(&second_page, SELECTION).await, "", "the last match in the frame is deselected");
+                                    assert_eq!(find_step(&second_page, "tap", false).await, (true, "m1:tap".to_string()));
+                                    second_page.deselect();
+                                    assert_eq!(read(&second_page, SELECTION).await, "", "the last match in the page is deselected");
+                                    assert_eq!(read(&second_page, "String(!!top.findTouched)").await, "false", "the page never sees the find bar edit its selection");
+                                    // The find shortcut goes to the page first. A page that takes ⌘F keeps
+                                    // it: no report. This page does not take ⌘G and ⇧⌘G: one report each.
+                                    read(&second_page, "addEventListener('keydown', e => { if (e.metaKey && e.key === 'f') { e.preventDefault(); document.title = 'PAGE FIND'; } }); 'ok'").await;
+                                    cx.update(|window, cx| { cx.activate(true); window.activate_window(); }).unwrap();
+                                    second_page.drain_events();
+                                    second_page.native_key("Meta+f").unwrap();
+                                    let deadline = Instant::now() + Duration::from_secs(5);
+                                    while read(&second_page, "document.title").await != "PAGE FIND" {
+                                        assert!(Instant::now() < deadline, "the page never got ⌘F");
+                                        Timer::after(Duration::from_millis(50)).await;
+                                    }
+                                    second_page.native_key("Meta+g").unwrap();
+                                    second_page.native_key("Meta+Shift+g").unwrap();
+                                    let mut keys = Vec::new();
+                                    while keys.len() < 2 {
+                                        assert!(Instant::now() < deadline + Duration::from_secs(5), "the page did not report the keys it left: {keys:?}");
+                                        Timer::after(Duration::from_millis(50)).await;
+                                        keys.extend(second_page.drain_events().into_iter().filter_map(|event| match event { Event::FindKey(step) => Some(step), _ => None }));
+                                    }
+                                    assert_eq!(keys, [1, -1], "⌘F that the page took makes no report; ⌘G and ⇧⌘G make one each");
+                                    second_page.navigate(&embed_url).unwrap();
+                                }
+                                9 => {
                                     // The image of another origin got a sign-in challenge. Give
                                     // a wrongly taken question time to show up.
                                     Timer::after(Duration::from_millis(500)).await;
                                     assert_eq!(http_auth::waiting(key), None, "another origin must not ask the user");
                                     second_page.navigate(&auth_url).unwrap();
                                 }
-                                8 => {
+                                10 => {
                                     // The hidden page's challenge came first. It took no id, so
                                     // this one is the first question.
                                     let (id, challenge) = http_auth::waiting(key).unwrap();
@@ -442,29 +672,29 @@ fn main() {
                                     assert!(!http_auth::is_waiting(id));
                                     http_auth::answer(id, None);
                                 }
-                                9 => {
+                                11 => {
                                     prompt_closed(&second_page, &browser, cx);
                                     second_page.navigate(&auth_url).unwrap();
                                 }
                                 // Typed text goes to the user name, Tab moves to the password, Enter signs in.
-                                10 => sign_in_keys(&second_page, &browser, &["u", "s", "e", "r", "tab", "n", "o", "enter"], cx).await,
-                                11 => {
+                                12 => sign_in_keys(&second_page, &browser, &["u", "s", "e", "r", "tab", "n", "o", "enter"], cx).await,
+                                13 => {
                                     let (_, challenge) = http_auth::waiting(key).unwrap();
                                     assert!(challenge.retry, "the server refused the first answer");
                                     // Tab from the password goes back to the user name.
                                     sign_in_keys(&second_page, &browser, &["tab", "p", "a", "s", "s", "tab", "u", "s", "e", "r", "enter"], cx).await;
                                 }
-                                12 => {
+                                14 => {
                                     prompt_closed(&second_page, &browser, cx);
                                     second_page.navigate(&both_auth_url).unwrap();
                                 }
-                                13 => {
+                                15 => {
                                     let (id, challenge) = http_auth::waiting(key).unwrap();
                                     assert_eq!(challenge.realm, "Both");
                                     sign_in_keys(&second_page, &browser, &["escape"], cx).await;
                                     assert!(!http_auth::is_waiting(id));
                                 }
-                                14 => {
+                                16 => {
                                     // The server's 401 text shows, and its frame and its image
                                     // loaded. Give a question for the second method or for the
                                     // image time to show up.
@@ -474,7 +704,7 @@ fn main() {
                                     // A new navigation asks again.
                                     second_page.navigate(&other_auth_url).unwrap();
                                 }
-                                15 => {
+                                17 => {
                                     // The page leaves for another address with the prompt open,
                                     // while the user types in the address bar.
                                     cx.update(|window, cx| {
@@ -485,7 +715,7 @@ fn main() {
                                     }).unwrap();
                                     second_page.navigate(&first_url).unwrap();
                                 }
-                                16 => {
+                                18 => {
                                     // The new document cancelled the question and its prompt.
                                     // The keys stay in the address bar.
                                     assert_eq!(http_auth::waiting(key), None);
@@ -499,7 +729,7 @@ fn main() {
                                     }).unwrap();
                                     second_page.navigate(&other_auth_url).unwrap();
                                 }
-                                17 => {
+                                19 => {
                                     // The question comes while the tab is in the background and
                                     // the user types in the address bar: the prompt takes nothing.
                                     let (id, _) = http_auth::waiting(key).unwrap();
@@ -520,11 +750,11 @@ fn main() {
                                     cx.update(|window, cx| window.dispatch_keystroke(Keystroke::parse("escape").unwrap(), cx)).unwrap();
                                     assert!(!http_auth::is_waiting(id), "the selected tab's prompt has the keys");
                                 }
-                                18 => {
+                                20 => {
                                     prompt_closed(&second_page, &browser, cx);
                                     second_page.navigate(&other_auth_url).unwrap();
                                 }
-                                19 => {
+                                21 => {
                                     // The load fails before a document commits, with the prompt
                                     // open: WebKit blocks port 1.
                                     cx.update(|window, cx| {
@@ -534,14 +764,14 @@ fn main() {
                                     page_failed = false;
                                     second_page.navigate("http://127.0.0.1:1/").unwrap();
                                 }
-                                20 => {
+                                22 => {
                                     // The failed load cancelled the question and its prompt.
                                     assert_eq!(http_auth::waiting(key), None);
                                     prompt_closed(&second_page, &browser, cx);
                                     let page = cx.update(|window, _| NativePage::new(window, &other_auth_url)).unwrap();
                                     closing = Some(page.expect("create the tab to close"));
                                 }
-                                21 => {
+                                23 => {
                                     // The tab closes with its question open. WebKit raises an
                                     // exception unless the handler is called exactly one time.
                                     let (id, challenge) = closing_key.and_then(http_auth::waiting).unwrap();
@@ -550,7 +780,7 @@ fn main() {
                                     assert!(!http_auth::is_waiting(id));
                                     Timer::after(Duration::from_millis(300)).await;
                                     assert_eq!(http_auth::waiting(key), None);
-                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, a download that stays in the downloads folder while a hidden page's is refused, and the HTTP sign-in prompt: Escape cancels, typed text, Tab and Enter sign in after a refused answer, Cancel does not ask again for a second method, a frame or an image, a prompt of a background tab takes no keys and has them once its tab is selected, a new document, a failed load and a closed tab cancel, and a hidden page and an image of another origin ask nothing");
+                                    println!("PASS: WebKit JavaScript, DOM, storage, history, failed-load error event and URL polling, hover status, Cmd-click, middle-click and right-click menu bridge, frame-aware navigation policy, a download that stays in the downloads folder while a hidden page's is refused, tab containers, a Web Inspector that Safari can't attach to, one Safari-compatible User-Agent, find in page, the find shortcut that a page can take, and the HTTP sign-in prompt: Escape cancels, typed text, Tab and Enter sign in after a refused answer, Cancel does not ask again for a second method, a frame or an image, a prompt of a background tab takes no keys and has them once its tab is selected, a new document, a failed load and a closed tab cancel, and a hidden page and an image of another origin ask nothing");
                                     result.set(true);
                                     cx.update(|window, cx| { window.remove_window(); cx.quit(); }).unwrap();
                                     break;

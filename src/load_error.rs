@@ -12,6 +12,8 @@ pub enum Kind {
     Secure,
     Redirects,
     BlockedPort,
+    /// The user forgot this site's certificate exception, so nothing was requested.
+    Forgotten,
     Other,
 }
 
@@ -50,6 +52,10 @@ impl Kind {
             Kind::BlockedPort => (
                 "This port is blocked",
                 "WebKit never connects to ports used by other services, such as mail or file sharing, so web pages can't misuse them. Check the port number in the address.",
+            ),
+            Kind::Forgotten => (
+                "Can't open this page securely",
+                "You forgot the exception for this site's invalid certificate, so Felinaut didn't connect. Try Again connects again; a certificate that is still invalid asks you again.",
             ),
             Kind::Other => ("Can't open the page", "WebKit couldn't load the page."),
         }
@@ -109,28 +115,126 @@ pub fn failure(domain: &str, code: i64, url: &str, description: &str) -> Option<
     })
 }
 
-/// Certificates the user accepted despite an error, by `https` host and port, until quit.
-/// An exception covers that exact certificate only: a different bad certificate warns again.
+/// The error page for a forgotten site. It offers no certificate: Try Again lifts the block, and
+/// the site's current certificate needs a fresh decision.
+pub fn forgotten(url: &str) -> LoadFailure {
+    // WebKit reported nothing: Felinaut refused the load, so there is no WebKit error code.
+    LoadFailure {
+        url: url.to_owned(),
+        kind: Kind::Forgotten,
+        detail: "Felinaut refused this load before connecting.".into(),
+        certificate: None,
+    }
+}
+
+/// Certificates the user accepted despite an error, by `https` host and port, until forgotten or
+/// quit. An exception covers that exact certificate only: a different bad certificate warns again.
 #[derive(Debug, Default)]
-pub struct Exceptions(HashMap<(String, u16), HashSet<Vec<u8>>>);
+pub struct Exceptions {
+    allowed: HashMap<(String, u16), HashSet<Vec<u8>>>,
+    /// Every certificate accepted this session, even if since forgotten: WebKit can reuse
+    /// their connections, so pages served with them stay marked.
+    accepted: HashSet<Vec<u8>>,
+    /// Forgotten sites, refused before any request until the user tries one again.
+    forgotten: HashSet<(String, u16)>,
+}
 
 impl Exceptions {
     pub fn allow(&mut self, url: &str, certificate: Vec<u8>) {
-        if let Some(site) = site(url) {
-            self.0.entry(site).or_default().insert(certificate);
+        if let Some(site) = site(url).filter(|_| can_override(url)) {
+            self.accepted.insert(certificate.clone());
+            self.forgotten.remove(&site);
+            self.allowed.entry(site).or_default().insert(certificate);
         }
     }
 
     pub fn allows(&self, host: &str, port: u16, certificate: &[u8]) -> bool {
-        self.0
+        self.allowed
             .get(&(host.to_ascii_lowercase(), port))
             .is_some_and(|certificates| certificates.contains(certificate))
     }
 
-    /// Whether a page at `url` may be using an accepted certificate, for the Not secure mark.
+    /// Whether the user accepted any certificate for the `https` site of `url`.
     pub fn covers(&self, url: &str) -> bool {
-        !self.0.is_empty() && site(url).is_some_and(|site| self.0.contains_key(&site))
+        site(url).is_some_and(|site| self.allowed.contains_key(&site))
     }
+
+    /// Whether the user accepted `certificate` this session, even if since forgotten.
+    pub fn accepted(&self, certificate: &[u8]) -> bool {
+        self.accepted.contains(certificate)
+    }
+
+    /// Whether `url` is on a forgotten site: its loads are refused before WebKit could reuse
+    /// the connection it trusted.
+    pub fn blocked(&self, url: &str) -> bool {
+        site(url).is_some_and(|site| self.forgotten.contains(&site))
+    }
+
+    /// Drops every exception and blocks the sites that had one.
+    pub fn forget(&mut self) {
+        self.forgotten
+            .extend(self.allowed.drain().map(|(site, _)| site));
+    }
+
+    /// Blocks the site of `url`. Forget uses this for each page it closes: after Try Again a
+    /// site has no exception left, but WebKit can still serve it over the old connection.
+    pub fn block(&mut self, url: &str) {
+        self.forgotten.extend(site(url));
+    }
+
+    /// Try Again on a forgotten site's page lifts its block without trusting any certificate:
+    /// a new connection asks about the certificate the site serves now.
+    pub fn retry(&mut self, failure: &LoadFailure) {
+        if failure.kind == Kind::Forgotten
+            && let Some(site) = site(&failure.url)
+        {
+            self.forgotten.remove(&site);
+        }
+    }
+}
+
+/// Major sites that require HTTPS (HSTS) and whole preloaded TLDs, with their subdomains: a
+/// small subset of the browsers' HSTS preload list.
+const HSTS: &[&str] = &[
+    "google.com",
+    "gmail.com",
+    "youtube.com",
+    "facebook.com",
+    "github.com",
+    "paypal.com",
+    "apple.com",
+    "icloud.com",
+    "microsoft.com",
+    "live.com",
+    "twitter.com",
+    "x.com",
+    "amazon.com",
+    "dropbox.com",
+    "wikipedia.org",
+    "mozilla.org",
+    "cloudflare.com",
+    "app",
+    "dev",
+    "bank",
+    "page",
+    "new",
+];
+
+/// Whether a failed load of `url` offers "Visit this site anyway": a bad date, issuer or name
+/// can be overridden, a failed handshake cannot, and neither can an HSTS site.
+pub fn offers_override(domain: &str, code: i64, url: &str) -> bool {
+    domain == "NSURLErrorDomain" && (-1204..=-1201).contains(&code) && can_override(url)
+}
+
+/// Whether the user may visit `url` despite a bad certificate: `https`, and not an HSTS site.
+pub fn can_override(url: &str) -> bool {
+    site(url).is_some_and(|(host, _)| {
+        let host = host.trim_end_matches('.');
+        !HSTS.iter().any(|domain| {
+            host.strip_suffix(domain)
+                .is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
+        })
+    })
 }
 
 /// The host and port of an `https` URL; the URL parser lowercases the host.
@@ -190,20 +294,173 @@ mod tests {
     #[test]
     fn exceptions_cover_one_certificate_on_one_https_site() {
         let mut exceptions = Exceptions::default();
-        assert!(!exceptions.covers("https://expired.badssl.com/"));
+        assert!(!exceptions.accepted(&[1, 2, 3]));
         exceptions.allow("https://Expired.badssl.com/a?b", vec![1, 2, 3]);
         exceptions.allow("http://plain.example/", vec![1]);
-        assert!(exceptions.covers("https://expired.badssl.com/other"));
+        assert!(exceptions.accepted(&[1, 2, 3]));
+        assert!(!exceptions.accepted(&[1]));
         assert!(exceptions.allows("EXPIRED.badssl.com", 443, &[1, 2, 3]));
         assert!(!exceptions.allows("expired.badssl.com", 443, &[9]));
         assert!(!exceptions.allows("expired.badssl.com", 8443, &[1, 2, 3]));
         assert!(!exceptions.allows("self-signed.badssl.com", 443, &[1, 2, 3]));
+
+        assert!(!exceptions.accepted(&[9]));
+    }
+
+    #[test]
+    fn forgetting_blocks_each_https_site_that_had_an_exception() {
+        let mut exceptions = Exceptions::default();
+        // An empty Forget changes nothing.
+        exceptions.forget();
+        assert!(!exceptions.blocked("https://expired.badssl.com/"));
+        exceptions.allow("https://expired.badssl.com/", vec![1, 2, 3]);
+        exceptions.allow("https://expired.badssl.com/", vec![5]);
+        exceptions.allow("https://self-signed.badssl.com/", vec![4]);
+        assert!(!exceptions.blocked("https://expired.badssl.com/"));
+        exceptions.forget();
+        assert!(exceptions.blocked("https://EXPIRED.badssl.com/x?y"));
+        assert!(exceptions.blocked("https://self-signed.badssl.com/"));
+        assert!(!exceptions.blocked("https://expired.badssl.com:8443/"));
+        assert!(!exceptions.blocked("https://other.example/"));
+        assert!(!exceptions.blocked("http://expired.badssl.com/"));
+        assert!(!exceptions.blocked("not a url"));
+        // No exception is left, but pages served with those certificates stay marked.
+        for certificate in [&[1, 2, 3][..], &[5], &[4]] {
+            assert!(!exceptions.allows("expired.badssl.com", 443, certificate));
+            assert!(!exceptions.allows("self-signed.badssl.com", 443, certificate));
+            assert!(exceptions.accepted(certificate));
+        }
+        // Forgetting again keeps the blocks.
+        exceptions.forget();
+        assert!(exceptions.blocked("https://expired.badssl.com/"));
+        assert!(exceptions.blocked("https://self-signed.badssl.com/"));
+    }
+
+    #[test]
+    fn a_forgotten_site_page_never_offers_the_old_certificate() {
+        let failure = forgotten("https://expired.badssl.com/a");
+        assert_eq!(failure.kind, Kind::Forgotten);
+        assert_eq!(failure.url, "https://expired.badssl.com/a");
+        assert_eq!(failure.certificate, None);
+        // No error domain or code that WebKit never sent.
+        assert!(!failure.detail.contains("Domain"), "{}", failure.detail);
+        assert!(!failure.detail.contains("-1202"), "{}", failure.detail);
+    }
+
+    #[test]
+    fn trying_a_forgotten_site_again_lifts_its_block_without_trusting_it() {
+        let mut exceptions = Exceptions::default();
+        exceptions.allow("https://expired.badssl.com/", vec![1, 2, 3]);
+        exceptions.allow("https://self-signed.badssl.com/", vec![4]);
+        exceptions.forget();
+        // Try Again on another kind of error page lifts nothing.
+        let other = failure(
+            "NSURLErrorDomain",
+            -1202,
+            "https://expired.badssl.com/",
+            "x",
+        );
+        exceptions.retry(&other.unwrap());
+        assert!(exceptions.blocked("https://expired.badssl.com/"));
+        exceptions.retry(&forgotten("https://expired.badssl.com/b"));
+        assert!(!exceptions.blocked("https://expired.badssl.com/"));
+        assert!(!exceptions.allows("expired.badssl.com", 443, &[1, 2, 3]));
+        assert!(exceptions.blocked("https://self-signed.badssl.com/"));
+        // A fresh decision about the site's current certificate also lifts the block.
+        exceptions.allow("https://self-signed.badssl.com/", vec![6]);
+        assert!(!exceptions.blocked("https://self-signed.badssl.com/"));
+        assert!(exceptions.allows("self-signed.badssl.com", 443, &[6]));
+        assert!(!exceptions.allows("self-signed.badssl.com", 443, &[4]));
+    }
+
+    #[test]
+    fn a_second_forget_blocks_a_site_that_was_tried_again() {
+        let mut exceptions = Exceptions::default();
+        exceptions.allow("https://expired.badssl.com/", vec![1]);
+        exceptions.forget();
+        exceptions.retry(&forgotten("https://expired.badssl.com/"));
+        // The site has no exception now, so `forget` alone does not block it again.
+        exceptions.forget();
+        assert!(!exceptions.blocked("https://expired.badssl.com/"));
+        // Forget blocks the site of each page it closes.
+        exceptions.block("https://EXPIRED.badssl.com/page");
+        assert!(exceptions.blocked("https://expired.badssl.com/"));
+        // Only an `https` site can be blocked.
+        exceptions.block("http://plain.example/");
+        exceptions.block("not a url");
+        assert!(!exceptions.blocked("http://plain.example/"));
+    }
+
+    #[test]
+    fn exceptions_cover_the_site_whatever_its_path() {
+        let mut exceptions = Exceptions::default();
+        assert!(!exceptions.covers("https://intranet.example/"));
+        exceptions.allow("https://Intranet.example/login", vec![1]);
         for url in [
-            "http://expired.badssl.com/",
-            "http://plain.example/",
+            "https://intranet.example/",
+            "https://INTRANET.example:443/other?x#y",
+        ] {
+            assert!(exceptions.covers(url), "{url}");
+        }
+        for url in [
+            "http://intranet.example/",
+            "https://intranet.example:8443/",
+            "https://www.intranet.example/",
+            "https://intranet.example.evil/",
             "about:blank",
+            "",
         ] {
             assert!(!exceptions.covers(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn only_overridable_certificate_errors_offer_the_override() {
+        let offers = |code, url| offers_override("NSURLErrorDomain", code, url);
+        let site = "https://self-signed.badssl.com/";
+        // Expired, unknown root, untrusted and wrong-name certificates.
+        for code in -1204..=-1201 {
+            assert!(offers(code, site), "{code}");
+            // An HSTS site gets the error page without the link.
+            assert!(!offers(code, "https://mail.google.com/"), "{code}");
+            assert!(!offers(code, "https://pkg.go.dev/"), "{code}");
+        }
+        // A failed handshake, a rejected client certificate and other errors.
+        for code in [-1200, -1205, -1206, -1003, -1009] {
+            assert!(!offers(code, site), "{code}");
+        }
+        assert!(!offers_override("WebKitErrorDomain", -1202, site));
+        assert!(!offers(-1202, "http://plain.example/"));
+        assert!(!offers(-1202, ""));
+    }
+
+    #[test]
+    fn hsts_sites_cannot_be_overridden() {
+        for url in [
+            "https://google.com/",
+            "https://mail.google.com/x",
+            "https://accounts.google.com.:443/",
+            "https://www.paypal.com/",
+            "https://pkg.go.dev/",
+            "https://example.app/",
+            "https://my.bank/",
+        ] {
+            assert!(!can_override(url), "{url}");
+            let mut exceptions = Exceptions::default();
+            exceptions.allow(url, vec![1]);
+            assert!(!exceptions.accepted(&[1]), "{url}");
+        }
+        for url in [
+            "https://expired.badssl.com/",
+            "https://notgoogle.com/",
+            "https://google.com.evil.example/",
+            "https://developer.example/",
+            "https://192.168.1.1:8443/",
+        ] {
+            assert!(can_override(url), "{url}");
+        }
+        for url in ["http://example.com/", "about:blank", "", "not a url"] {
+            assert!(!can_override(url), "{url}");
         }
     }
 }
