@@ -183,18 +183,42 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | `⌘W`             | Close active tab                                                |
 | `⌘⇧T`            | Reopen the last closed tab (back in its split view if possible) |
 | `⌘L`             | Focus address and select all                                    |
+| `⌘⇧C`            | Copy the page's link without tracking parameters                |
 | `⌘R`             | Reload                                                          |
 | `⌘+` / `⌘-`      | Zoom in / out; the address bar shows the level, click it to reset |
 | `⌘[` / `⌘]`      | Back / forward                                                  |
 | `⌘⇧H`            | Home                                                            |
 | `⌘⇧M`            | Mute / unmute active tab                                        |
 | `⌘⇧J`            | Show / hide the downloads list                                  |
+| `⌥⌘I`            | Web Inspector for the active page (also **Inspect Element**)    |
 | `⌘S`             | Show / hide the tab sidebar (remembered)                        |
 | `⌘D`             | Pin / unpin active tab                                          |
 | `⌘1`–`⌘8` / `⌘9` | Go to tab 1–8 / last tab                                        |
 | `⌃Tab` / `⌃⇧Tab` | Next / previous tab (also `⌘⇧]` / `⌘⇧[`)                        |
 | `⌘,`             | Open Settings                                                   |
 | `⌘Q`             | Quit                                                            |
+
+### Copy Clean Link
+
+`⌘⇧C` (or **Edit → Copy Clean Link**) copies the active page's address without tracking. A small pop-up under the toolbar confirms it ("Link copied · Tracking removed" only when something was actually removed, otherwise "No tracking found", and then the address is copied exactly as it was). It disappears after about 1.6 seconds, never takes keyboard focus, and lets clicks through to the page.
+
+**Removed everywhere:**
+- Campaign parameters: `utm_*`, `mtm_*`, `hsa_*` and Matomo's `pk_campaign`, `pk_kwd`, `pk_source` and similar (listed exactly, because sites use other `pk_` names for themselves).
+- Ad click IDs such as `fbclid`, `gclid`, `msclkid`, `ttclid` and `twclid`.
+- Email and analytics IDs such as `mc_eid`, `_hsenc` and `_ga`.
+- Text-highlight fragments (`#:~:text=…`).
+
+**Removed only where they track:**
+- **YouTube** (including `m.` and `music.`): `si`, `feature` and `pp`.
+- **Spotify:** `si`.
+- **Google search pages:** `ved`, `ei`, `sei`, `oq` and similar.
+- **Amazon** (any of its hosts, such as `www.`, `m.` and `smile.`): `ref` paths and parameters, `pd_rd_*`, `pf_rd_*`, `qid` and `sr`.
+
+Google and Amazon rules apply only on their own domains, which are listed explicitly (`google.de`, `google.co.uk`, `amazon.fr`, `amazon.com.br` and so on), so `amazon.github.io` or `google.example.io` are left alone.
+
+Everything else stays in its original order and encoding, so the link opens the same page. For example, GitHub's `?ref=main` is kept. New Tab and other non-web pages have no link to copy. The rules are in `src/clean_link.rs`.
+
+**Not covered:** query strings inside hash routes (`#/page?utm_source=…`) are kept, Google's `/url?q=…` redirect links are not unwrapped, and while a page is still loading ⌘⇧C copies the address from before any redirect.
 
 ### Title-first address bar and history suggestions
 
@@ -316,6 +340,7 @@ Keep it small: no bookmarks manager, extensions, permission UI, tracker-blocker 
 - Compatibility is **WebKit compatibility**, not Chromium compatibility. Websites requiring specific browser integrations, DRM, permissions, or custom URL schemes may still fail.
 - Top-level navigation permits HTTP(S) and `about:` pages; file, data, JavaScript and external-app schemes are blocked. This is not a general request filter: WebKit manages subresources and web APIs.
 - This is an early browser shell, not a security-audited Safari replacement. WebKit's engine security updates come from macOS updates.
+- Web Inspector (**View → Developer Tools**) is opened through WebKit's private `_inspector` API (via Wry's `devtools` feature). On macOS 13.3 and later, tabs set `isInspectable` off, so Safari's **Develop** menu cannot attach to Felinaut pages. macOS 12.0–13.2 have no such switch; there WebKit lets Safari attach only to apps signed with the `com.apple.security.get-task-allow` debugging entitlement, which Felinaut's builds never claim. This has not been tested on those versions.
 - Only macOS is configured and tested. Windows and Linux backends are not configured.
 
 ## Validate
@@ -344,6 +369,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/main.rs`: GPUI window, tabs and navigation controls.
 - `src/input.rs`: address input adapted from Zed's Apache-2.0 GPUI input example.
 - `src/engine.rs`: address-to-URL/search resolution and the fixed list of search engines.
+- `src/clean_link.rs`, `src/link_toast.rs`: the tracking-free link copied by `⌘⇧C` and its confirmation pop-up.
 - `src/history.rs`: on-disk visit store, fuzzy matcher and frecency ranking.
 - `src/suggestions.rs`: the native, non-focusing history dropdown under the address bar.
 - `src/icons.rs`, `src/page_icon.js`: site icons handed over by the page as validated PNGs, stored per host, with monogram fallback.
