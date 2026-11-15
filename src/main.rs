@@ -4,13 +4,16 @@ mod appearance;
 mod art;
 mod audio;
 mod brand;
+mod clean_link;
 mod download_panel;
 mod downloads;
 mod engine;
 mod history;
 mod icons;
+mod identity;
 mod input;
 mod language;
+mod link_toast;
 mod live;
 mod load_error;
 mod permission_ui;
@@ -18,6 +21,7 @@ mod permissions;
 mod session;
 mod settings;
 mod suggestions;
+mod swipe;
 mod theme;
 mod volume;
 mod webview;
@@ -124,6 +128,27 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// Poll through loading/navigation up to the deadline, not a smaller attempt budget.
 fn live_refresh_can_poll(started: Instant, next_try: Instant, now: Instant) -> bool {
     now.duration_since(started) < FETCH_TIMEOUT && now >= next_try
+}
+
+/// A live refresh never reads a page served with a certificate the user accepted despite an
+/// error: the hidden page carries the logged-in sessions, and WebKit can reuse a connection a
+/// tab trusted without asking the hidden page. Such a refresh fails and keeps cached items.
+fn live_refresh_result(
+    answer: Option<Result<Vec<live::Item>, String>>,
+    accepted_certificate: bool,
+    name: &str,
+) -> Option<Result<Vec<live::Item>, String>> {
+    if accepted_certificate {
+        return Some(Err(live_certificate_refusal(name)));
+    }
+    answer
+}
+
+fn live_certificate_refusal(name: &str) -> String {
+    format!(
+        "You accepted an invalid certificate for {name}, so its list stays as it was until \
+         Felinaut quits."
+    )
 }
 
 /// The system font with tabular figures, so counts that change keep their width.
@@ -296,10 +321,14 @@ actions!(
         NextTab,
         PreviousTab,
         ReopenTab,
+        CopyCleanLink,
         NewLiveFolder,
         ShowDownloads
     ]
 );
+actions!(felinaut, [ForgetCertificateExceptions, ExplainNotSecure]);
+
+actions!(felinaut, [DevTools]);
 
 /// What ⌘⇧T needs to bring a closed tab back where it was.
 struct ClosedTab {
@@ -344,6 +373,9 @@ struct Tab {
     live: Option<String>,
     /// Whether the page uses the camera and the microphone now.
     capture: (bool, bool),
+    /// The current document loaded a frame, script or image over a certificate the user
+    /// accepted: the page's own `serverTrust` only covers the main frame.
+    used_exception: bool,
 }
 impl Tab {
     /// A saved tab (pinned unless the caller clears `pinned`); its page is created when it is
@@ -375,6 +407,7 @@ impl Tab {
             split: None,
             live: None,
             capture: (false, false),
+            used_exception: false,
         }
     }
     /// An earlier failure stays until the new page commits or fails, so the page under the
@@ -391,6 +424,26 @@ impl Tab {
     }
     /// Shows a failed load's error page. Try Again needs a URL, so a failure without one
     /// keeps the URL the tab was loading.
+    /// A new document committed; what the last one loaded no longer applies.
+    fn started(&mut self, url: String) {
+        self.sound.clear();
+        self.hovered_link = None;
+        self.loading = true;
+        self.error = None;
+        self.load_failure = None;
+        self.used_exception = false;
+        self.url = url;
+    }
+    /// Whether find in page can search this tab: it shows a page, not Home or an error page
+    /// (the page under an error page is hidden).
+    fn searchable(&self) -> bool {
+        !self.home && self.load_failure.is_none()
+    }
+    /// Whether to mark the page Not secure: its main frame (`served`) or something it loaded
+    /// came with a certificate the user accepted despite an error.
+    fn not_secure(&self, served: bool) -> bool {
+        !self.home && self.load_failure.is_none() && (served || self.used_exception)
+    }
     fn show_failure(&mut self, mut failure: LoadFailure) {
         if failure.url.is_empty() {
             failure.url.clone_from(&self.url);
@@ -433,8 +486,38 @@ impl Tab {
     fn url(&self) -> &str {
         if self.home { HOME } else { &self.url }
     }
+    /// An error page without a page underneath (after Forget) goes back to Home.
     fn can_go_back(&self) -> bool {
-        !self.home && self.page.is_some()
+        !self.home && (self.page.is_some() || self.load_failure.is_some())
+    }
+    /// A tab gets its page when first shown; an error page waits for Try Again instead.
+    fn needs_page(&self) -> bool {
+        self.page.is_none() && !self.home && self.load_failure.is_none()
+    }
+    /// What Reload (Try Again on an error page) does.
+    fn reload_plan(&self) -> ReloadPlan {
+        match (&self.page, &self.load_failure) {
+            _ if self.home => ReloadPlan::Nothing,
+            // Reloading would load the page underneath the error page, not the one that failed.
+            (Some(_), Some(failure)) => ReloadPlan::Navigate(failure.url.clone()),
+            (Some(_), None) => ReloadPlan::Reload,
+            (None, Some(failure)) => ReloadPlan::Open(failure.url.clone()),
+            (None, None) => ReloadPlan::Nothing,
+        }
+    }
+    /// Forget closes a page that came with a forgotten certificate rather than hiding it, so
+    /// its scripts, connections and sound stop and neither Back nor Forward can bring it back.
+    /// `document` is the URL the page was showing. Returns the page to hide before it drops.
+    fn close_insecure_page(&mut self, document: Option<String>) -> Option<Rc<NativePage>> {
+        let page = self.page.take();
+        self.loading = false;
+        self.sound.clear();
+        self.hovered_link = None;
+        if !self.home && self.load_failure.is_none() {
+            let url = document.unwrap_or_else(|| self.url.clone());
+            self.show_failure(load_error::forgotten(&url));
+        }
+        page
     }
     fn can_go_forward(&self) -> bool {
         self.page
@@ -443,11 +526,33 @@ impl Tab {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ReloadPlan {
+    Nothing,
+    Reload,
+    /// Load this URL in the tab's page.
+    Navigate(String),
+    /// Load this URL in a new page: the tab has none.
+    Open(String),
+}
+
+/// Where Back from an error page goes: the document still underneath, unless its site was
+/// forgotten (`blocked`), or else Home.
+fn back_from_failure(
+    document: Option<(String, String)>,
+    blocked: impl Fn(&str) -> bool,
+) -> Option<(String, String)> {
+    document.filter(|(url, _)| !blocked(url))
+}
+
 struct Browser {
     tabs: Vec<Tab>,
     active: usize,
     next_id: u64,
     address: Entity<AddressInput>,
+    find: Entity<AddressInput>,
+    find_bar: FindBar,
+    _find_events: [Subscription; 2],
     focus: FocusHandle,
     _submit: Subscription,
     _theme_observer: Subscription,
@@ -565,6 +670,21 @@ impl Browser {
                 AddressEvent::ResetZoom => this.zoom(&Zoom(0), window, cx),
             },
         );
+        let find = cx.new(|cx| AddressInput::with_placeholder("Find in page", cx));
+        let find_events = [
+            cx.subscribe_in(&find, window, |this, _, _: &Submit, window, cx| {
+                this.find(&Find(1), window, cx)
+            }),
+            cx.subscribe_in(
+                &find,
+                window,
+                |this, _, event: &AddressEvent, window, cx| match event {
+                    AddressEvent::Changed => this.search(false, cx),
+                    AddressEvent::Escape => this.close_find(window, cx),
+                    _ => {}
+                },
+            ),
+        ];
         let address_focus = address.read(cx).focus_handle(cx);
         let address_blur = cx.on_blur(&address_focus, window, |this, window, cx| {
             // GPUI also blurs when the window deactivates, as it does while a row or its × is
@@ -607,6 +727,34 @@ impl Browser {
                 this.close_suggestions(false, window, cx);
             }
         });
+        // The swipe monitor enqueues steps and wakes this task, so it never updates GPUI itself.
+        if let Some(swipes) = webview::watch_swipes(window) {
+            cx.spawn_in(window, async move |this, cx| {
+                while let Some(step) = swipes.next().await {
+                    let navigate =
+                        |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                            // In a split view the swipe is for the half under the pointer.
+                            let over_partner = this.partner(this.active).filter(|&partner| {
+                                this.tabs[partner]
+                                    .page
+                                    .as_ref()
+                                    .is_some_and(|page| page.under_pointer())
+                            });
+                            if let Some(partner) = over_partner {
+                                this.activate_half(partner, cx);
+                            }
+                            match step {
+                                swipe::Step::Back => this.back(&Back, window, cx),
+                                swipe::Step::Forward => this.forward(&Forward, window, cx),
+                            }
+                        };
+                    if this.update_in(cx, navigate).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         // Native callbacks enqueue events, avoiding reentrant updates while GPUI renders.
         cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -680,6 +828,9 @@ impl Browser {
             next_id: tabs.len() as u64 + 1,
             tabs,
             address,
+            find,
+            find_bar: FindBar::default(),
+            _find_events: find_events,
             focus,
             _submit: subscription,
             _theme_observer: theme_observer,
@@ -817,7 +968,12 @@ impl Browser {
                 .and_then(|mut answer| answer.take());
             // An API answers a lapsed session with an error rather than a sign-in page.
             signed_out |= answer.as_deref() == Some(live::SIGNED_OUT);
-            let mut done = answer.and_then(|json| live::parse_refresh(&json, integration.host));
+            let accepted_certificate = fetch.loaded && fetch.page.uses_accepted_certificate();
+            let mut done = live_refresh_result(
+                answer.and_then(|json| live::parse_refresh(&json, integration.host)),
+                accepted_certificate,
+                integration.name,
+            );
             if done.is_none()
                 && fetch.loaded
                 && live_refresh_can_poll(fetch.started, fetch.next_try, now)
@@ -867,7 +1023,16 @@ impl Browser {
         else {
             return;
         };
-        match NativePage::hidden(window, self.live[index].sections[section].url) {
+        let url = self.live[index].sections[section].url;
+        if webview::has_certificate_exception(url) {
+            let name = self.live[index].integration.name;
+            let section = &mut self.live[index].sections[section];
+            section.error = Some(live_certificate_refusal(name));
+            section.last = Some(now);
+            cx.notify();
+            return;
+        }
+        match NativePage::hidden(window, url) {
             Ok(page) => {
                 self.fetch = Some(Fetch {
                     folder: index,
@@ -1163,7 +1328,7 @@ impl Browser {
     /// Pinned tabs restored at launch have no page until they are first shown.
     fn load_if_needed(&mut self, index: usize, window: &mut Window) {
         let tab = &mut self.tabs[index];
-        if tab.page.is_some() || tab.home {
+        if !tab.needs_page() {
             return;
         }
         match NativePage::new(window, &tab.url) {
@@ -1578,6 +1743,9 @@ impl Browser {
         for request in requests {
             self.handle_agent(request, window, cx);
         }
+        if webview::take_forget_chosen() {
+            self.forget_certificate_exceptions(&ForgetCertificateExceptions, window, cx);
+        }
         let mut changed = false;
         let mut address_changed = false;
         let mut open = Vec::new();
@@ -1585,6 +1753,9 @@ impl Browser {
         let mut finished = Vec::new();
         let mut page_focused = false;
         let mut focused_tab = None;
+        let mut find_key = None;
+        // A result that arrives after the bar closed or the query was emptied is out of date.
+        let find_current = self.find_bar.current(self.find.read(cx).text());
         let visible_partner = self.partner(self.active);
         for (index, tab) in self.tabs.iter_mut().enumerate() {
             let Some(page) = tab.page.clone() else {
@@ -1594,13 +1765,10 @@ impl Browser {
                 changed = true;
                 match event {
                     Event::Started(url) => {
-                        tab.sound.clear();
-                        tab.hovered_link = None;
-                        tab.loading = true;
-                        tab.error = None;
-                        tab.load_failure = None;
-                        tab.url = url;
+                        self.find_bar.committed(index == self.active);
+                        tab.started(url);
                     }
+                    Event::UsedException => tab.used_exception = true,
                     Event::Failed(failure) => {
                         tab.show_failure(failure);
                         let _ = page.set_visible(false);
@@ -1623,6 +1791,8 @@ impl Browser {
                         }
                     }
                     Event::Url(url) => {
+                        // A route change in the same document shows other text.
+                        self.find_bar.committed(index == self.active);
                         tab.url = url;
                         // Same-document navigations (pushState) never finish a load.
                         if !tab.loading {
@@ -1649,8 +1819,24 @@ impl Browser {
                         audible,
                         limited,
                     }) => tab.sound.report(&id, audible, limited),
+                    Event::Found(found) => {
+                        self.find_bar
+                            .found(index == self.active && find_current, found);
+                    }
+                    // Only the page that the user sees can open the find bar.
+                    Event::FindKey(step) => {
+                        if index == self.active {
+                            find_key = Some(step);
+                        }
+                    }
                 }
             }
+        }
+        if let Some(step) = find_key {
+            self.find(&Find(step), window, cx);
+        }
+        if page_focused && self.find.read(cx).focus_handle(cx).is_focused(window) {
+            window.focus(&self.focus);
         }
         // Clicking into the other half of a split view makes it the active tab; a click on a
         // page never reaches GPUI, so it also has to close an open tab menu here.
@@ -1796,6 +1982,12 @@ impl Browser {
             .map_or(1., |at| at.elapsed().as_secs_f32() / 0.4);
         Some((label.into(), flash.min(1.)))
     }
+    fn dev_tools(&mut self, _: &DevTools, _: &mut Window, _: &mut Context<Self>) {
+        let tab = &self.tabs[self.active];
+        if let Some(page) = tab.page.as_ref().filter(|_| !tab.home) {
+            page.toggle_devtools();
+        }
+    }
     fn mute_tab(&mut self, _: &MuteTab, _: &mut Window, cx: &mut Context<Self>) {
         self.toggle_mute(self.tabs[self.active].id, cx);
     }
@@ -1871,6 +2063,7 @@ impl Browser {
     fn activate_half(&mut self, index: usize, cx: &mut Context<Self>) {
         if index != self.active && self.partner(self.active) == Some(index) {
             self.active = index;
+            self.find_bar.missing = false;
             self.sync_address(cx);
             cx.notify();
         }
@@ -2016,6 +2209,7 @@ impl Browser {
             let _ = page.focus_parent();
         }
         self.active = index;
+        self.find_bar.missing = false;
         self.tabs[index].hovered_link = None;
         self.load_if_needed(index, window);
         if let Some(partner) = self.partner(index) {
@@ -2070,6 +2264,17 @@ impl Browser {
     }
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         self.close_tab_at(self.active, window, cx);
+    }
+    /// ⌘⇧C: copy the page address without tracking parameters (see `clean_link`), then
+    /// confirm it in a small pop-up under the toolbar.
+    fn copy_clean_link(&mut self, _: &CopyCleanLink, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = &self.tabs[self.active];
+        let link = (!tab.home).then(|| clean_link::clean(&tab.url)).flatten();
+        let copied = link_toast::Copied::from(link.as_ref());
+        if let Some(link) = link {
+            cx.write_to_clipboard(ClipboardItem::new_string(link.link));
+        }
+        link_toast::show(copied, window, self.sidebar_width(cx), CHROME_ROW, cx);
     }
     /// Reopens the most recently closed tab where it was, back in its split view when the
     /// other half is still open and free.
@@ -2141,6 +2346,7 @@ impl Browser {
                 partner: tab.split,
             });
         }
+        self.find_bar.missing &= index != self.active;
         self.unsplit(index);
         self.tabs.remove(index);
         if self.tabs.is_empty() {
@@ -2160,6 +2366,49 @@ impl Browser {
         self.sync_address(cx);
         cx.notify();
     }
+    fn find(&mut self, find: &Find, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = &self.tabs[self.active];
+        let Some(page) = tab.page.as_ref().filter(|_| tab.searchable()) else {
+            return;
+        };
+        if find.0 == 0 {
+            self.find_bar.open(Instant::now());
+            let _ = page.focus_parent();
+            self.find.update(cx, |input, cx| {
+                window.focus(&input.focus_handle(cx));
+                input.select_all_text(cx);
+            });
+        } else if self
+            .find_bar
+            .step(self.find.read(cx).text(), Instant::now())
+        {
+            self.search(find.0 < 0, cx);
+        }
+        cx.notify();
+    }
+    fn search(&mut self, backwards: bool, cx: &mut Context<Self>) {
+        let text = self.find.read(cx).text();
+        let tab = &self.tabs[self.active];
+        let request = self.find_bar.search(tab.searchable(), text);
+        if let Some(page) = &tab.page {
+            match request {
+                FindRequest::Search => page.find(text, backwards),
+                FindRequest::Deselect => page.deselect(),
+                FindRequest::Nothing => {}
+            }
+        }
+        cx.notify();
+    }
+    fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.find_bar.close(Instant::now());
+        window.focus(&self.focus);
+        // An error page hides the page, which must not get the keys then.
+        let tab = &self.tabs[self.active];
+        if let Some(page) = tab.page.as_ref().filter(|_| tab.searchable()) {
+            let _ = page.focus();
+        }
+        cx.notify();
+    }
     fn focus_address(&mut self, _: &FocusAddress, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(page) = &self.tabs[self.active].page {
             let _ = page.focus_parent();
@@ -2176,7 +2425,8 @@ impl Browser {
         }
         // A failed load added no history entry: going back shows the page still underneath.
         if tab.load_failure.is_some() {
-            match tab.page.as_ref().and_then(|page| page.document()) {
+            let document = tab.page.as_ref().and_then(|page| page.document());
+            match back_from_failure(document, webview::is_blocked) {
                 Some((url, title)) => {
                     tab.load_failure = None;
                     tab.url = url;
@@ -2212,19 +2462,69 @@ impl Browser {
         self.sync_address(cx);
         cx.notify();
     }
-    fn reload(&mut self, _: &Reload, _: &mut Window, cx: &mut Context<Self>) {
+    fn reload(&mut self, _: &Reload, window: &mut Window, cx: &mut Context<Self>) {
         let tab = &mut self.tabs[self.active];
-        if !tab.home
-            && let Some(page) = &tab.page
-        {
-            // Reloading would load the page underneath the error page, not the one that failed.
-            tab.error = match &tab.load_failure {
-                Some(failure) => page.navigate(&failure.url).err(),
-                None => page.reload().err(),
-            };
+        if let Some(failure) = tab.load_failure.as_ref().filter(|_| !tab.home) {
+            webview::retry(failure);
+        }
+        let result = match tab.reload_plan() {
+            ReloadPlan::Nothing => None,
+            ReloadPlan::Reload => tab.page.as_ref().map(|page| page.reload()),
+            ReloadPlan::Navigate(url) => tab.page.as_ref().map(|page| page.navigate(&url)),
+            ReloadPlan::Open(url) => {
+                Some(NativePage::new(window, &url).map(|page| tab.page = Some(Rc::new(page))))
+            }
+        };
+        if let Some(result) = result {
+            tab.error = result.err();
             tab.loading |= tab.error.is_none();
         }
         cx.notify();
+    }
+    /// Closes every page on an accepted certificate, in any tab (Home tabs, live items and
+    /// split halves included), and shows the forgotten-site page in its place.
+    fn forget_certificate_exceptions(
+        &mut self,
+        _: &ForgetCertificateExceptions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        webview::forget_certificate_exceptions();
+        let mut closed = false;
+        for tab in &mut self.tabs {
+            let Some(page) = tab.page.as_deref() else {
+                continue;
+            };
+            // Hiding is not enough: the document keeps running over the connection WebKit
+            // trusted, and Back would show it again.
+            // A load of a forgotten site that did not commit yet has no certificate to show.
+            let pending = tab.loading && webview::is_blocked(&tab.url);
+            if page.uses_accepted_certificate() || pending {
+                let document = page.document().map(|(url, _)| url);
+                // After Try Again the site has no exception, so `forget` did not block it.
+                webview::block_site(document.as_deref().unwrap_or(&tab.url));
+                if let Some(page) = tab.close_insecure_page(document) {
+                    let _ = page.set_visible(false);
+                    let _ = page.focus_parent();
+                    closed = true;
+                }
+            }
+        }
+        // A closed page may have had the keyboard focus.
+        if closed {
+            window.focus(&self.focus);
+        }
+        self.sync_address(cx);
+        cx.notify();
+    }
+    fn explain_not_secure(
+        &mut self,
+        _: &ExplainNotSecure,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        let host = host(&self.tabs[self.active].url).unwrap_or_default();
+        webview::explain_not_secure(window, &host);
     }
     fn home(&mut self, _: &Home, window: &mut Window, cx: &mut Context<Self>) {
         let tab = &mut self.tabs[self.active];
@@ -2571,8 +2871,8 @@ impl Browser {
                         )
                         .child(
                             note(
-                                "Until Felinaut quits. Anyone on your network could read or change \
-                                 what you send, even passwords."
+                                "For this site until Felinaut quits. Anyone on your network could read \
+                                 or change what you send, including passwords."
                                     .into(),
                             )
                             .text_xs(),
@@ -3957,9 +4257,22 @@ impl Render for Browser {
         // that, the toolbar carries the toggle just right of them.
         let toolbar_toggle = sidebar_width < 88.;
         let tab = &self.tabs[self.active];
+        // The bar's area keeps its full height while its content slides, so the page resizes once.
+        let slid = self.find_bar.slid(
+            Instant::now(),
+            theme::motion_allowed(cx) && window.is_window_active(),
+        );
+        if slid < 1. {
+            window.request_animation_frame();
+        }
+        let find_offset = 44. * if self.find_bar.open { 1. - slid } else { slid };
+        let find_shown = (self.find_bar.open || slid < 1.) && tab.searchable();
         let show_chip = !tab.home && !address_focused && display != AddressDisplay::Url;
-        let not_secure =
-            !tab.home && tab.load_failure.is_none() && webview::has_certificate_exception(&tab.url);
+        let not_secure = tab.not_secure(
+            tab.page
+                .as_deref()
+                .is_some_and(NativePage::uses_accepted_certificate),
+        );
         self.address
             .update(cx, |input, _| input.set_not_secure(not_secure));
         let back_enabled = tab.can_go_back();
@@ -4022,9 +4335,11 @@ impl Render for Browser {
             .on_action(cx.listener(Self::pin_tab))
             .on_action(cx.listener(Self::activate_tab))
             .on_action(cx.listener(Self::zoom))
+            .on_action(cx.listener(Self::dev_tools))
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::reopen_tab))
+            .on_action(cx.listener(Self::copy_clean_link))
             .on_action(cx.listener(Self::new_live_folder))
             .on_action(cx.listener(Self::show_downloads))
             .on_action(cx.listener(Self::reset_site_permissions))
@@ -4033,6 +4348,12 @@ impl Render for Browser {
             .when(self.permission_prompt.is_some(), |root| {
                 root.on_action(cx.listener(Self::focus_permission_prompt))
             })
+            .on_action(cx.listener(Self::find))
+            .on_action(cx.listener(|this, _: &FindPreviousFromBar, window, cx| {
+                this.find(&Find(-1), window, cx)
+            }))
+            .on_action(cx.listener(Self::forget_certificate_exceptions))
+            .on_action(cx.listener(Self::explain_not_secure))
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(
@@ -4134,6 +4455,42 @@ impl Render for Browser {
                             .overflow_hidden()
                             .child(self.content(p, cx)),
                     )
+                    .when(find_shown, |column| {
+                        column.child(
+                            div().h(px(44.)).flex_shrink_0().overflow_hidden().child(
+                                div()
+                                    .key_context("FindBar")
+                                    .h_full()
+                                    .relative()
+                                    .top(px(find_offset))
+                                    .flex()
+                                    .items_center()
+                                    .px_4()
+                                    .gap_2()
+                                    .bg(rgb(p.surface))
+                                    .border_t_1()
+                                    .border_color(rgb(p.border))
+                                    .text_color(rgb(p.muted))
+                                    .child(div().w(px(280.)).child(self.find.clone()))
+                                    .child(self.button("find-previous", "↑", p).on_click(
+                                        cx.listener(|this, _, window, cx| {
+                                            this.find(&Find(-1), window, cx)
+                                        }),
+                                    ))
+                                    .child(self.button("find-next", "↓", p).on_click(cx.listener(
+                                        |this, _, window, cx| this.find(&Find(1), window, cx),
+                                    )))
+                                    .when(self.find_bar.missing, |bar| {
+                                        bar.child(div().text_size(px(12.)).child("Not found"))
+                                    })
+                                    .child(self.button("find-close", "×", p).ml_auto().on_click(
+                                        cx.listener(|this, _, window, cx| {
+                                            this.close_find(window, cx)
+                                        }),
+                                    )),
+                            ),
+                        )
+                    })
                     .child(
                         div()
                             .h(px(30.))
@@ -4161,6 +4518,84 @@ impl Render for Browser {
                             ),
                     ),
             )
+    }
+}
+/// `0` shows the find bar; `1` / `-1` go to the next / previous match.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = felinaut, no_json)]
+struct Find(i8);
+/// Shift+Enter in the find bar; separate from `Find(-1)`, whose menu item would then show ⇧↩.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = felinaut, no_json)]
+struct FindPreviousFromBar;
+#[derive(Debug, PartialEq)]
+enum FindRequest {
+    Search,
+    /// The query was emptied: clear the last match's selection.
+    Deselect,
+    Nothing,
+}
+#[derive(Default)]
+struct FindBar {
+    open: bool,
+    /// When the bar last opened or closed, for its 150 ms slide.
+    toggled: Option<Instant>,
+    missing: bool,
+}
+impl FindBar {
+    fn open(&mut self, now: Instant) {
+        if !self.open {
+            self.toggled = Some(now);
+        }
+        self.open = true;
+    }
+    /// ⌘G or ⇧⌘G: opens the bar to step through `text`, or does nothing without a query.
+    fn step(&mut self, text: &str, now: Instant) -> bool {
+        let step = !text.is_empty();
+        if step {
+            self.open(now);
+        }
+        step
+    }
+    fn close(&mut self, now: Instant) {
+        *self = Self {
+            toggled: Some(now),
+            ..Self::default()
+        };
+    }
+    /// What a changed or repeated query asks of the page; an empty or unsearchable query also
+    /// clears "Not found".
+    fn search(&mut self, searchable: bool, text: &str) -> FindRequest {
+        if !searchable {
+            self.missing = false;
+            FindRequest::Nothing
+        } else if text.is_empty() {
+            self.missing = false;
+            FindRequest::Deselect
+        } else {
+            FindRequest::Search
+        }
+    }
+    /// Whether a result that arrives now can be for the query on show: the page reports a
+    /// result later, after the bar closed or the query was emptied.
+    fn current(&self, text: &str) -> bool {
+        self.open && !text.is_empty()
+    }
+    /// `current`: the result is from the active tab, for the query the open bar shows now.
+    fn found(&mut self, current: bool, found: bool) {
+        if current {
+            self.missing = !found;
+        }
+    }
+    /// A tab committed a new page; a miss on the active tab's old page no longer applies.
+    fn committed(&mut self, active: bool) {
+        self.missing &= !active;
+    }
+    /// How far the last open or close has slid, from 0 to 1.
+    fn slid(&self, now: Instant, motion: bool) -> f32 {
+        self.toggled.filter(|_| motion).map_or(1., |at| {
+            (now.saturating_duration_since(at).as_secs_f32() / 0.15).min(1.)
+        })
     }
 }
 /// The popover draws as soon as its window opens and reads the browser while doing so, so it
@@ -4197,6 +4632,8 @@ fn main() {
     // Before anything reads the locale: WebKit takes the preferred languages from here.
     let launch_language = ThemeSettings::load().language;
     language::apply(launch_language);
+    // Reads Safari's version now, so creating the first page does not wait on the disk.
+    identity::user_agent();
     let handoff = Rc::new(RefCell::new(UrlHandoff::default()));
     let opener = handoff.clone();
     let app = Application::new().with_assets(brand::BrandAssets);
@@ -4213,7 +4650,7 @@ fn main() {
         input::init(cx);
         permission_ui::init(cx);
         #[cfg(target_os = "macos")]
-        webview::forward_command_arrows();
+        webview::forward_page_keys();
         cx.bind_keys([
             KeyBinding::new("cmd-t", NewTab, None),
             KeyBinding::new("cmd-w", CloseTab, None),
@@ -4222,12 +4659,14 @@ fn main() {
             KeyBinding::new("cmd-[", Back, None),
             KeyBinding::new("cmd-]", Forward, None),
             KeyBinding::new("cmd-shift-h", Home, None),
+            KeyBinding::new("alt-cmd-i", DevTools, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-,", OpenSettings, None),
             KeyBinding::new("cmd-shift-m", MuteTab, None),
             KeyBinding::new("cmd-s", ToggleSidebar, None),
             KeyBinding::new("cmd-d", PinTab, None),
             KeyBinding::new("cmd-shift-t", ReopenTab, None),
+            KeyBinding::new("cmd-shift-c", CopyCleanLink, None),
             KeyBinding::new("ctrl-tab", NextTab, None),
             KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
             KeyBinding::new("cmd-shift-]", NextTab, None),
@@ -4242,6 +4681,12 @@ fn main() {
         cx.bind_keys(
             (1..=8).map(|n| KeyBinding::new(&format!("cmd-{n}"), ActivateTab(n - 1), None)),
         );
+        cx.bind_keys([
+            KeyBinding::new("cmd-f", Find(0), None),
+            KeyBinding::new("cmd-g", Find(1), None),
+            KeyBinding::new("cmd-shift-g", Find(-1), None),
+            KeyBinding::new("shift-enter", FindPreviousFromBar, Some("FindBar")),
+        ]);
         // Native menu equivalents remain available while WKWebView owns keyboard focus.
         cx.set_menus(vec![
             Menu {
@@ -4272,6 +4717,11 @@ fn main() {
                     MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
                     MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
                     MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+                    MenuItem::separator(),
+                    MenuItem::action("Find…", Find(0)),
+                    MenuItem::action("Find Next", Find(1)),
+                    MenuItem::action("Find Previous", Find(-1)),
+                    MenuItem::action("Copy Clean Link", CopyCleanLink),
                 ],
             },
             Menu {
@@ -4301,6 +4751,8 @@ fn main() {
                     MenuItem::action("Zoom In", Zoom(1)),
                     MenuItem::action("Zoom Out", Zoom(-1)),
                     MenuItem::action("Actual Size", Zoom(0)),
+                    MenuItem::separator(),
+                    MenuItem::action("Developer Tools", DevTools),
                 ])
                 .collect(),
             },
@@ -4312,6 +4764,8 @@ fn main() {
                     MenuItem::action("Forward", Forward),
                     MenuItem::action("Reload", Reload),
                     MenuItem::action("Home", Home),
+                    MenuItem::separator(),
+                    MenuItem::action("Forget Certificate Exceptions", ForgetCertificateExceptions),
                 ],
             },
             Menu {
@@ -4325,6 +4779,10 @@ fn main() {
         cx.on_action(|_: &AboutFelinaut, cx| about::open(cx));
         cx.on_action(|_: &OpenSettings, cx| settings::open(cx));
         cx.on_action(|_: &Quit, cx| cx.quit());
+        // A detached Web Inspector is not a GPUI window: ⌥⌘I and ⌘W there close just it, and
+        // never a browser window or popup.
+        cx.on_action(|_: &DevTools, _| webview::close_key_window());
+        cx.on_action(|_: &CloseTab, _| webview::close_key_window());
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -4357,9 +4815,109 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        FETCH_TIMEOUT, drop_index, live_refresh_can_poll, restore_tabs, session::SavedTab,
+        FETCH_TIMEOUT, FindRequest, Tab, drop_index, live_refresh_can_poll, live_refresh_result,
+        restore_tabs, session::SavedTab,
     };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn find_bar_opens_searches_and_closes() {
+        let start = Instant::now();
+        let mut bar = super::FindBar::default();
+        assert_eq!(bar.slid(start, true), 1.);
+        bar.open(start);
+        assert!(bar.open);
+        assert_eq!(bar.slid(start + Duration::from_millis(75), true), 0.5);
+        assert_eq!(bar.slid(start, false), 1.);
+        // Opening again does not restart the slide.
+        bar.open(start + Duration::from_secs(1));
+        assert_eq!(bar.slid(start + Duration::from_secs(1), true), 1.);
+        // Only the active tab's result counts.
+        assert_eq!(bar.search(true, "cat"), FindRequest::Search);
+        bar.found(false, false);
+        assert!(!bar.missing);
+        bar.found(true, false);
+        assert!(bar.missing);
+        bar.found(true, true);
+        assert!(!bar.missing);
+        // An emptied query clears "Not found" and the last match's selection; the home page
+        // clears "Not found" and has nothing to search or deselect.
+        bar.found(true, false);
+        assert_eq!(bar.search(true, ""), FindRequest::Deselect);
+        assert!(!bar.missing);
+        bar.found(true, false);
+        assert_eq!(bar.search(false, "cat"), FindRequest::Nothing);
+        assert!(!bar.missing);
+        assert_eq!(bar.search(false, ""), FindRequest::Nothing);
+        bar.found(true, false);
+        let closed = start + Duration::from_secs(2);
+        bar.close(closed);
+        assert!(!bar.open && !bar.missing);
+        assert_eq!(bar.slid(closed, true), 0.);
+        assert_eq!(bar.slid(closed + Duration::from_millis(150), true), 1.);
+    }
+
+    #[test]
+    fn find_bar_drops_a_result_that_arrives_late() {
+        let mut bar = super::FindBar::default();
+        assert!(!bar.current("foo"), "the bar is closed");
+        bar.open(Instant::now());
+        assert!(bar.current("foo"));
+        assert!(!bar.current(""), "the query was emptied");
+        // The page reports the miss of the last search after the query was emptied.
+        assert_eq!(bar.search(true, ""), FindRequest::Deselect);
+        bar.found(bar.current(""), false);
+        assert!(!bar.missing);
+        // The same after Escape.
+        bar.close(Instant::now());
+        bar.found(bar.current("foo"), false);
+        assert!(!bar.missing);
+    }
+
+    #[test]
+    fn find_does_not_search_home_or_an_error_page() {
+        let mut tab = Tab::new(1);
+        assert!(!tab.searchable(), "Home");
+        tab.home = false;
+        assert!(tab.searchable());
+        // The page under an error page is hidden.
+        tab.load_failure = crate::load_error::failure("NSURLErrorDomain", -1009, "", "Offline");
+        assert!(!tab.searchable());
+    }
+
+    #[test]
+    fn find_bar_steps_only_with_a_query() {
+        let start = Instant::now();
+        let mut bar = super::FindBar::default();
+        // ⌘G before anything was searched leaves the bar closed.
+        assert!(!bar.step("", start));
+        assert!(!bar.open);
+        assert_eq!(bar.slid(start, true), 1., "nothing slides");
+        // A query left from an earlier, closed search opens the bar and steps.
+        assert!(bar.step("cat", start));
+        assert!(bar.open);
+        assert_eq!(bar.slid(start, true), 0.);
+        // An emptied query in an open bar steps nowhere but leaves the bar open.
+        assert!(!bar.step("", start));
+        assert!(bar.open);
+    }
+
+    #[test]
+    fn find_bar_forgets_a_miss_when_the_active_tab_commits_a_new_page() {
+        let mut bar = super::FindBar::default();
+        bar.open(Instant::now());
+        assert_eq!(bar.search(true, "foo"), FindRequest::Search);
+        bar.found(true, false);
+        // Another tab's new page leaves the active tab's result alone.
+        bar.committed(false);
+        assert!(bar.missing);
+        bar.committed(true);
+        assert!(!bar.missing);
+        assert!(bar.open, "navigating keeps the bar open");
+        // Without a miss there is nothing to clear.
+        bar.committed(true);
+        assert!(!bar.missing);
+    }
 
     fn failed(url: &str) -> super::LoadFailure {
         super::load_error::failure("NSURLErrorDomain", -1003, url, "Not found").unwrap()
@@ -4385,6 +4943,94 @@ mod tests {
         assert_eq!(tab.url, "https://expired.badssl.com/");
     }
 
+    fn web_tab(url: &str) -> super::Tab {
+        let mut tab = super::Tab::new(1);
+        tab.start_load(url.into());
+        tab.loading = false;
+        tab
+    }
+
+    #[test]
+    fn forget_closes_the_page_so_back_cannot_bring_it_back() {
+        use super::{ReloadPlan, back_from_failure, load_error::Kind};
+        let mut tab = web_tab("https://wiki.corp.example/inbox");
+        tab.loading = true;
+        tab.hovered_link = Some("https://wiki.corp.example/x".into());
+        let page = tab.close_insecure_page(Some("https://wiki.corp.example/inbox#2".into()));
+        assert!(page.is_none() && tab.page.is_none());
+        assert!(!tab.loading && tab.hovered_link.is_none());
+        let failure = tab.load_failure.clone().unwrap();
+        assert_eq!(failure.kind, Kind::Forgotten);
+        assert_eq!(failure.url, "https://wiki.corp.example/inbox#2");
+        assert_eq!(tab.url, failure.url);
+        // No page is made again behind the error page; Try Again opens a new one.
+        assert!(!tab.needs_page());
+        assert_eq!(tab.reload_plan(), ReloadPlan::Open(failure.url.clone()));
+        // Back has no document underneath any more, so it goes Home.
+        assert!(tab.can_go_back());
+        assert_eq!(back_from_failure(None, |_| false), None);
+        // Nor does Back show a forgotten site's document that is still underneath.
+        let document = Some(("https://wiki.corp.example/".into(), "Wiki".into()));
+        let blocked = |url: &str| url.starts_with("https://wiki.corp.example/");
+        assert_eq!(back_from_failure(document.clone(), blocked), None);
+        assert_eq!(back_from_failure(document.clone(), |_| false), document);
+    }
+
+    #[test]
+    fn forget_closes_home_live_pinned_and_split_tabs_without_changing_them() {
+        // A Home tab whose hidden page held the site stays Home, with no error page.
+        let mut home = web_tab("https://wiki.corp.example/");
+        home.home = true;
+        home.close_insecure_page(Some("https://wiki.corp.example/".into()));
+        assert!(home.home && home.load_failure.is_none() && home.page.is_none());
+        assert!(!home.needs_page() && !home.can_go_back());
+        assert_eq!(home.reload_plan(), super::ReloadPlan::Nothing);
+        // Live items, pinned tabs and split halves keep their place.
+        let mut tab = web_tab("https://wiki.corp.example/");
+        tab.live = Some("https://wiki.corp.example/".into());
+        tab.pinned = Some("https://wiki.corp.example/".into());
+        tab.split = Some(7);
+        tab.close_insecure_page(None);
+        assert_eq!(tab.live.as_deref(), Some("https://wiki.corp.example/"));
+        assert_eq!(tab.pinned.as_deref(), Some("https://wiki.corp.example/"));
+        assert_eq!(tab.split, Some(7));
+        // Without a document URL, the tab's own URL is shown.
+        assert_eq!(
+            tab.load_failure.as_ref().unwrap().url,
+            "https://wiki.corp.example/"
+        );
+    }
+
+    #[test]
+    fn forget_keeps_an_error_page_that_was_already_shown() {
+        let mut tab = web_tab("https://typed.example/");
+        tab.show_failure(failed("https://typed.example/"));
+        tab.start_load("https://next.example/".into());
+        tab.close_insecure_page(Some("https://wiki.corp.example/".into()));
+        let failure = tab.load_failure.as_ref().unwrap();
+        assert_eq!(failure.kind, super::load_error::Kind::HostNotFound);
+        assert!(!tab.loading);
+        assert_eq!(
+            tab.reload_plan(),
+            super::ReloadPlan::Open("https://typed.example/".into())
+        );
+        // Closing again changes nothing.
+        tab.close_insecure_page(None);
+        assert_eq!(
+            tab.load_failure.as_ref().unwrap().url,
+            "https://typed.example/"
+        );
+    }
+
+    #[test]
+    fn a_tab_without_a_page_or_error_gets_one_when_shown() {
+        let tab = web_tab("https://a.example/");
+        assert!(tab.needs_page());
+        assert_eq!(tab.reload_plan(), super::ReloadPlan::Nothing);
+        assert!(!tab.can_go_back());
+        assert!(!super::Tab::new(2).needs_page());
+    }
+
     #[test]
     fn rename_keeps_existing_profile_files_and_settings_together() {
         let profile = std::env::var_os("HOME")
@@ -4405,6 +5051,64 @@ mod tests {
             super::theme::settings_path(),
             profile.as_ref().map(|p| p.join("settings"))
         );
+    }
+
+    #[test]
+    fn not_secure_covers_what_the_page_loaded_until_the_next_document() {
+        let mut tab = Tab::new(1);
+        tab.home = false;
+        tab.started("https://valid.example/".into());
+        assert!(!tab.not_secure(false));
+        assert!(
+            tab.not_secure(true),
+            "the main frame came with an accepted certificate"
+        );
+        // An iframe or script from a site with an exception: serverTrust is the main frame's.
+        tab.used_exception = true;
+        assert!(tab.not_secure(false));
+        // A failed load shows the error page instead of the old document.
+        tab.load_failure = crate::load_error::failure("NSURLErrorDomain", -1009, "", "Offline");
+        assert!(!tab.not_secure(false));
+        tab.load_failure = None;
+        assert!(
+            tab.not_secure(false),
+            "the previous document is still shown"
+        );
+        // The next document starts clean.
+        tab.started("https://other.example/".into());
+        assert!(!tab.not_secure(false));
+        assert!(!tab.used_exception);
+        // Home shows no page.
+        let mut home = Tab::new(2);
+        home.used_exception = true;
+        assert!(!home.not_secure(true));
+    }
+
+    #[test]
+    fn live_refresh_refuses_a_page_with_an_accepted_certificate() {
+        let item = crate::live::Item {
+            title: "Task".into(),
+            url: "https://app.asana.com/0/1/2".into(),
+            seen: false,
+            updated: String::new(),
+            dismissed: None,
+            detail: String::new(),
+        };
+        // A normal page passes its answer, or its lack of one, through.
+        assert_eq!(live_refresh_result(None, false, "Asana"), None);
+        let answer = Some(Ok(vec![item.clone()]));
+        assert_eq!(live_refresh_result(answer.clone(), false, "Asana"), answer);
+        let error = Some(Err("rate limited".to_owned()));
+        assert_eq!(live_refresh_result(error.clone(), false, "Asana"), error);
+        // A page served with an accepted certificate fails even before it answers, and its
+        // items are never used.
+        for answer in [None, Some(Ok(vec![item])), Some(Ok(Vec::new())), error] {
+            let Some(Err(message)) = live_refresh_result(answer, true, "Asana") else {
+                panic!("an accepted certificate must fail the refresh");
+            };
+            assert!(message.contains("Asana"), "{message}");
+            assert!(!message.contains("Sign in"), "{message}");
+        }
     }
 
     #[test]

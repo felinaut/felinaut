@@ -116,10 +116,15 @@ impl EventEmitter<AddressEvent> for AddressInput {}
 
 impl AddressInput {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        Self::with_placeholder("Search or enter an address", cx)
+    }
+
+    /// An empty field that shows `placeholder` until something is typed.
+    pub fn with_placeholder(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             content: "".into(),
-            placeholder: "Search or enter an address".into(),
+            placeholder: placeholder.into(),
             zoom: None,
             selected_range: 0..0,
             selection_reversed: false,
@@ -911,9 +916,14 @@ impl Render for AddressInput {
     }
 }
 
-/// Marks a page using a certificate the user accepted despite an error.
+/// Marks a page using a certificate the user accepted despite an error; clicking explains it.
 pub fn not_secure_badge(p: theme::Palette) -> gpui::Div {
     div()
+        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+            cx.stop_propagation();
+            window.dispatch_action(Box::new(crate::ExplainNotSecure), cx);
+        })
+        .cursor_pointer()
         .flex_shrink_0()
         .px_1p5()
         .rounded_md()

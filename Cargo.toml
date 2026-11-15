@@ -10,6 +10,7 @@ default-run = "felinaut"
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"] }
 wry = { version = "=0.57.1", default-features = false, features = [
     "os-webview",
+    "devtools",
 ] }
 url = "2.5"
 unicode-segmentation = "1.12"
@@ -33,6 +34,11 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSImage",
     "NSImageRep",
     "NSBitmapImageRep",
+    # The Not secure mark's explanation sheet.
+    "NSAlert",
+    "NSApplication",
+    "NSButton",
+    "NSControl",
 ] }
 # Also already used by Wry; agent control calls WKWebView directly.
 objc2 = "0.6"
@@ -65,6 +71,11 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = [
     # Felinaut is its own download delegate, for progress and cancelling.
     "WKDownload",
     "WKDownloadDelegate",
+    "WKFindConfiguration",
+    "WKFindResult",
+    # Clearing the find selection from WebKit's client world, out of the page's reach.
+    "WKContentWorld",
+    "WKFrameInfo",
 ] }
 
 [[test]]
@@ -81,6 +92,14 @@ harness = false
 
 [[test]]
 name = "native_permissions"
+harness = false
+
+[[test]]
+name = "native_swipe"
+harness = false
+
+[[test]]
+name = "native_certificate"
 harness = false
 
 [profile.dev]
