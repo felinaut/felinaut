@@ -20,6 +20,9 @@ mod identity;
 #[path = "../src/load_error.rs"]
 mod load_error;
 #[allow(dead_code)]
+#[path = "../src/swipe.rs"]
+mod swipe;
+#[allow(dead_code)]
 #[path = "../src/webview.rs"]
 mod webview;
 

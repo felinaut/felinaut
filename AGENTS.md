@@ -38,6 +38,7 @@ Use `-F gpui/runtime_shaders` for browser checks if full Xcode/Metal is unavaila
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_webview
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test brand_ui
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_audio
+FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_swipe
 FELINAUT_NATIVE_TEST=1 cargo test --locked --test native_certificate
 ```
 

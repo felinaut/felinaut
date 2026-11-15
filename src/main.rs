@@ -19,6 +19,7 @@ mod load_error;
 mod session;
 mod settings;
 mod suggestions;
+mod swipe;
 mod theme;
 mod volume;
 mod webview;
@@ -713,6 +714,34 @@ impl Browser {
                 this.close_suggestions(false, window, cx);
             }
         });
+        // The swipe monitor enqueues steps and wakes this task, so it never updates GPUI itself.
+        if let Some(swipes) = webview::watch_swipes(window) {
+            cx.spawn_in(window, async move |this, cx| {
+                while let Some(step) = swipes.next().await {
+                    let navigate =
+                        |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                            // In a split view the swipe is for the half under the pointer.
+                            let over_partner = this.partner(this.active).filter(|&partner| {
+                                this.tabs[partner]
+                                    .page
+                                    .as_ref()
+                                    .is_some_and(|page| page.under_pointer())
+                            });
+                            if let Some(partner) = over_partner {
+                                this.activate_half(partner, cx);
+                            }
+                            match step {
+                                swipe::Step::Back => this.back(&Back, window, cx),
+                                swipe::Step::Forward => this.forward(&Forward, window, cx),
+                            }
+                        };
+                    if this.update_in(cx, navigate).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         // Native callbacks enqueue events, avoiding reentrant updates while GPUI renders.
         cx.spawn_in(window, async move |this, cx| {
             loop {

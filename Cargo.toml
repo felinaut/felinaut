@@ -91,6 +91,10 @@ name = "native_audio"
 harness = false
 
 [[test]]
+name = "native_swipe"
+harness = false
+
+[[test]]
 name = "native_certificate"
 harness = false
 
