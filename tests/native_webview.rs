@@ -11,6 +11,9 @@ mod downloads;
 #[path = "../src/icons.rs"]
 mod icons;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/identity.rs"]
+mod identity;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/load_error.rs"]
 mod load_error;
 #[allow(dead_code)]
@@ -24,7 +27,7 @@ use std::{
     net::TcpListener,
     rc::Rc,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -124,6 +127,10 @@ fn main() {
     let base = format!("http://{}", listener.local_addr().unwrap());
     let download_requests = Arc::new(AtomicUsize::new(0));
     let served_downloads = download_requests.clone();
+    // `(source, user agent)`: the User-Agent header of every request, keyed by its path, and
+    // `navigator.userAgent` as the page reports it.
+    let user_agents = Arc::new(Mutex::new(Vec::new()));
+    let seen_agents = user_agents.clone();
     std::thread::spawn(move || {
         for connection in listener.incoming() {
             let Ok(mut stream) = connection else {
@@ -137,6 +144,23 @@ fn main() {
                 continue;
             };
             let request = String::from_utf8_lossy(&request[..count]);
+            let path = request
+                .strip_prefix("GET ")
+                .and_then(|rest| rest.split(['?', ' ']).next())
+                .unwrap_or("?")
+                .to_string();
+            let header = request
+                .lines()
+                .find_map(|line| line.strip_prefix("User-Agent: "))
+                .map(|agent| (path, agent.to_string()));
+            let reported = request
+                .strip_prefix("GET /agent?")
+                .and_then(|rest| rest.split(' ').next())
+                .map(|query| ("navigator.userAgent".to_string(), query.replace("%20", " ")));
+            seen_agents
+                .lock()
+                .unwrap()
+                .extend(header.into_iter().chain(reported));
             if request.starts_with("GET /download ") {
                 // The server asks for a name outside the downloads folder.
                 served_downloads.fetch_add(1, Ordering::SeqCst);
@@ -169,10 +193,10 @@ fn main() {
             let script = if second {
                 "document.title = localStorage.getItem('felifox-smoke') === 'yes' ? 'JS SECOND' : 'STORAGE FAILED';"
             } else {
-                "localStorage.setItem('felifox-smoke', 'yes'); document.title = 'JS FIRST';"
+                "fetch('/agent?' + navigator.userAgent); localStorage.setItem('felifox-smoke', 'yes'); document.title = 'JS FIRST';"
             };
             let body = format!(
-                "<!doctype html><meta charset=utf-8><title>Waiting</title><style>body{{background:#edf0ff;color:#101324}}</style><h1 id=result>JavaScript test</h1><a id=testlink href='/link-destination'><span id=linkchild>Test link</span></a><script>{script}document.querySelector('#result').textContent = document.title;</script>"
+                "<!doctype html><meta charset=utf-8><title>Waiting</title><style>body{{background:#edf0ff;color:#101324}}</style><h1 id=result>JavaScript test</h1><a id=testlink href='/link-destination'><span id=linkchild>Test link</span></a><iframe src='/frame'></iframe><script>{script}document.querySelector('#result').textContent = document.title;</script>"
             );
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
@@ -191,6 +215,7 @@ fn main() {
         let find_url = format!("{base}/find");
         let folder = folder.clone();
         let download_requests = download_requests.clone();
+        let user_agents = user_agents.clone();
         let handle = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(800.), px(600.)), cx))),
@@ -206,6 +231,16 @@ fn main() {
                 let failed_page = failed_tab.clone();
                 // A page the user never sees asks for the same download; it must be refused.
                 let hidden = NativePage::hidden(window, &download_url).expect("create hidden page");
+                // Tabs keep the in-app inspector, but Safari's Develop menu can't attach to them;
+                // the hidden live-folder page has no inspector at all.
+                for tab in [&*page, &second_tab, &*failed_tab] {
+                    assert_eq!(tab.inspectable_for_test(), Some(false), "a tab must not be inspectable from Safari");
+                    assert!(tab.developer_extras_for_test(), "tabs keep Inspect Element");
+                    assert!(tab.container_for_test().is_some_and(|c| c.holds_page), "each tab page sits in its own container");
+                }
+                assert!(!hidden.developer_extras_for_test(), "the hidden live-folder page has developer extras off");
+                assert_eq!(hidden.inspectable_for_test(), Some(false));
+                assert!(hidden.container_for_test().is_none(), "the hidden page needs no container");
                 page.focus().unwrap();
                 page.focus_parent().unwrap();
                 let second_page = page.clone();
@@ -251,6 +286,8 @@ fn main() {
                             match stage {
                                 0 => {
                                     assert_eq!(title, "JS FIRST", "JavaScript and DOM title update");
+                                    // The policy hook tells a frame apart from the main frame and still lets the page load.
+                                    assert!(webview::subframe_decisions() >= 1, "frame navigations reach the policy as frames");
                                     second_page.navigate(&second_url).unwrap();
                                 }
                                 1 => {
@@ -269,9 +306,18 @@ fn main() {
                                 }
                                 4 => {
                                     assert_eq!(title, "JS SECOND");
+                                    // Visibility and bounds act on the tab's container, which carries the page.
                                     second_page.set_visible(false).unwrap();
+                                    let hidden_tab = second_page.container_for_test().unwrap();
+                                    assert!(hidden_tab.hidden && !hidden_tab.page_hidden, "{hidden_tab:?}");
                                     second_page.set_bounds(Bounds::new(point(px(10.), px(20.)), size(px(640.), px(400.)))).unwrap();
+                                    let moved = second_page.container_for_test().unwrap();
+                                    let top = if moved.parent_flipped { 20. } else { moved.parent_height - 20. - 400. };
+                                    assert_eq!(moved.frame, (10., top, 640., 400.), "{moved:?}");
+                                    assert!(moved.holds_page && moved.page_fills, "{moved:?}");
                                     second_page.set_visible(true).unwrap();
+                                    let shown = second_page.container_for_test().unwrap();
+                                    assert!(!shown.hidden && !shown.page_hidden, "{shown:?}");
                                     second_page.evaluate_for_test(r#"
                                         (() => {
                                           const child = document.getElementById('linkchild');
@@ -318,6 +364,52 @@ fn main() {
                                     assert_eq!(std::fs::read(saved).unwrap(), b"fixture");
                                     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "the hidden page saved nothing");
                                     std::fs::remove_dir_all(folder.parent().unwrap()).unwrap();
+                                    // The visible page's requests, its `navigator.userAgent` and the hidden
+                                    // page's request all carry one Safari-compatible User-Agent.
+                                    let agents = user_agents.lock().unwrap().clone();
+                                    let agent = identity::user_agent();
+                                    let (webkit, safari) = agent.split_once(" Version/").unwrap_or_else(|| panic!("no Safari part: {agent:?}"));
+                                    assert!(webkit.starts_with("Mozilla/5.0 (Macintosh; ") && webkit.ends_with(" (KHTML, like Gecko)"), "{agent:?}");
+                                    let version = safari.strip_suffix(" Safari/605.1.15").unwrap_or_else(|| panic!("no Safari token: {agent:?}"));
+                                    assert!(version.split('.').all(|part| part.parse::<u16>().is_ok()), "{agent:?}");
+                                    assert!(!agent.to_lowercase().contains("feli"), "{agent:?}");
+                                    let sent = |source: &str| agents.iter().filter(|(from, _)| from == source).count();
+                                    assert!(sent("/first") >= 1, "the visible page's request sent no User-Agent: {agents:?}");
+                                    assert!(sent("navigator.userAgent") >= 1, "the page never reported navigator.userAgent: {agents:?}");
+                                    assert!(sent("/download") >= 2, "expected the visible and the hidden page's downloads: {agents:?}");
+                                    assert!(agents.iter().all(|(_, other)| other == agent), "expected {agent:?} everywhere: {agents:?}");
+
+                                    // Web Inspector: docked inside the tab's container, then detached.
+                                    macro_rules! wait_for {
+                                        ($what:literal, $ready:expr) => {{
+                                            let deadline = Instant::now() + Duration::from_secs(10);
+                                            loop {
+                                                let state = second_page.inspector_for_test();
+                                                if state.as_ref().is_some_and($ready) { break; }
+                                                assert!(Instant::now() < deadline, concat!("Web Inspector never ", $what, ": {:?}"), state);
+                                                Timer::after(Duration::from_millis(50)).await;
+                                            }
+                                        }};
+                                    }
+                                    second_page.toggle_devtools();
+                                    wait_for!("opened", |s| s.visible);
+                                    second_page.dock_inspector_for_test(true);
+                                    wait_for!("docked in the tab", |s| s.visible && !s.detached && s.in_container);
+                                    second_page.toggle_devtools();
+                                    wait_for!("closed when docked", |s| !s.visible);
+                                    second_page.toggle_devtools();
+                                    wait_for!("reopened", |s| s.visible);
+                                    second_page.dock_inspector_for_test(false);
+                                    wait_for!("detached", |s| s.visible && s.detached && !s.in_container);
+                                    // With the browser window in front, ⌥⌘I brings the inspector back. Window
+                                    // order and main-window status need the app active, which other apps
+                                    // may have taken since launch.
+                                    cx.update(|window, cx| { cx.activate(true); window.activate_window(); }).unwrap();
+                                    wait_for!("went behind the browser window", |s| s.visible && !s.front);
+                                    second_page.toggle_devtools();
+                                    wait_for!("came to the front", |s| s.visible && s.front);
+                                    second_page.toggle_devtools();
+                                    wait_for!("closed when in front", |s| !s.visible);
                                     second_page.find("test link", false);
                                     second_page.find("TEST", true);
                                     second_page.find("no such words", false);
