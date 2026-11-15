@@ -3,12 +3,16 @@ mod agent;
 mod appearance;
 mod art;
 mod audio;
+mod auth_prompt;
 mod brand;
 mod clean_link;
+mod dialog_panel;
+mod dialogs;
 mod download_panel;
 mod downloads;
 mod engine;
 mod history;
+mod http_auth;
 mod icons;
 mod identity;
 mod input;
@@ -367,6 +371,8 @@ struct Tab {
     split: Option<u64>,
     /// The live folder item this tab shows; such tabs are drawn in their folder, not the rows.
     live: Option<String>,
+    /// The JavaScript dialog this tab's page shows now.
+    dialog: Option<Entity<dialog_panel::Panel>>,
     /// The current document loaded a frame, script or image over a certificate the user
     /// accepted: the page's own `serverTrust` only covers the main frame.
     used_exception: bool,
@@ -400,6 +406,7 @@ impl Tab {
             pinned: None,
             split: None,
             live: None,
+            dialog: None,
             used_exception: false,
         }
     }
@@ -1739,6 +1746,8 @@ impl Browser {
             let Some(page) = tab.page.clone() else {
                 continue;
             };
+            let shown = index == self.active || Some(index) == visible_partner;
+            changed |= auth_prompt::sync(&page, shown && !tab.home, &self.focus, window, cx);
             for event in page.drain_events() {
                 changed = true;
                 match event {
@@ -1834,6 +1843,9 @@ impl Browser {
         for (url, activate) in open {
             self.open_link_tab(&url, activate, window, cx);
         }
+        // A new prompt, or a prompt whose tab the user selected, or the end of an edit of the
+        // address: each one leaves the focus on the browser, and the prompt takes it here.
+        self.focus_sign_in(window, cx);
         for (url, png) in icons {
             self.store_icon(&url, png, cx);
         }
@@ -1843,6 +1855,7 @@ impl Browser {
         for event in downloads::native::drain() {
             changed |= self.downloads.apply(event, history::now());
         }
+        changed |= dialog_panel::sync(self, window, cx);
         if let Some((path, contents)) = self.downloads.snapshot_due(Instant::now()) {
             cx.background_executor()
                 .spawn(async move {
@@ -2192,8 +2205,25 @@ impl Browser {
         self.hide_others();
         self.reveal_active();
         window.focus(&self.focus);
+        dialog_panel::focus(self, window, cx);
+        self.focus_sign_in(window, cx);
         self.sync_address(cx);
         cx.notify();
+    }
+    /// Gives the keys to the sign-in prompt of the active tab. The prompt takes the focus only
+    /// from the browser itself, never from the address bar or an open menu: text that the user
+    /// types there must not go to the prompt.
+    fn focus_sign_in(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = &self.tabs[self.active];
+        // GPUI drops the focus when a focused field goes away, as after a refused answer.
+        if window
+            .focused(cx)
+            .is_none_or(|focused| focused == self.focus)
+            && !tab.home
+            && let Some(page) = &tab.page
+        {
+            auth_prompt::focus(page, window, cx);
+        }
     }
     /// New tabs open at the top of the unpinned list, right under the New tab row.
     fn insert_tab(&mut self, tab: Tab) -> usize {
@@ -2997,6 +3027,16 @@ impl Browser {
                     .text_sm()
                     .child(tab.display_title()),
             )
+            // The page waits for an answer to a JavaScript dialog.
+            .when(tab.dialog.is_some(), |row| {
+                row.child(
+                    div()
+                        .size(px(8.))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(rgb(p.primary)),
+                )
+            })
             .when(tab.sound.audible() || tab.audio.muted, |row| {
                 let muted = tab.audio.muted;
                 row.child(
@@ -4175,6 +4215,14 @@ impl Browser {
         if tab.home {
             return self.home_page(cx);
         }
+        // A server asks for a user name and a password: the prompt covers everything else.
+        if let Some(prompt) = tab
+            .page
+            .as_ref()
+            .and_then(|page| auth_prompt::view(page, cx))
+        {
+            return prompt.into_any_element();
+        }
         // While loading after a failure: a blank page, not the old error or the old document.
         match &tab.load_failure {
             Some(_) if tab.loading => {
@@ -4188,7 +4236,7 @@ impl Browser {
         }
         if let Some(page) = &tab.page {
             let page = page.clone();
-            return canvas(
+            let page = canvas(
                 move |bounds, _, _| {
                     if let Err(error) = page.set_bounds(bounds).and_then(|_| page.set_visible(true))
                     {
@@ -4197,8 +4245,18 @@ impl Browser {
                 },
                 |_, _, _, _| {},
             )
-            .size_full()
-            .into_any_element();
+            .size_full();
+            // A JavaScript dialog is a strip of chrome above the page, never over it.
+            return match &tab.dialog {
+                Some(panel) => div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(panel.clone())
+                    .child(div().flex_1().min_h_0().child(page))
+                    .into_any_element(),
+                None => page.into_any_element(),
+            };
         }
         div().size_full().into_any_element()
     }
@@ -4609,6 +4667,7 @@ fn main() {
         cx.set_global(ThemeSettings::load());
         cx.set_global(settings::LaunchLanguage(launch_language));
         input::init(cx);
+        dialog_panel::init(cx);
         #[cfg(target_os = "macos")]
         webview::forward_page_keys();
         cx.bind_keys([

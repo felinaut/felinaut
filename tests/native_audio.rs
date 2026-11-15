@@ -8,8 +8,14 @@
 #[path = "../src/audio.rs"]
 mod audio;
 #[allow(dead_code, unused_imports)]
+#[path = "../src/dialogs.rs"]
+mod dialogs;
+#[allow(dead_code, unused_imports)]
 #[path = "../src/downloads.rs"]
 mod downloads;
+#[allow(dead_code, unused_imports)]
+#[path = "../src/http_auth.rs"]
+mod http_auth;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/icons.rs"]
 mod icons;
