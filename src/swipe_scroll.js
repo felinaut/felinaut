@@ -1,8 +1,7 @@
 // Tells the browser when a sideways trackpad scroll was the page's: it scrolled something, or
 // the page handled the wheel event itself (a map, a carousel). Such a swipe must not also go
-// back or forward. The message carries nothing about the page.
+// back or forward. The message carries nothing about the page. The script runs in each frame.
 (() => {
-  if (window.top !== window) return;
   // What could scroll sideways under the pointer, with its offset at the last wheel event.
   let watched = [];
   let reported = 0;
@@ -25,8 +24,11 @@
       if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
       check();
       watched = [[window, window.scrollX]];
-      for (let node = event.target; node instanceof Element; node = node.parentElement) {
-        if (node.scrollWidth > node.clientWidth) watched.push([node, node.scrollLeft]);
+      // The composed path also has the scrollers inside a shadow root.
+      for (const node of event.composedPath()) {
+        if (node instanceof Element && node.scrollWidth > node.clientWidth) {
+          watched.push([node, node.scrollLeft]);
+        }
       }
       // After every handler of the page ran: did one of them take the event?
       setTimeout(() => {

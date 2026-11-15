@@ -55,6 +55,9 @@ pub struct NativePage {
     /// A tab page's own view, sized to the page area: a docked Web Inspector stays in it, and
     /// hides with its tab.
     container: Option<Retained<objc2_app_kit::NSView>>,
+    /// Whether the page is on show. Its message handler reads this: a hidden tab must not
+    /// stop the swipe of the page that the user sees.
+    shown: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 impl Drop for NativePage {
@@ -79,6 +82,8 @@ impl NativePage {
         let link_sender = sender.clone();
         let failure_sender = sender.clone();
         let blocked_sender = sender.clone();
+        let shown = std::rc::Rc::new(std::cell::Cell::new(false));
+        let shown_to_handler = shown.clone();
         let mut builder = WebViewBuilder::new().with_user_agent(identity::user_agent());
         if agent_enabled() {
             builder =
@@ -91,11 +96,14 @@ impl NativePage {
             .with_initialization_script_for_main_only(include_str!("link_interactions.js"), false)
             .with_initialization_script_for_main_only(include_str!("audio_control.js"), false)
             .with_initialization_script_for_main_only(include_str!("page_icon.js"), true)
-            .with_initialization_script_for_main_only(include_str!("swipe_scroll.js"), true)
+            // In each frame: a frame can scroll sideways too.
+            .with_initialization_script(include_str!("swipe_scroll.js"))
             .with_ipc_handler(move |request| {
                 let body = request.body();
                 if body == crate::swipe::PAGE_SCROLLED {
-                    page_scrolled();
+                    if shown_to_handler.get() {
+                        page_scrolled();
+                    }
                     return;
                 }
                 let event = parse_link_event(body)
@@ -169,6 +177,7 @@ impl NativePage {
             last_url: RefCell::new(String::new()),
             failure_key,
             container,
+            shown,
         })
     }
 
@@ -215,6 +224,7 @@ impl NativePage {
             last_url: RefCell::new(String::new()),
             failure_key: None,
             container: None,
+            shown: Default::default(),
         })
     }
 
@@ -462,6 +472,7 @@ impl NativePage {
     }
 
     pub fn set_visible(&self, visible: bool) -> Result<(), String> {
+        self.shown.set(visible);
         if let Some(container) = &self.container {
             container.setHidden(!visible);
             return Ok(());
@@ -469,6 +480,20 @@ impl NativePage {
         self.webview
             .set_visible(visible)
             .map_err(|error| error.to_string())
+    }
+
+    /// Whether the pointer is over this page, for a swipe in a split view.
+    pub fn under_pointer(&self) -> bool {
+        let Some(container) = self.container.as_ref().filter(|_| self.shown.get()) else {
+            return false;
+        };
+        let Some(window) = container.window() else {
+            return false;
+        };
+        let point =
+            container.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
+        let size = container.bounds().size;
+        (0. ..size.width).contains(&point.x) && (0. ..size.height).contains(&point.y)
     }
 
     pub fn focus(&self) -> Result<(), String> {

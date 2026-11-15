@@ -719,9 +719,21 @@ impl Browser {
             cx.spawn_in(window, async move |this, cx| {
                 while let Some(step) = swipes.next().await {
                     let navigate =
-                        |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| match step {
-                            swipe::Step::Back => this.back(&Back, window, cx),
-                            swipe::Step::Forward => this.forward(&Forward, window, cx),
+                        |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                            // In a split view the swipe is for the half under the pointer.
+                            let over_partner = this.partner(this.active).filter(|&partner| {
+                                this.tabs[partner]
+                                    .page
+                                    .as_ref()
+                                    .is_some_and(|page| page.under_pointer())
+                            });
+                            if let Some(partner) = over_partner {
+                                this.activate_half(partner, cx);
+                            }
+                            match step {
+                                swipe::Step::Back => this.back(&Back, window, cx),
+                                swipe::Step::Forward => this.forward(&Forward, window, cx),
+                            }
                         };
                     if this.update_in(cx, navigate).is_err() {
                         break;
