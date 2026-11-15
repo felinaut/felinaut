@@ -426,6 +426,11 @@ impl Tab {
         self.used_exception = false;
         self.url = url;
     }
+    /// Whether find in page can search this tab: it shows a page, not Home or an error page
+    /// (the page under an error page is hidden).
+    fn searchable(&self) -> bool {
+        !self.home && self.load_failure.is_none()
+    }
     /// Whether to mark the page Not secure: its main frame (`served`) or something it loaded
     /// came with a certificate the user accepted despite an error.
     fn not_secure(&self, served: bool) -> bool {
@@ -1697,6 +1702,8 @@ impl Browser {
         let mut finished = Vec::new();
         let mut page_focused = false;
         let mut focused_tab = None;
+        // A result that arrives after the bar closed or the query was emptied is out of date.
+        let find_current = self.find_bar.current(self.find.read(cx).text());
         let visible_partner = self.partner(self.active);
         for (index, tab) in self.tabs.iter_mut().enumerate() {
             let Some(page) = tab.page.clone() else {
@@ -1732,6 +1739,8 @@ impl Browser {
                         }
                     }
                     Event::Url(url) => {
+                        // A route change in the same document shows other text.
+                        self.find_bar.committed(index == self.active);
                         tab.url = url;
                         // Same-document navigations (pushState) never finish a load.
                         if !tab.loading {
@@ -1758,7 +1767,10 @@ impl Browser {
                         audible,
                         limited,
                     }) => tab.sound.report(&id, audible, limited),
-                    Event::Found(found) => self.find_bar.found(index == self.active, found),
+                    Event::Found(found) => {
+                        self.find_bar
+                            .found(index == self.active && find_current, found);
+                    }
                 }
             }
         }
@@ -2291,7 +2303,7 @@ impl Browser {
     }
     fn find(&mut self, find: &Find, window: &mut Window, cx: &mut Context<Self>) {
         let tab = &self.tabs[self.active];
-        let Some(page) = tab.page.as_ref().filter(|_| !tab.home) else {
+        let Some(page) = tab.page.as_ref().filter(|_| tab.searchable()) else {
             return;
         };
         if find.0 == 0 {
@@ -2312,7 +2324,7 @@ impl Browser {
     fn search(&mut self, backwards: bool, cx: &mut Context<Self>) {
         let text = self.find.read(cx).text();
         let tab = &self.tabs[self.active];
-        let request = self.find_bar.search(!tab.home, text);
+        let request = self.find_bar.search(tab.searchable(), text);
         if let Some(page) = &tab.page {
             match request {
                 FindRequest::Search => page.find(text, backwards),
@@ -2325,7 +2337,9 @@ impl Browser {
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find_bar.close(Instant::now());
         window.focus(&self.focus);
-        if let Some(page) = &self.tabs[self.active].page {
+        // An error page hides the page, which must not get the keys then.
+        let tab = &self.tabs[self.active];
+        if let Some(page) = tab.page.as_ref().filter(|_| tab.searchable()) {
             let _ = page.focus();
         }
         cx.notify();
@@ -4174,13 +4188,15 @@ impl Render for Browser {
         let toolbar_toggle = sidebar_width < 88.;
         let tab = &self.tabs[self.active];
         // The bar's area keeps its full height while its content slides, so the page resizes once.
-        let slid = self
-            .find_bar
-            .slid(Instant::now(), theme::motion_allowed(cx));
+        let slid = self.find_bar.slid(
+            Instant::now(),
+            theme::motion_allowed(cx) && window.is_window_active(),
+        );
         if slid < 1. {
             window.request_animation_frame();
         }
         let find_offset = 44. * if self.find_bar.open { 1. - slid } else { slid };
+        let find_shown = (self.find_bar.open || slid < 1.) && tab.searchable();
         let show_chip = !tab.home && !address_focused && display != AddressDisplay::Url;
         let not_secure = tab.not_secure(
             tab.page
@@ -4361,7 +4377,7 @@ impl Render for Browser {
                             .overflow_hidden()
                             .child(self.content(p, cx)),
                     )
-                    .when((self.find_bar.open || slid < 1.) && !tab.home, |column| {
+                    .when(find_shown, |column| {
                         column.child(
                             div().h(px(44.)).flex_shrink_0().overflow_hidden().child(
                                 div()
@@ -4482,8 +4498,14 @@ impl FindBar {
             FindRequest::Search
         }
     }
-    fn found(&mut self, active: bool, found: bool) {
-        if active {
+    /// Whether a result that arrives now can be for the query on show: the page reports a
+    /// result later, after the bar closed or the query was emptied.
+    fn current(&self, text: &str) -> bool {
+        self.open && !text.is_empty()
+    }
+    /// `current`: the result is from the active tab, for the query the open bar shows now.
+    fn found(&mut self, current: bool, found: bool) {
+        if current {
             self.missing = !found;
         }
     }
@@ -4746,6 +4768,34 @@ mod tests {
         assert!(!bar.open && !bar.missing);
         assert_eq!(bar.slid(closed, true), 0.);
         assert_eq!(bar.slid(closed + Duration::from_millis(150), true), 1.);
+    }
+
+    #[test]
+    fn find_bar_drops_a_result_that_arrives_late() {
+        let mut bar = super::FindBar::default();
+        assert!(!bar.current("foo"), "the bar is closed");
+        bar.open(Instant::now());
+        assert!(bar.current("foo"));
+        assert!(!bar.current(""), "the query was emptied");
+        // The page reports the miss of the last search after the query was emptied.
+        assert_eq!(bar.search(true, ""), FindRequest::Deselect);
+        bar.found(bar.current(""), false);
+        assert!(!bar.missing);
+        // The same after Escape.
+        bar.close(Instant::now());
+        bar.found(bar.current("foo"), false);
+        assert!(!bar.missing);
+    }
+
+    #[test]
+    fn find_does_not_search_home_or_an_error_page() {
+        let mut tab = Tab::new(1);
+        assert!(!tab.searchable(), "Home");
+        tab.home = false;
+        assert!(tab.searchable());
+        // The page under an error page is hidden.
+        tab.load_failure = crate::load_error::failure("NSURLErrorDomain", -1009, "", "Offline");
+        assert!(!tab.searchable());
     }
 
     #[test]
