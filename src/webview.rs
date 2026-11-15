@@ -850,11 +850,11 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
         // completion handler on the main thread. The handler is copied (retained) so that it
         // outlives this call if Wry ever answers later; Wry calls `forward` exactly once.
         let handler = unsafe { &*handler }.copy();
-        let main_frame = unsafe { action.as_ref() }.is_none_or(|action| {
+        let main_frame = targets_main_frame(unsafe { action.as_ref() }.and_then(|action| {
             // SAFETY: `targetFrame` is a nullable WKFrameInfo; `isMainFrame` returns a BOOL.
             let frame: Option<Retained<AnyObject>> = unsafe { msg_send![action, targetFrame] };
-            frame.is_none_or(|frame| unsafe { msg_send![&*frame, isMainFrame] })
-        });
+            frame.map(|frame| unsafe { msg_send![&*frame, isMainFrame] })
+        }));
         // SAFETY: a live WKWebpagePreferences or null; retained for as long as `forward` lives.
         let preferences = unsafe { Retained::retain(preferences) };
         let forward = block2::RcBlock::new(move |policy: isize| {
@@ -1311,6 +1311,13 @@ fn navigation(exceptions: &Exceptions, url: &str, reports: bool) -> Navigation {
     }
 }
 
+/// Whether a navigation reports a refused site to its tab. `target_frame` is `isMainFrame` of
+/// the target frame. A navigation with no target frame is a new window (`target=_blank`,
+/// `window.open`): it must not replace the page of the tab that opened it with an error page.
+fn targets_main_frame(target_frame: Option<bool>) -> bool {
+    target_frame.unwrap_or(false)
+}
+
 fn allowed_url(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {
         scheme.eq_ignore_ascii_case("http")
@@ -1329,6 +1336,13 @@ fn check_url(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_new_window_navigation_does_not_report_to_the_tab_that_opened_it() {
+        assert!(super::targets_main_frame(Some(true)));
+        assert!(!super::targets_main_frame(Some(false)), "a frame");
+        assert!(!super::targets_main_frame(None), "a new window");
+    }
+
     #[test]
     fn only_a_detached_inspector_window_closes_on_the_fallback() {
         // ⌘W or ⌥⌘I in a detached inspector closes just that window.
