@@ -155,15 +155,19 @@ impl<R> Prompts<R> {
     }
 
     /// The user said no to a question. Removes each question of its page, and the page asks
-    /// nothing more until `allow` or `take_page`. A server can offer more than one method, and
-    /// WebKit then asks one more time for the same request after a refusal.
+    /// nothing more until `allow` or `remove_page`. A server can offer more than one method,
+    /// and WebKit then asks one more time for the same request after a refusal. The 401 page
+    /// that follows can load more protected parts of the same site, and they must not ask
+    /// again either.
     pub fn refuse(&mut self, id: u64) -> Vec<R> {
         let Some(page) = self.waiting.iter().find(|item| item.id == id) else {
             return Vec::new();
         };
         let page = page.page;
         let replies = self.take_page(page);
-        self.refused.push(page);
+        if !self.refused.contains(&page) {
+            self.refused.push(page);
+        }
         replies
     }
 
@@ -171,19 +175,25 @@ impl<R> Prompts<R> {
         self.refused.contains(&page)
     }
 
-    /// A page starts a navigation: it may ask again.
+    /// The main frame of a page starts a navigation: it may ask again.
     pub fn allow(&mut self, page: usize) {
         self.refused.retain(|refused| *refused != page);
     }
 
-    /// Removes each question of a page: the page went away or shows a new document. The page
-    /// may ask again.
+    /// Removes each question of a page: the page shows a new document, or its load failed. A
+    /// refusal stays: the new document can be the 401 page of the refused request.
     pub fn take_page(&mut self, page: usize) -> Vec<R> {
-        self.allow(page);
         self.waiting
             .extract_if(.., |item| item.page == page)
             .map(|item| item.reply)
             .collect()
+    }
+
+    /// Forgets a page that went away: its questions and its refusal. A new page can get the
+    /// same key later.
+    pub fn remove_page(&mut self, page: usize) -> Vec<R> {
+        self.allow(page);
+        self.take_page(page)
     }
 }
 
@@ -324,14 +334,22 @@ pub fn answer(id: u64, credential: Option<(&str, &str)>) {
     reply.send(USE_CREDENTIAL, Retained::as_ptr(&credential).cast_mut());
 }
 
-/// A page starts a navigation. After a Cancel it may ask again.
+/// The main frame of a page starts a navigation. After a Cancel it may ask again. A frame in
+/// the page or a load of the page itself does not end the refusal.
 pub fn navigation_started(page: usize) {
     PROMPTS.with_borrow_mut(|prompts| prompts.allow(page));
 }
 
-/// Cancels each open question of a page: the page went away or shows a new document.
-pub fn close_page(page: usize) {
+/// Cancels each open question of a page: it shows a new document, or its load failed.
+pub fn cancel_questions(page: usize) {
     let replies = PROMPTS.with_borrow_mut(|prompts| prompts.take_page(page));
+    // Each reply cancels its challenge here, after the borrow ended.
+    drop(replies);
+}
+
+/// Cancels each open question of a page that went away, and forgets its refusal.
+pub fn close_page(page: usize) {
+    let replies = PROMPTS.with_borrow_mut(|prompts| prompts.remove_page(page));
     // Each reply cancels its challenge here, after the borrow ended.
     drop(replies);
 }
@@ -502,20 +520,32 @@ mod tests {
         assert!(prompts.refuse(99).is_empty(), "an unknown id");
         assert!(!prompts.is_refused(99));
 
-        // A new navigation, a new document or a closed tab ends the refusal.
+        // A new navigation of the main frame ends the refusal.
         prompts.allow(1);
         assert!(!prompts.is_refused(1));
         let again = prompts.push(1, challenge("d"), reply()).ok().unwrap();
         drop(prompts.refuse(again));
         assert!(prompts.is_refused(1));
+
+        // The 401 page that follows a Cancel is a new document. Its images and frames of
+        // the same site must not ask again, so the refusal stays.
         assert!(prompts.take_page(1).is_empty());
-        assert!(!prompts.is_refused(1));
+        assert!(prompts.is_refused(1), "the 401 page keeps the refusal");
+        let late = prompts.push(1, challenge("e"), reply()).ok().unwrap();
+        assert_eq!(prompts.take_page(1).len(), 1, "a failed load cancels");
+        assert!(!prompts.contains(late) && prompts.is_refused(1));
+
+        // A closed tab ends the refusal: a new page can get the same key.
+        let open = prompts.push(1, challenge("f"), reply()).ok().unwrap();
+        assert_eq!(prompts.remove_page(1).len(), 1);
+        assert!(!prompts.contains(open) && !prompts.is_refused(1));
+        assert!(prompts.remove_page(1).is_empty(), "a second close");
 
         // An accepted answer refuses nothing.
         assert!(prompts.take(other).is_some());
         assert!(!prompts.is_refused(2));
         prompts.allow(3);
-        assert_eq!(calls.get(), 4);
+        assert_eq!(calls.get(), 6);
     }
 
     #[test]
