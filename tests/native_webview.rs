@@ -272,7 +272,11 @@ fn main() {
                             for event in second_page.drain_events() {
                                 match event {
                                     Event::Title(value) => title = value,
-                                    Event::Finished(_) => finished = true,
+                                    // WebKit sometimes ends a back or forward navigation with a
+                                    // cancel error (-999) after the commit, and sends no finish. The
+                                    // document is on show then, and the browser stops its loading
+                                    // state on this event too. The title checks below still apply.
+                                    Event::Finished(_) | Event::Stopped => finished = true,
                                     Event::Hover(Some(url)) if url.ends_with("/link-destination") => hover_seen = true,
                                     Event::Hover(None) => hover_cleared = true,
                                     Event::OpenInBackground(url) if url.ends_with("/link-destination") => background_opens += 1,
@@ -406,14 +410,24 @@ fn main() {
                                     second_page.dock_inspector_for_test(false);
                                     wait_for!("detached", |s| s.visible && s.detached && !s.in_container);
                                     // With the browser window in front, ⌥⌘I brings the inspector back. Window
-                                    // order and main-window status need the app active, which other apps
-                                    // may have taken since launch.
+                                    // order and main-window status need the app active. macOS can refuse to
+                                    // make it active while the user works in another app.
                                     cx.update(|window, cx| { cx.activate(true); window.activate_window(); }).unwrap();
-                                    wait_for!("went behind the browser window", |s| s.visible && !s.front);
-                                    second_page.toggle_devtools();
-                                    wait_for!("came to the front", |s| s.visible && s.front);
-                                    second_page.toggle_devtools();
-                                    wait_for!("closed when in front", |s| !s.visible);
+                                    Timer::after(Duration::from_millis(500)).await;
+                                    let mtm = objc2::MainThreadMarker::new().expect("the main thread");
+                                    if objc2_app_kit::NSApplication::sharedApplication(mtm).isActive() {
+                                        wait_for!("went behind the browser window", |s| s.visible && !s.front);
+                                        second_page.toggle_devtools();
+                                        wait_for!("came to the front", |s| s.visible && s.front);
+                                        second_page.toggle_devtools();
+                                        wait_for!("closed when in front", |s| !s.visible);
+                                    } else {
+                                        println!("LIMITED: Felinaut is not the active app; the window order of a detached Web Inspector was not checked");
+                                        second_page.dock_inspector_for_test(true);
+                                        wait_for!("docked again", |s| s.visible && !s.detached);
+                                        second_page.toggle_devtools();
+                                        wait_for!("closed", |s| !s.visible);
+                                    }
                                     second_page.find("test link", false);
                                     second_page.find("TEST", true);
                                     second_page.find("no such words", false);
