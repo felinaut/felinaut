@@ -73,6 +73,7 @@ impl NativePage {
         let title_sender = sender.clone();
         let link_sender = sender.clone();
         let failure_sender = sender.clone();
+        let blocked_sender = sender.clone();
         let mut builder = WebViewBuilder::new();
         if agent_enabled() {
             builder =
@@ -99,7 +100,19 @@ impl NativePage {
             })
             .with_visible(false)
             .with_focused(false)
-            .with_navigation_handler(|url| allowed_url(&url))
+            .with_navigation_handler(move |url| {
+                let main_frame = MAIN_FRAME.get();
+                let decision =
+                    EXCEPTIONS.with_borrow(|exceptions| navigation(exceptions, &url, main_frame));
+                match decision {
+                    Navigation::Allow => true,
+                    Navigation::Refuse => false,
+                    Navigation::Report(failure) => {
+                        let _ = blocked_sender.send(Event::Failed(failure));
+                        false
+                    }
+                }
+            })
             .with_new_window_req_handler(move |url, _| {
                 if allowed_url(&url) {
                     let _ = sender.send(Event::Open(url));
@@ -162,7 +175,12 @@ impl NativePage {
             })
             // WebKit can reuse a connection a tab trusted with an exception without asking
             // this page, so never request a site with one; this also covers redirects and frames.
-            .with_navigation_handler(|url| allowed_url(&url) && !has_certificate_exception(&url))
+            .with_navigation_handler(|url| {
+                EXCEPTIONS.with_borrow(|exceptions| {
+                    navigation(exceptions, &url, false) == Navigation::Allow
+                        && !exceptions.covers(&url)
+                })
+            })
             .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
             .with_on_page_load_handler(move |event, url| {
                 if matches!(event, PageLoadEvent::Finished) {
@@ -355,13 +373,17 @@ impl NativePage {
 
     /// Whether the page came with a certificate the user accepted, even over a reused connection.
     pub fn uses_accepted_certificate(&self) -> bool {
+        self.served_certificate()
+            .is_some_and(|leaf| EXCEPTIONS.with_borrow(|exceptions| exceptions.accepted(&leaf)))
+    }
+
+    fn served_certificate(&self) -> Option<Vec<u8>> {
         use wry::WebViewExtMacOS;
         // SAFETY: a property read on a live WKWebView owned by this page, on the main thread;
         // the trust (or null) belongs to the view and is only read before this returns.
         let trust: *mut SecTrust =
             unsafe { objc2::msg_send![&*self.webview.webview(), serverTrust] };
         leaf_certificate(trust)
-            .is_some_and(|leaf| EXCEPTIONS.with_borrow(|exceptions| exceptions.accepted(&leaf)))
     }
 
     /// The URL and title on display; none after a failed first load.
@@ -601,10 +623,41 @@ thread_local! {
     /// Each page's event channel, by its WKWebView's address.
     static FAILURES: RefCell<HashMap<usize, Sender<Event>>> = RefCell::default();
     static EXCEPTIONS: RefCell<Exceptions> = RefCell::default();
+    static FORGET_CHOSEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether the navigation Wry's policy handler is deciding targets a main frame. Wry's
+    /// handler gets only the URL; `watch_failures` sets this around it.
+    static MAIN_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    #[cfg(test)]
+    static SUBFRAME_DECISIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many frame (not main-frame) navigations the policy hook has seen, for the native test.
+#[cfg(test)]
+#[allow(dead_code, reason = "Used by the opt-in native webview test")]
+pub fn subframe_decisions() -> usize {
+    SUBFRAME_DECISIONS.get()
 }
 
 pub fn allow_certificate(url: &str, certificate: Vec<u8>) {
     EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.allow(url, certificate));
+}
+
+pub fn is_blocked(url: &str) -> bool {
+    EXCEPTIONS.with_borrow(|exceptions| exceptions.blocked(url))
+}
+
+/// Try Again on an error page: lifts a forgotten site's block, trusting no certificate.
+pub fn retry(failure: &LoadFailure) {
+    EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.retry(failure));
+}
+
+pub fn forget_certificate_exceptions() {
+    EXCEPTIONS.with_borrow_mut(Exceptions::forget);
+}
+
+/// Blocks the site of a page that Forget closed. See `Exceptions::block`.
+pub fn block_site(url: &str) {
+    EXCEPTIONS.with_borrow_mut(|exceptions| exceptions.block(url));
 }
 
 /// Whether the user accepted a bad certificate for the site of `url`, so the hidden page,
@@ -615,7 +668,7 @@ pub fn has_certificate_exception(url: &str) -> bool {
 
 /// Explains the Not secure mark in a sheet, which is drawn above the native pages.
 pub fn explain_not_secure(window: &gpui::Window, host: &str) {
-    use objc2_app_kit::{NSAlert, NSView};
+    use objc2_app_kit::{NSAlert, NSAlertSecondButtonReturn, NSView};
     use objc2_foundation::{NSString, ns_string};
     use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
@@ -638,7 +691,17 @@ pub fn explain_not_secure(window: &gpui::Window, host: &str) {
          Felinaut quits. Anyone on your network could read or change what you send, including \
          passwords."
     )));
-    alert.beginSheetModalForWindow_completionHandler(&ns_window, None);
+    alert.addButtonWithTitle(ns_string!("Keep"));
+    alert.addButtonWithTitle(ns_string!("Forget Certificate Exceptions"));
+    // AppKit calls this on the main thread; `take_forget_chosen` hands it to the UI drain.
+    let chosen = block2::RcBlock::new(|response| {
+        FORGET_CHOSEN.set(response == NSAlertSecondButtonReturn);
+    });
+    alert.beginSheetModalForWindow_completionHandler(&ns_window, Some(&chosen));
+}
+
+pub fn take_forget_chosen() -> bool {
+    FORGET_CHOSEN.take()
 }
 
 /// `SecTrustRef`'s pointee, so `msg_send!` can check the Objective-C type encoding.
@@ -763,6 +826,59 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
         }
     }
 
+    type PolicyHandler = block2::Block<dyn Fn(isize, *mut AnyObject)>;
+    type PolicyCallback = unsafe extern "C-unwind" fn(
+        *mut AnyObject,
+        Sel,
+        *mut AnyObject,
+        *mut AnyObject,
+        *mut AnyObject,
+        *mut PolicyHandler,
+    );
+    /// WebKit prefers this variant when the delegate has it. It notes whether the main frame
+    /// navigates, then lets Wry's own method decide, and hands its policy on with the same
+    /// preferences.
+    unsafe extern "C-unwind" fn decide(
+        delegate: *mut AnyObject,
+        _: Sel,
+        webview: *mut AnyObject,
+        action: *mut AnyObject,
+        preferences: *mut AnyObject,
+        handler: *mut PolicyHandler,
+    ) {
+        // SAFETY: WebKit passes a live delegate, web view, navigation action, preferences and
+        // completion handler on the main thread. The handler is copied (retained) so that it
+        // outlives this call if Wry ever answers later; Wry calls `forward` exactly once.
+        let handler = unsafe { &*handler }.copy();
+        let main_frame = targets_main_frame(unsafe { action.as_ref() }.and_then(|action| {
+            // SAFETY: `targetFrame` is a nullable WKFrameInfo; `isMainFrame` returns a BOOL.
+            let frame: Option<Retained<AnyObject>> = unsafe { msg_send![action, targetFrame] };
+            frame.map(|frame| unsafe { msg_send![&*frame, isMainFrame] })
+        }));
+        // SAFETY: a live WKWebpagePreferences or null; retained for as long as `forward` lives.
+        let preferences = unsafe { Retained::retain(preferences) };
+        let forward = block2::RcBlock::new(move |policy: isize| {
+            let preferences = preferences
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |p| Retained::as_ptr(p).cast_mut());
+            handler.call((policy, preferences));
+        });
+        #[cfg(test)]
+        SUBFRAME_DECISIONS.set(SUBFRAME_DECISIONS.get() + usize::from(!main_frame));
+        let outer = MAIN_FRAME.replace(main_frame);
+        // SAFETY: Wry's delegate implements this selector with these argument types (objects,
+        // then a block taking WKNavigationActionPolicy, an NSInteger), on the main thread.
+        let _: () = unsafe {
+            msg_send![
+                delegate,
+                webView: webview,
+                decidePolicyForNavigationAction: action,
+                decisionHandler: &*forward
+            ]
+        };
+        MAIN_FRAME.set(outer);
+    }
+
     let view = webview.webview();
     // SAFETY: a property read on a live WKWebView, on the main thread. Wry keeps the delegate
     // alive (WKWebView only holds it weakly) for as long as the WebView.
@@ -772,7 +888,7 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
     // SAFETY: `class` is Wry's registered delegate class. Adding a method only succeeds if the
     // class lacks it, so Wry's own methods are never replaced and later pages add nothing. Each
     // function matches its type encoding: void, self, _cmd, then three objects (`@`), the last
-    // one a block (`@?`) for the challenge.
+    // one a block (`@?`) for the challenge, or four with a block last for the policy.
     unsafe {
         let class = class as *const _ as *mut _;
         let failed = std::mem::transmute::<Callback, Imp>(failed);
@@ -787,6 +903,12 @@ fn watch_failures(webview: &WebView, sender: Sender<Event>) -> Option<usize> {
             sel!(webView:didReceiveAuthenticationChallenge:completionHandler:),
             std::mem::transmute::<ChallengeCallback, Imp>(challenge),
             c"v@:@@@?".as_ptr(),
+        );
+        objc2::ffi::class_addMethod(
+            class,
+            sel!(webView:decidePolicyForNavigationAction:preferences:decisionHandler:),
+            std::mem::transmute::<PolicyCallback, Imp>(decide),
+            c"v@:@@@@?".as_ptr(),
         );
     }
     // WebKit caches which methods a delegate implements when it is set, so set it again.
@@ -1166,6 +1288,36 @@ pub fn pointer(_: &gpui::Window) -> Option<gpui::Point<f32>> {
     None
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Navigation {
+    Allow,
+    Refuse,
+    /// Refuse, and show this error page in the tab.
+    Report(LoadFailure),
+}
+
+/// The navigation policy. Forgotten sites are refused before any request, because WebKit
+/// would reuse the connection it trusted. Only a visible page's main frame (`reports`) shows the
+/// error page: a frame on a forgotten site stays empty rather than taking over the tab.
+fn navigation(exceptions: &Exceptions, url: &str, reports: bool) -> Navigation {
+    if !allowed_url(url) {
+        Navigation::Refuse
+    } else if !exceptions.blocked(url) {
+        Navigation::Allow
+    } else if reports {
+        Navigation::Report(crate::load_error::forgotten(url))
+    } else {
+        Navigation::Refuse
+    }
+}
+
+/// Whether a navigation reports a refused site to its tab. `target_frame` is `isMainFrame` of
+/// the target frame. A navigation with no target frame is a new window (`target=_blank`,
+/// `window.open`): it must not replace the page of the tab that opened it with an error page.
+fn targets_main_frame(target_frame: Option<bool>) -> bool {
+    target_frame.unwrap_or(false)
+}
+
 fn allowed_url(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {
         scheme.eq_ignore_ascii_case("http")
@@ -1184,6 +1336,13 @@ fn check_url(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_new_window_navigation_does_not_report_to_the_tab_that_opened_it() {
+        assert!(super::targets_main_frame(Some(true)));
+        assert!(!super::targets_main_frame(Some(false)), "a frame");
+        assert!(!super::targets_main_frame(None), "a new window");
+    }
+
     #[test]
     fn only_a_detached_inspector_window_closes_on_the_fallback() {
         // ⌘W or ⌥⌘I in a detached inspector closes just that window.
@@ -1433,6 +1592,54 @@ mod tests {
         assert_eq!(super::native_modifiers("+"), (Flags::empty(), "+"));
         assert_eq!(super::native_modifiers("Alt+"), (Flags::empty(), "Alt+"));
         assert_eq!(native_key(""), None);
+    }
+
+    #[test]
+    fn refuses_forgotten_sites_before_any_request() {
+        use super::{Navigation, navigation};
+        use crate::load_error::{Exceptions, Kind};
+        let mut exceptions = Exceptions::default();
+        assert_eq!(
+            navigation(&exceptions, "https://wiki.corp.example/", true),
+            Navigation::Allow
+        );
+        exceptions.allow("https://wiki.corp.example/", vec![1]);
+        exceptions.forget();
+        match navigation(&exceptions, "https://wiki.corp.example/a", true) {
+            Navigation::Report(failure) => {
+                assert_eq!(failure.kind, Kind::Forgotten);
+                assert_eq!(failure.url, "https://wiki.corp.example/a");
+            }
+            other => panic!("{other:?}"),
+        }
+        // A frame and the hidden live-folder page refuse too, without an error page.
+        assert_eq!(
+            navigation(&exceptions, "https://wiki.corp.example/a", false),
+            Navigation::Refuse
+        );
+        for reports in [true, false] {
+            for url in [
+                "https://other.example/",
+                "http://wiki.corp.example/",
+                "about:blank",
+            ] {
+                assert_eq!(
+                    navigation(&exceptions, url, reports),
+                    Navigation::Allow,
+                    "{url}"
+                );
+            }
+            assert_eq!(
+                navigation(&exceptions, "file:///etc/passwd", reports),
+                Navigation::Refuse
+            );
+        }
+        // Try Again lifts the block.
+        exceptions.retry(&crate::load_error::forgotten("https://wiki.corp.example/"));
+        assert_eq!(
+            navigation(&exceptions, "https://wiki.corp.example/a", false),
+            Navigation::Allow
+        );
     }
 
     #[test]
