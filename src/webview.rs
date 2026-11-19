@@ -508,17 +508,6 @@ impl NativePage {
 
     /// Bounds are window-relative logical pixels, as supplied by the GPUI canvas.
     pub fn set_bounds(&self, bounds: Bounds<Pixels>) -> Result<(), String> {
-        use objc2::{runtime::NSObjectProtocol, sel};
-        use wry::WebViewExtMacOS;
-        let view = self.webview.webview();
-        // While a page element is full screen, WebKit owns the view's frame in its own window.
-        // SAFETY: a property read on a live WKWebView on the main thread, checked for macOS 13+.
-        if view.respondsToSelector(sel!(fullscreenState))
-            && unsafe { view.fullscreenState() }
-                != objc2_web_kit::WKFullscreenState::NotInFullscreen
-        {
-            return Ok(());
-        }
         if let Some(container) = &self.container {
             // SAFETY: a view this page owns, on the main thread.
             let parent = unsafe { container.superview() }.ok_or("The page has no parent view")?;

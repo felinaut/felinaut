@@ -750,9 +750,9 @@ impl Browser {
         // key); only a real move or resize should close the list.
         let mut last_bounds = window.bounds();
         let bounds_observer = cx.observe_window_bounds(window, move |this, window, cx| {
-            // A filled window the user moved, resized or made native full screen is no longer
-            // filled. Native full screen and filling the screen both resize the window.
-            full_screen::bounds_changed(window);
+            // A fill the user moved, resized or made native is over. Both kinds of full
+            // screen resize the window.
+            full_screen::window_moved(window, cx);
             if window.is_window_active()
                 && let Some(menus) = cx.get_menus().and_then(|menus| {
                     full_screen_menus(
@@ -812,8 +812,7 @@ impl Browser {
         .detach();
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
-            // Brings back the menu bar and Dock if the window fills the screen.
-            full_screen::closed(window);
+            full_screen::closed(window, cx);
             // Otherwise the dropdown outlives us and the app never quits.
             suggestions::close(cx);
             let _ = weak.update(cx, |this, _| {
