@@ -1769,6 +1769,8 @@ impl Browser {
             .update(cx, |input, cx| input.set_text(text, cx));
     }
     fn poll_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Once WebKit has loaded its full screen window with the first page.
+        full_screen::hook_pages();
         let requests: Vec<_> = self
             .agent
             .iter()
@@ -4373,11 +4375,20 @@ impl Render for Browser {
             }))
             .on_action(cx.listener(Self::forget_certificate_exceptions))
             .on_action(cx.listener(Self::explain_not_secure))
-            .on_action(|_: &ToggleFullScreen, window, cx| {
+            .on_action(cx.listener(|this, _: &ToggleFullScreen, window, cx| {
+                // A video in full screen leaves it first, as in Firefox.
+                let tab = &this.tabs[this.active];
+                if tab
+                    .page
+                    .as_ref()
+                    .is_some_and(|page| page.exit_full_screen())
+                {
+                    return;
+                }
                 let fill = !cx.global::<ThemeSettings>().native_full_screen;
                 let animate = theme::motion_allowed(cx);
                 full_screen::toggle(window, cx, fill, animate);
-            })
+            }))
             // Mouse drags stay with the GPUI view even over the native page, so the root
             // follows a resize anywhere in the window and saves the width when it ends.
             .on_drag_move(
@@ -4668,6 +4679,7 @@ fn main() {
     });
     app.run(move |cx: &mut App| {
         cx.set_global(ThemeSettings::load());
+        full_screen::fill_pages(!cx.global::<ThemeSettings>().native_full_screen);
         cx.set_global(settings::LaunchLanguage(launch_language));
         input::init(cx);
         #[cfg(target_os = "macos")]
@@ -4708,6 +4720,7 @@ fn main() {
             KeyBinding::new("cmd-shift-g", Find(-1), None),
             KeyBinding::new("shift-enter", FindPreviousFromBar, Some("FindBar")),
             KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
+            KeyBinding::new("cmd-shift-f", ToggleFullScreen, None),
         ]);
         // Native menu equivalents remain available while WKWebView owns keyboard focus.
         cx.set_menus(vec![
@@ -4798,6 +4811,7 @@ fn main() {
         // never a browser window or popup.
         cx.on_action(|_: &DevTools, _| webview::close_key_window());
         cx.on_action(|_: &CloseTab, _| webview::close_key_window());
+        cx.on_action(|_: &ToggleFullScreen, _| full_screen::leave_page());
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();

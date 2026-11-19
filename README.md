@@ -207,7 +207,7 @@ FELINAUT_NOTARY_PROFILE=felinaut-notary cargo dist
 | `⌘⇧J`            | Show / hide the downloads list                                  |
 | `⌥⌘I`            | Web Inspector for the active page (also **Inspect Element**)    |
 | `⌘S`             | Show / hide the tab sidebar (remembered)                        |
-| `⌃⌘F`            | Enter / exit full screen                                        |
+| `⌃⌘F` / `⌘⇧F`    | Enter / exit full screen (also a page's, such as a video's)     |
 | `⌘D`             | Pin / unpin active tab                                          |
 | `⌘1`–`⌘8` / `⌘9` | Go to tab 1–8 / last tab                                        |
 | `⌃Tab` / `⌃⇧Tab` | Next / previous tab (also `⌘⇧]` / `⌘⇧[`)                        |
@@ -327,7 +327,7 @@ Address-bar searches use **DuckDuckGo** by default. Choose another in **Felinaut
 
 Sites that decide by location alone may still ignore the browser language. Cookie-consent pages appear once per site regardless of language.
 
-**Full screen** (also in Settings, saved as `native_full_screen=true|false`): **Use native full screen**, the default, opens a new Space; **Fill the current desktop** makes `⌃⌘F` fill the current screen below a MacBook's camera housing, with an animated resize; the menu bar and Dock hide until the pointer reaches their edge. `⌃⌘F` or View → Exit Full Screen leaves either kind; Escape stays with the page and the address bar. Moving or resizing a filled window, or the green button, ends the fill where the window is. Each window fills on its own.
+**Full screen** (also in Settings, saved as `native_full_screen=true|false`): **Use native full screen**, the default, opens a new Space; **Fill the current desktop** makes `⌃⌘F` fill the current screen below a MacBook's camera housing, with an animated resize; the menu bar and Dock hide until the pointer reaches their edge. The same setting governs a page's own full screen, such as a video's: with **Fill the current desktop** it covers the current screen, without a new Space. `⌃⌘F`, `⌘⇧F` (as in Firefox) or View → Exit Full Screen leaves either kind, and a page's full screen; Escape stays with the page and the address bar. Moving or resizing a filled window, or the green button, ends the fill where the window is. Each window fills on its own.
 
 - **Original embedded SVG artwork:** a happy orange-and-cream astronaut cat exploring colorful yarn planets, a simplified helmet symbol, and a floating cardboard exploration box on New Tab. She has one clear smile, a cyan bubble visor, and a white/lavender suit. No fox emoji, external assets or large background bitmaps.
 - **Six distinct procedural scenes:** Milky Way has layered galactic nebulae, subtle stars, moons and cross-wound yarn planets. All themes share restrained orbital threads and wool-planet discoveries; Midnight Party has tumbling confetti, streamers, golden stars and neon ribbons; Confetti Sunset has a golden sun, peach/coral hills and falling confetti; Alpine Pop has snowcapped ice mountains, glacier facets, drifting snow and ridge glints; Neon Wool has rolling yarn balls and flowing loose threads; Forest Carnival has swaying foliage, citrus, cherries, flowers and fluttering petals.
@@ -407,7 +407,7 @@ The native webview test verifies actual WebKit JavaScript execution, DOM title c
 - `src/appearance.rs`: native theme dropdown and animation control.
 - `src/about.rs`, `build.rs`: themed About window and compile-time Git build identity.
 - `src/settings.rs`: the Settings window (`⌘,`): search engine, website language and full screen.
-- `src/full_screen.rs`: `⌃⌘F`, either native full screen or filling the current desktop, per window.
+- `src/full_screen.rs`: `⌃⌘F` / `⌘⇧F` and a page's full screen, either native or filling the current desktop, per window.
 - `src/language.rs`: the website language choice and how it reaches WebKit at launch.
 - `tests/native_webview.rs`: opt-in native JavaScript integration test.
 - `tests/brand_ui.rs`: opt-in SVG decode, theme-handler, motion-toggle and About lifecycle checks.

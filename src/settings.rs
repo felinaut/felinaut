@@ -283,6 +283,7 @@ impl Render for Settings {
                                 cx.update_global::<ThemeSettings, _>(|settings, _| {
                                     settings.native_full_screen = native;
                                     settings.save();
+                                    crate::full_screen::fill_pages(!native);
                                 })
                             })
                         }),

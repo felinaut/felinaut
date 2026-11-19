@@ -167,6 +167,14 @@ impl NativePage {
                 if msg_send![&*view, respondsToSelector: objc2::sel!(setInspectable:)] {
                     let () = msg_send![&*view, setInspectable: false];
                 }
+                // Video and page full screen (requestFullscreen), off by default; macOS 12.3+.
+                let preferences = view.configuration().preferences();
+                if objc2::runtime::NSObjectProtocol::respondsToSelector(
+                    &*preferences,
+                    objc2::sel!(setElementFullscreenEnabled:),
+                ) {
+                    preferences.setElementFullscreenEnabled(true);
+                }
             }
         }
         let container = contain(&webview);
@@ -241,6 +249,22 @@ impl NativePage {
         self.webview
             .evaluate_script(&audio.script())
             .map_err(|error| error.to_string())
+    }
+
+    /// Leaves the page's own full screen (a video's); false if it isn't in one.
+    pub fn exit_full_screen(&self) -> bool {
+        use wry::WebViewExtMacOS;
+        let view = self.webview.webview();
+        // SAFETY: a property read on a live WKWebView on the main thread, checked for macOS 13+.
+        let full = objc2::runtime::NSObjectProtocol::respondsToSelector(
+            &*view,
+            objc2::sel!(fullscreenState),
+        ) && unsafe { view.fullscreenState() }
+            != objc2_web_kit::WKFullscreenState::NotInFullscreen;
+        full && self
+            .webview
+            .evaluate_script("document.exitFullscreen()")
+            .is_ok()
     }
 
     /// WebKit's page zoom; the page keeps it across navigations.
@@ -1088,16 +1112,22 @@ fn parse_icon_event(message: &str) -> Option<Event> {
     crate::icons::png_from_data_url(message.strip_prefix("felifox-icon:")?).map(Event::Icon)
 }
 
-/// Whether the focused page gets a key before GPUI. `command`, `control` and `option` are the
-/// modifiers of the key.
+/// Whether the focused page gets a key before GPUI. `command`, `control`, `option` and `shift`
+/// are the modifiers of the key.
 /// - Command+arrows (key codes 123 to 126): the text input context of GPUI consumes them, thus
 ///   WebKit did not move the caret to the start or the end of a line.
 /// - ⌘F, ⌘G and ⇧⌘G (key codes 3 and 5): a page can have a find of its own. WebKit does not
 ///   give a key that the page ignored back to AppKit, so `find_keys.js` reports that key
-///   (`Event::FindKey`), and the find bar opens then.
-fn page_gets_key_first(key_code: u16, command: bool, control: bool, option: bool) -> bool {
-    command
-        && ((123..=126).contains(&key_code) || (matches!(key_code, 3 | 5) && !control && !option))
+///   (`Event::FindKey`), and the find bar opens then. ⇧⌘F is full screen.
+fn page_gets_key_first(
+    key_code: u16,
+    command: bool,
+    control: bool,
+    option: bool,
+    shift: bool,
+) -> bool {
+    let find = key_code == 5 || (key_code == 3 && !shift);
+    command && ((123..=126).contains(&key_code) || (find && !control && !option))
 }
 
 /// Gives the keys of `page_gets_key_first` to the focused page. AppKit offers each Command key
@@ -1118,6 +1148,7 @@ pub fn forward_page_keys() {
             flags.contains(NSEventModifierFlags::Command),
             flags.contains(NSEventModifierFlags::Control),
             flags.contains(NSEventModifierFlags::Option),
+            flags.contains(NSEventModifierFlags::Shift),
         ) && let Some(responder) = key.window(mtm).and_then(|window| window.firstResponder())
             && responder.isKindOfClass(objc2_web_kit::WKWebView::class())
         {
@@ -1897,25 +1928,30 @@ mod tests {
     fn the_page_gets_command_arrows_and_the_find_keys_first() {
         use super::page_gets_key_first as first;
         for arrow in 123..=126 {
-            assert!(first(arrow, true, false, false), "{arrow}");
+            assert!(first(arrow, true, false, false, false), "{arrow}");
             assert!(
-                !first(arrow, false, false, false),
+                !first(arrow, false, false, false, false),
                 "{arrow} without Command"
             );
         }
-        // ⌘F, ⌘G (and ⇧⌘G: Shift is not a parameter).
+        // ⌘F, ⌘G and ⇧⌘G; ⇧⌘F is full screen.
+        assert!(first(5, true, false, false, true), "⇧⌘G");
+        assert!(!first(3, true, false, false, true), "⇧⌘F");
         for code in [3, 5] {
-            assert!(first(code, true, false, false), "{code}");
-            assert!(!first(code, false, false, false), "a plain letter");
+            assert!(first(code, true, false, false, false), "{code}");
+            assert!(!first(code, false, false, false, false), "a plain letter");
             // ⌃⌘F is full screen and ⌥⌘F is not a find key: they stay with the browser.
-            assert!(!first(code, true, true, false), "{code} with Control");
-            assert!(!first(code, true, false, true), "{code} with Option");
+            assert!(
+                !first(code, true, true, false, false),
+                "{code} with Control"
+            );
+            assert!(!first(code, true, false, true, false), "{code} with Option");
         }
         // Escape belongs to the suggestions, the find bar and the page, also in full screen.
-        assert!(!first(53, true, false, false), "Escape");
+        assert!(!first(53, true, false, false, false), "Escape");
         // Other shortcuts of the browser, such as ⌘T (17), ⌘W (13) and ⌘L (37).
         for code in [17, 13, 37, 0] {
-            assert!(!first(code, true, false, false), "{code}");
+            assert!(!first(code, true, false, false, false), "{code}");
         }
     }
 

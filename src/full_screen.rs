@@ -50,13 +50,16 @@ pub fn bounds_changed(fill: &mut Option<Fill>, now: Frame, native: bool) -> bool
 #[cfg(target_os = "macos")]
 mod native {
     use super::{Fill, Frame};
-    use objc2::{MainThreadMarker, rc::Retained};
+    use objc2::runtime::{AnyObject, Sel};
+    use objc2::{ClassType, MainThreadMarker, msg_send, rc::Retained, sel};
     use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions as Options, NSWindow};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use std::cell::RefCell;
 
     thread_local! {
         static FILLS: RefCell<Vec<(isize, Fill)>> = const { RefCell::new(Vec::new()) };
+        /// A page fills the screen, in WebKit's window; Escape leaves it.
+        static PAGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
     fn get(window: isize) -> Option<Fill> {
@@ -111,6 +114,114 @@ mod native {
             .detach();
     }
 
+    static FILL_PAGES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Makes a page's own full screen (a video's button, `requestFullscreen`) fill the current
+    /// desktop too when `fill`.
+    pub fn fill_pages(fill: bool) {
+        FILL_PAGES.store(fill, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// WebKit moves a full screen page into its `WebCoreFullScreenWindow` and calls
+    /// `toggleFullScreen:` on it; that class gets its own version, which fills the screen when
+    /// Settings ask for it and reports the transition to WebKit as AppKit would. WebKit loads
+    /// the class with its first page; call this on the main thread until then, it's cheap.
+    pub fn hook_pages() {
+        use objc2::runtime::{AnyClass, Imp};
+        thread_local!(static HOOKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+        if HOOKED.get() {
+            return;
+        }
+        let Some(class) = AnyClass::get(c"WebCoreFullScreenWindow") else {
+            return;
+        };
+        HOOKED.set(true);
+        // SAFETY: the function matches `v@:@`, the encoding of `toggleFullScreen:`. Adding only
+        // succeeds where the class doesn't define the method itself, so WebKit's code is never
+        // replaced; it then overrides the inherited NSWindow method.
+        unsafe {
+            let class = class as *const AnyClass as *mut AnyClass;
+            let toggle = std::mem::transmute::<Toggle, Imp>(toggle_page);
+            for name in [
+                sel!(toggleFullScreen:),
+                sel!(enterFullScreenMode:),
+                sel!(exitFullScreenMode:),
+            ] {
+                objc2::ffi::class_addMethod(class, name, toggle, c"v@:@".as_ptr());
+            }
+        }
+    }
+
+    type Toggle = unsafe extern "C-unwind" fn(&NSWindow, Sel, *mut AnyObject);
+
+    unsafe extern "C-unwind" fn toggle_page(window: &NSWindow, cmd: Sel, sender: *mut AnyObject) {
+        use objc2::runtime::Imp;
+        use std::sync::atomic::Ordering;
+        let number = window.windowNumber();
+        let native = window
+            .styleMask()
+            .contains(objc2_app_kit::NSWindowStyleMask::FullScreen);
+        let filled = get(number).is_some();
+        if native || (!filled && !FILL_PAGES.load(Ordering::Relaxed)) {
+            // SAFETY: NSWindow's own implementation, for the same selector and arguments.
+            unsafe {
+                let Some(method) = NSWindow::class().instance_method(cmd) else {
+                    return;
+                };
+                let imp = std::mem::transmute::<Imp, Toggle>(method.implementation());
+                return imp(window, cmd, sender);
+            }
+        }
+        PAGE.set(!filled);
+        let done = if filled {
+            set(number, None);
+            sel!(windowDidExitFullScreen:)
+        } else {
+            let Some(screen) = window.screen() else {
+                return;
+            };
+            let target = frame(screen.frame());
+            let restore = frame(window.frame());
+            set(
+                number,
+                Some(Fill {
+                    restore,
+                    filled: Some(target),
+                }),
+            );
+            // No title bar over the page.
+            window.setStyleMask(objc2_app_kit::NSWindowStyleMask::Borderless);
+            window.setFrame_display(rect(target), true);
+            sel!(windowDidEnterFullScreen:)
+        };
+        present();
+        // AppKit tells the delegate (WebKit's controller) once the transition ends, after this
+        // call returns; so do we.
+        if let Some(delegate) = window.delegate() {
+            let nothing: Option<&AnyObject> = None;
+            // SAFETY: WebKit's controller implements both selectors; a zero delay runs them on
+            // the main run loop after this call.
+            let () = unsafe {
+                msg_send![&*delegate, performSelector: done, withObject: nothing, afterDelay: 0f64]
+            };
+        }
+    }
+
+    /// ⌃⌘F while a page's full screen window is key, where GPUI doesn't see the key: leaves
+    /// it, as Escape does.
+    pub fn leave_page() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        if let Some(window) = NSApplication::sharedApplication(mtm).keyWindow()
+            && window.class().name().to_bytes() == b"WebCoreFullScreenWindow"
+        {
+            let nothing: Option<&AnyObject> = None;
+            // SAFETY: WebKit's window implements `cancelOperation:`, its Escape.
+            let () = unsafe { msg_send![&*window, cancelOperation: nothing] };
+        }
+    }
+
     /// Call when the window moves or resizes; ends a fill the user undid.
     pub fn window_moved(window: &gpui::Window, cx: &mut gpui::App) {
         let Some(ns_window) = ns_window(window) else {
@@ -137,12 +248,15 @@ mod native {
     }
 
     /// The menu bar and Dock hide while any window fills its screen, and come back when the
-    /// pointer reaches their edge, so the menus stay in reach.
+    /// pointer reaches their edge, so the menus stay in reach. A page's full screen hides them
+    /// outright: Escape leaves it.
     fn present() {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
-        let options = if FILLS.with_borrow(Vec::is_empty) {
+        let options = if PAGE.get() {
+            Options::HideDock | Options::HideMenuBar
+        } else if FILLS.with_borrow(Vec::is_empty) {
             Options::Default
         } else {
             Options::AutoHideDock | Options::AutoHideMenuBar
@@ -180,7 +294,7 @@ mod native {
     }
 }
 #[cfg(target_os = "macos")]
-pub use native::{closed, is_filled, toggle, window_moved};
+pub use native::{closed, fill_pages, hook_pages, is_filled, leave_page, toggle, window_moved};
 
 /// Only native full screen elsewhere.
 #[cfg(not(target_os = "macos"))]
@@ -189,6 +303,12 @@ pub fn toggle(window: &gpui::Window, _: &gpui::App, _: bool, _: bool) {
 }
 #[cfg(not(target_os = "macos"))]
 pub fn window_moved(_: &gpui::Window, _: &mut gpui::App) {}
+#[cfg(not(target_os = "macos"))]
+pub fn fill_pages(_: bool) {}
+#[cfg(not(target_os = "macos"))]
+pub fn hook_pages() {}
+#[cfg(not(target_os = "macos"))]
+pub fn leave_page() {}
 #[cfg(not(target_os = "macos"))]
 pub fn closed(_: &gpui::Window, _: &mut gpui::App) {}
 #[cfg(not(target_os = "macos"))]
