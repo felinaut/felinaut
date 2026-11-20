@@ -587,6 +587,8 @@ struct Browser {
     address: Entity<AddressInput>,
     find: Entity<AddressInput>,
     find_bar: FindBar,
+    /// The layout's offset below macOS's title bar strip in native full screen.
+    reveal: full_screen::Reveal,
     _find_events: [Subscription; 2],
     focus: FocusHandle,
     _submit: Subscription,
@@ -868,6 +870,7 @@ impl Browser {
             address,
             find,
             find_bar: FindBar::default(),
+            reveal: full_screen::Reveal::default(),
             _find_events: find_events,
             focus,
             _submit: subscription,
@@ -1771,6 +1774,13 @@ impl Browser {
     fn poll_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Once WebKit has loaded its full screen window with the first page.
         full_screen::hook_pages();
+        let overlap = full_screen::title_bar_overlap(window);
+        if self
+            .reveal
+            .set(overlap, Instant::now(), theme::motion_allowed(cx))
+        {
+            cx.notify();
+        }
         let requests: Vec<_> = self
             .agent
             .iter()
@@ -4293,6 +4303,11 @@ impl Render for Browser {
             window.request_animation_frame();
         }
         let find_offset = 44. * if self.find_bar.open { 1. - slid } else { slid };
+        // Below macOS's title bar strip while it shows in native full screen.
+        let top = self.reveal.offset(Instant::now());
+        if self.reveal.moving(Instant::now()) {
+            window.request_animation_frame();
+        }
         let find_shown = (self.find_bar.open || slid < 1.) && tab.searchable();
         let show_chip = !tab.home && !address_focused && display != AddressDisplay::Url;
         let not_secure = tab.not_secure(
@@ -4345,6 +4360,7 @@ impl Render for Browser {
             .track_focus(&self.focus)
             .key_context("Browser")
             .size_full()
+            .pt(px(top))
             .bg(rgb(p.background))
             .text_color(rgb(p.text))
             .font_family(".AppleSystemUIFont")

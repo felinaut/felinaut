@@ -69,6 +69,50 @@ pub fn page_call(native: bool, exit: bool, ours: bool, fill_pages: bool) -> Page
     }
 }
 
+/// How long the layout takes to slide below macOS's title bar strip, or back.
+const SLIDE: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// The layout's offset below macOS's title bar strip in native full screen, as Firefox moves
+/// its toolbar down while the strip shows.
+#[derive(Debug, Default)]
+pub struct Reveal {
+    from: f32,
+    target: f32,
+    changed: Option<std::time::Instant>,
+}
+
+impl Reveal {
+    /// The strip now covers `overlap` points; true if the layout has to move. While the strip
+    /// slides in, smaller readings are ignored, so the layout never steps back.
+    pub fn set(&mut self, overlap: f32, now: std::time::Instant, animate: bool) -> bool {
+        let overlap = if overlap.is_finite() {
+            overlap.max(0.)
+        } else {
+            0.
+        };
+        if overlap == self.target || (overlap > 0. && overlap < self.target) {
+            return false;
+        }
+        self.from = if animate { self.offset(now) } else { overlap };
+        self.target = overlap;
+        self.changed = Some(now);
+        true
+    }
+
+    /// The offset at `now`, eased out.
+    pub fn offset(&self, now: std::time::Instant) -> f32 {
+        let t = self.changed.map_or(1., |changed| {
+            (now.saturating_duration_since(changed).as_secs_f32() / SLIDE.as_secs_f32()).min(1.)
+        });
+        let eased = 1. - (1. - t).powi(3);
+        self.from + (self.target - self.from) * eased
+    }
+
+    pub fn moving(&self, now: std::time::Instant) -> bool {
+        self.offset(now) != self.target
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod native {
     use super::{Fill, Frame};
@@ -246,6 +290,48 @@ mod native {
         }
     }
 
+    /// How far macOS's title bar strip covers the top of `window`, in points: in native full
+    /// screen it slides in over the window while the pointer is at the top. 0 while hidden.
+    pub fn title_bar_overlap(window: &gpui::Window) -> f32 {
+        let (Some(ns_window), Some(mtm)) = (ns_window(window), MainThreadMarker::new()) else {
+            return 0.;
+        };
+        if !window.is_fullscreen() {
+            return 0.;
+        }
+        let top = ns_window.frame().origin.y + ns_window.frame().size.height;
+        // The strip's window is taller than what shows: only a title bar's height of it is
+        // drawn, the rest is its shadow.
+        let content = NSRect::new(NSPoint::new(0., 0.), NSSize::new(100., 100.));
+        let title_bar = NSWindow::frameRectForContentRect_styleMask(
+            content,
+            objc2_app_kit::NSWindowStyleMask::Titled,
+            mtm,
+        )
+        .size
+        .height
+            - 100.;
+        NSApplication::sharedApplication(mtm)
+            .windows()
+            .iter()
+            .filter(|strip| {
+                // `ends_with`: AppKit may observe it through a KVO subclass.
+                strip
+                    .class()
+                    .name()
+                    .to_bytes()
+                    .ends_with(b"NSToolbarFullScreenWindow")
+                    && strip.isVisible()
+                    && strip.alphaValue() > 0.5
+            })
+            .map(|strip| {
+                let frame = strip.frame();
+                let shadow = (frame.size.height - title_bar).max(0.);
+                (top - frame.origin.y - shadow).clamp(0., 120.) as f32
+            })
+            .fold(0., f32::max)
+    }
+
     /// Call when the window moves or resizes; ends a fill the user undid.
     pub fn window_moved(window: &gpui::Window, cx: &mut gpui::App) {
         let Some(ns_window) = ns_window(window) else {
@@ -318,7 +404,9 @@ mod native {
     }
 }
 #[cfg(target_os = "macos")]
-pub use native::{closed, fill_pages, hook_pages, is_filled, leave_page, toggle, window_moved};
+pub use native::{
+    closed, fill_pages, hook_pages, is_filled, leave_page, title_bar_overlap, toggle, window_moved,
+};
 
 /// Only native full screen elsewhere.
 #[cfg(not(target_os = "macos"))]
@@ -332,6 +420,10 @@ pub fn fill_pages(_: bool) {}
 #[cfg(not(target_os = "macos"))]
 pub fn hook_pages() {}
 #[cfg(not(target_os = "macos"))]
+pub fn title_bar_overlap(_: &gpui::Window) -> f32 {
+    0.
+}
+#[cfg(not(target_os = "macos"))]
 pub fn leave_page() {}
 #[cfg(not(target_os = "macos"))]
 pub fn closed(_: &gpui::Window, _: &mut gpui::App) {}
@@ -342,7 +434,8 @@ pub fn is_filled(_: &gpui::Window) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fill, Frame, PageCall, bounds_changed, page_call, restore};
+    use super::{Fill, Frame, PageCall, Reveal, SLIDE, bounds_changed, page_call, restore};
+    use std::time::Instant;
 
     #[test]
     fn a_page_enters_and_leaves_by_the_call_not_by_what_we_remember() {
@@ -359,6 +452,33 @@ mod tests {
         // Already in native full screen: always AppKit.
         assert_eq!(page_call(true, false, false, true), PageCall::Native);
         assert_eq!(page_call(true, true, true, true), PageCall::Native);
+    }
+
+    #[test]
+    fn the_layout_slides_below_the_title_bar_strip_and_back() {
+        let start = Instant::now();
+        let mut reveal = Reveal::default();
+        assert!(!reveal.set(0., start, true), "nothing shows");
+        assert!(reveal.set(44., start, true));
+        assert_eq!(reveal.offset(start), 0.);
+        let half = reveal.offset(start + SLIDE / 2);
+        assert!(half > 22. && half < 44., "{half}");
+        assert!(reveal.moving(start + SLIDE / 2));
+        assert_eq!(reveal.offset(start + SLIDE), 44.);
+        // The strip wobbles while it slides in: the layout doesn't step back.
+        assert!(!reveal.set(37., start + SLIDE, true));
+        assert!(!reveal.set(44., start + SLIDE, true));
+        // Hidden again: back up, from wherever the layout is.
+        let later = start + SLIDE * 2;
+        assert!(reveal.set(0., later, true));
+        assert_eq!(reveal.offset(later), 44.);
+        assert_eq!(reveal.offset(later + SLIDE), 0.);
+        assert!(!reveal.moving(later + SLIDE));
+        // Reduce Motion: no slide; bad readings count as hidden.
+        assert!(reveal.set(44., later, false));
+        assert_eq!(reveal.offset(later), 44.);
+        assert!(reveal.set(f32::NAN, later, false));
+        assert_eq!(reveal.offset(later), 0.);
     }
 
     const WINDOW: Frame = Frame {
