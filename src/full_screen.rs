@@ -47,6 +47,28 @@ pub fn bounds_changed(fill: &mut Option<Fill>, now: Frame, native: bool) -> bool
     over
 }
 
+/// What to do when WebKit asks a page's full screen window to enter or leave full screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PageCall {
+    /// Let AppKit do it: native full screen.
+    Native,
+    /// Cover the current screen ourselves.
+    Fill,
+    /// Undo our fill.
+    Restore,
+}
+
+/// A page enters (`exit` false) or leaves full screen; `ours` is whether the window is filled
+/// by us. Decided by the call, not by what we remember, so a missed exit can't turn the next
+/// enter into an exit.
+pub fn page_call(native: bool, exit: bool, ours: bool, fill_pages: bool) -> PageCall {
+    match (native, exit) {
+        (false, true) if ours => PageCall::Restore,
+        (false, false) if fill_pages => PageCall::Fill,
+        _ => PageCall::Native,
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod native {
     use super::{Fill, Frame};
@@ -123,8 +145,8 @@ mod native {
     }
 
     /// WebKit moves a full screen page into its `WebCoreFullScreenWindow` and calls
-    /// `toggleFullScreen:` on it; that class gets its own version, which fills the screen when
-    /// Settings ask for it and reports the transition to WebKit as AppKit would. WebKit loads
+    /// `enterFullScreenMode:` and `exitFullScreenMode:` on it; that class gets its own versions,
+    /// which fill the screen when Settings ask for it and reports the transition to WebKit as AppKit would. WebKit loads
     /// the class with its first page; call this on the main thread until then, it's cheap.
     pub fn hook_pages() {
         use objc2::runtime::{AnyClass, Imp};
@@ -136,17 +158,13 @@ mod native {
             return;
         };
         HOOKED.set(true);
-        // SAFETY: the function matches `v@:@`, the encoding of `toggleFullScreen:`. Adding only
+        // SAFETY: the function matches `v@:@`, the encoding of both methods. Adding only
         // succeeds where the class doesn't define the method itself, so WebKit's code is never
         // replaced; it then overrides the inherited NSWindow method.
         unsafe {
             let class = class as *const AnyClass as *mut AnyClass;
             let toggle = std::mem::transmute::<Toggle, Imp>(toggle_page);
-            for name in [
-                sel!(toggleFullScreen:),
-                sel!(enterFullScreenMode:),
-                sel!(exitFullScreenMode:),
-            ] {
+            for name in [sel!(enterFullScreenMode:), sel!(exitFullScreenMode:)] {
                 objc2::ffi::class_addMethod(class, name, toggle, c"v@:@".as_ptr());
             }
         }
@@ -161,8 +179,14 @@ mod native {
         let native = window
             .styleMask()
             .contains(objc2_app_kit::NSWindowStyleMask::FullScreen);
-        let filled = get(number).is_some();
-        if native || (!filled && !FILL_PAGES.load(Ordering::Relaxed)) {
+        let exit = cmd == sel!(exitFullScreenMode:);
+        let call = super::page_call(
+            native,
+            exit,
+            get(number).is_some(),
+            FILL_PAGES.load(Ordering::Relaxed),
+        );
+        if call == super::PageCall::Native {
             // SAFETY: NSWindow's own implementation, for the same selector and arguments.
             unsafe {
                 let Some(method) = NSWindow::class().instance_method(cmd) else {
@@ -172,8 +196,8 @@ mod native {
                 return imp(window, cmd, sender);
             }
         }
-        PAGE.set(!filled);
-        let done = if filled {
+        PAGE.set(!exit);
+        let done = if exit {
             set(number, None);
             sel!(windowDidExitFullScreen:)
         } else {
@@ -318,7 +342,24 @@ pub fn is_filled(_: &gpui::Window) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fill, Frame, bounds_changed, restore};
+    use super::{Fill, Frame, PageCall, bounds_changed, page_call, restore};
+
+    #[test]
+    fn a_page_enters_and_leaves_by_the_call_not_by_what_we_remember() {
+        // Fill the current desktop: enter fills, exit restores.
+        assert_eq!(page_call(false, false, false, true), PageCall::Fill);
+        assert_eq!(page_call(false, true, true, true), PageCall::Restore);
+        // A missed exit left the window marked as ours: the next enter still fills.
+        assert_eq!(page_call(false, false, true, true), PageCall::Fill);
+        // An exit for a window we never filled is AppKit's.
+        assert_eq!(page_call(false, true, false, true), PageCall::Native);
+        // Native full screen setting: AppKit enters; our fill from before the switch restores.
+        assert_eq!(page_call(false, false, false, false), PageCall::Native);
+        assert_eq!(page_call(false, true, true, false), PageCall::Restore);
+        // Already in native full screen: always AppKit.
+        assert_eq!(page_call(true, false, false, true), PageCall::Native);
+        assert_eq!(page_call(true, true, true, true), PageCall::Native);
+    }
 
     const WINDOW: Frame = Frame {
         x: 40.,
