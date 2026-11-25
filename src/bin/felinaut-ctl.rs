@@ -32,6 +32,11 @@ Usage: felinaut-ctl <command>      (start Felinaut with FELINAUT_AGENT=1)
   downloads               List the downloads: name, state, bytes and path
   downloads show          Open or close the downloads list
   downloads cancel <id>   Stop a running download
+  permissions             Show the camera or microphone request of the active tab, the
+                          stored decisions of its site and what it uses now
+  permissions deny|block  Refuse the request this time, or for each later time
+  permissions reset       Stop the use, forget the decisions of the active site and
+                          reload its tabs
 
   --native                With click, type or press: send a real mouse or keyboard event.
                           Use it when a site ignores the default synthetic events.";
@@ -55,6 +60,12 @@ fn command(args: &[String]) -> Option<Value> {
         ["downloads", "show"] => json!({"cmd": "downloads", "show": true}),
         ["downloads", "cancel", id] => {
             json!({"cmd": "downloads", "cancel": id.parse::<u64>().ok()?})
+        }
+        ["permissions"] => json!({"cmd": "permissions"}),
+        ["permissions", "reset"] => json!({"cmd": "permissions", "reset": true}),
+        // There is no "allow": only the user grants the camera or the microphone.
+        ["permissions", answer @ ("deny" | "block")] => {
+            json!({"cmd": "permissions", "answer": answer})
         }
         ["navigate", url] => json!({"cmd": "navigate", "url": url}),
         ["click", reference] => json!({"cmd": "click", "ref": reference}),
@@ -171,7 +182,19 @@ mod tests {
             parse(&["downloads", "cancel", "3"]),
             Some(json!({"cmd": "downloads", "cancel": 3}))
         );
+        assert_eq!(parse(&["permissions"]), Some(json!({"cmd": "permissions"})));
+        assert_eq!(
+            parse(&["permissions", "block"]),
+            Some(json!({"cmd": "permissions", "answer": "block"}))
+        );
+        assert_eq!(
+            parse(&["permissions", "reset"]),
+            Some(json!({"cmd": "permissions", "reset": true}))
+        );
         for args in [
+            vec!["permissions", "allow"],
+            vec!["permissions", "grant"],
+            vec!["permissions", "deny", "all"],
             vec![],
             vec!["unknown"],
             vec!["tab", "-1"],

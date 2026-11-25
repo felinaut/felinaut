@@ -46,6 +46,15 @@ SIGN_IDENTITY = packaging_env("SIGN_IDENTITY")
 NOTARY_PROFILE = packaging_env("NOTARY_PROFILE")
 PROVISIONING_PROFILE = packaging_env("PROVISIONING_PROFILE")
 ENTITLEMENTS = ROOT / "assets" / "Felinaut.entitlements"
+CAPTURE_ENTITLEMENTS = ROOT / "assets" / "Felinaut-capture.entitlements"
+# The hardened runtime keys for the camera and the microphone. No provisioning profile has
+# to grant them. Each other key, also under com.apple.security., needs the profile's grant.
+UNRESTRICTED_ENTITLEMENTS = frozenset(
+    {
+        "com.apple.security.device.camera",
+        "com.apple.security.device.audio-input",
+    }
+)
 
 
 def codesign_args(identity: str, entitlements: Path | None = None) -> list[str]:
@@ -58,13 +67,14 @@ def codesign_args(identity: str, entitlements: Path | None = None) -> list[str]:
     return args
 
 
-def app_entitlements(provisioning_profile: str) -> Path | None:
+def app_entitlements(provisioning_profile: str) -> Path:
     """Restricted entitlements are claimed only when a profile can vouch for them.
 
     Without a matching embedded profile macOS kills the app at launch, so an
-    unprovisioned build keeps the plain hardened-runtime signature.
+    unprovisioned build claims only the camera and the microphone, which the
+    hardened runtime otherwise refuses. Ad-hoc signatures use neither file.
     """
-    return ENTITLEMENTS if provisioning_profile else None
+    return ENTITLEMENTS if provisioning_profile else CAPTURE_ENTITLEMENTS
 
 
 def profile_entitlements(provisioning_profile: Path) -> dict:
@@ -124,6 +134,11 @@ def info_plist(version: str, display: str) -> dict:
             }
         ],
         "NSHumanReadableCopyright": "Copyright © 2026 Felinaut contributors. MIT license.",
+        # macOS shows these texts when it asks for the camera or the microphone, and
+        # refuses capture without them. Felinaut asks per site first: the handler in
+        # src/permissions/native.rs never grants a site by default. Keep the two together.
+        "NSCameraUsageDescription": "Websites that you allow in Felinaut can use the camera.",
+        "NSMicrophoneUsageDescription": "Websites that you allow in Felinaut can use the microphone.",
         # Browser web content, including users' HTTP development sites, must work
         # when launched as a bundle as well as when run as a bare Cargo executable.
         "NSAppTransportSecurity": {
@@ -420,7 +435,7 @@ def main():
             claimed = plistlib.load(file)
         granted = profile_entitlements(Path(PROVISIONING_PROFILE))
         for key in claimed:
-            if key not in granted:
+            if key not in UNRESTRICTED_ENTITLEMENTS and key not in granted:
                 parser.error(
                     f"{PROVISIONING_PROFILE} does not grant {key}; macOS would refuse to launch the app"
                 )

@@ -66,6 +66,8 @@ impl Drop for NativePage {
             FAILURES.with_borrow_mut(|pages| pages.remove(&key));
             crate::downloads::native::detach(key);
         }
+        // Denies the requests that still wait, while the WKWebView is alive.
+        crate::permissions::native::detach(self.permission_key());
         if let Some(container) = &self.container {
             container.removeFromSuperview();
         }
@@ -161,6 +163,7 @@ impl NativePage {
             use wry::WebViewExtMacOS;
             let view = webview.webview();
             crate::downloads::native::attach(&view, failure_key.is_some());
+            crate::permissions::native::attach(&view, true);
             // Keep the in-app inspector but stop Safari's Develop menu attaching from outside.
             // SAFETY: a live WKWebView on the main thread; the setter exists on macOS 13.3+.
             unsafe {
@@ -217,6 +220,8 @@ impl NativePage {
             // A page nobody sees must never save a file.
             use wry::WebViewExtMacOS;
             crate::downloads::native::attach(&webview.webview(), false);
+            // Nor use the camera or the microphone.
+            crate::permissions::native::attach(&webview.webview(), false);
         }
         Ok(Self {
             webview,
@@ -236,11 +241,35 @@ impl NativePage {
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(test)]
+    #[allow(dead_code, reason = "Used by the opt-in native permission test")]
+    pub fn probe_capture_for_test(&self, capture_type: isize) -> Vec<isize> {
+        use wry::WebViewExtMacOS;
+        crate::permissions::native::probe(&self.webview.webview(), capture_type)
+    }
+
     /// Applies a tab's volume, mute and EQ to the current document and all its frames.
     pub fn apply_audio(&self, audio: TabAudio) -> Result<(), String> {
         self.webview
             .evaluate_script(&audio.script())
             .map_err(|error| error.to_string())
+    }
+
+    /// The key of this page in `permissions::native`: its WKWebView's address.
+    pub fn permission_key(&self) -> usize {
+        use wry::WebViewExtMacOS;
+        objc2::rc::Retained::as_ptr(&self.webview.webview()) as usize
+    }
+
+    /// Whether the page uses the camera and the microphone now.
+    pub fn capture(&self) -> (bool, bool) {
+        use wry::WebViewExtMacOS;
+        crate::permissions::native::capture(&self.webview.webview())
+    }
+
+    pub fn stop_capture(&self) {
+        use wry::WebViewExtMacOS;
+        crate::permissions::native::stop_capture(&self.webview.webview());
     }
 
     /// WebKit's page zoom; the page keeps it across navigations.

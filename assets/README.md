@@ -52,7 +52,7 @@ must still be run when changing the artwork.
 
 `icons/*.svg` are the existing **24 × 24 monochrome UI icons** (speaker levels,
 muted speaker, voice, bass and natural sound presets, sidebar, disclosure
-chevron and check mark). `icons/github.svg` is GitHub's mark from Primer
+chevron, check mark, camera and microphone). `icons/github.svg` is GitHub's mark from Primer
 Octicons (MIT, GitHub Inc.), used for the GitHub live folder.
 `icons/asana.svg` redraws Asana's three-dot mark as plain circles for the Asana
 live folder. These are single-color masks: GPUI's `svg()` tints them with the
